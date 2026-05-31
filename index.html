@@ -249,7 +249,8 @@
       <p>Configure your factory and hit Solve</p>
       <p style="font-size:11px">White = inputs · Green = outputs · Red = errors · Amber = surplus</p>
       <p style="font-size:11px">💎 Blue = shard · 🔮 Purple = sloop</p>
-      <p style="font-size:11px">Click a node to expand · Drag nodes to reposition · Scroll to zoom</p>
+      <p style="font-size:11px">Click = focus chain · Double-click = expand / centre · Drag to reposition · Scroll to zoom</p>
+      <p style="font-size:11px">Ctrl+F to search · Esc to clear focus</p>
     </div>
 
     <!-- Results bar (bottom-centre) -->
@@ -269,6 +270,8 @@
       <button class="gbt" onclick="GR.zoomBy(1.2)" title="Zoom in">+</button>
       <button class="gbt" onclick="GR.zoomBy(0.8)" title="Zoom out">−</button>
       <button class="gbt" onclick="GR.fitAll()"    title="Fit view">⊡</button>
+      <button class="gbt" onclick="GR.openSearch()" title="Search (Ctrl+F)"
+        style="font-size:12px">⌕</button>
     </div>
   </div><!-- /graph -->
 
