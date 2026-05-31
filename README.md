@@ -1,90 +1,211 @@
-# Satisfactory Factory Planner — Lite
+# Satisfactory Factory Planner
 
-Single-process local desktop app. No Node, no npm, no Flask, no Electron.
-One Python process serves the UI and runs the OR-Tools LP solver.
+A lightweight, standalone production planner for **Satisfactory** built with **Python, OR-Tools, and vanilla JavaScript**.
+
+Unlike most web-based planners, this project uses a real optimization solver to generate factory layouts and production chains subject to resource, power, machine, and recipe constraints.
 
 ---
 
-## Project layout
+## Features
 
-```
-sfplanner_lite/
-├── app.py                  ← Launch this (opens native window via pywebview)
-├── server.py               ← Stdlib HTTP server — handles /api/* + serves frontend/
-├── solver.py               ← OR-Tools LP solver (copy from your original backend)
-├── recipes_complete.yaml   ← Canonical recipe data — edit this one
-├── data/                   ← Auto-created on startup; server copies yaml here for solver
-│   └── recipes_complete.yaml
-├── scenarios/              ← Auto-created on first Save; your saved .yaml files live here
+### Factory Optimization
+- OR-Tools linear programming solver
+- Weighted multi-item objectives
+- Resource constraints
+- Production minimums, maximums, and exact requirements
+- Machine count limits
+- Power consumption limits
+- Power Shard support
+- Somersloop support
+
+### Recipe Management
+- Enable/disable alternate recipes
+- Enable/disable machine tiers
+- Searchable recipe database
+- Scenario-based planning
+
+### Interactive Graph
+- Automatic DAG layout generation
+- Pan and zoom
+- Node dragging
+- Expandable recipe details
+- Flow-rate visualization
+- Source, sink, surplus, and error tracking
+
+### Scenario System
+- Save scenarios
+- Load scenarios
+- Delete scenarios
+- Notes and documentation support
+
+---
+
+## Tech Stack
+
+### Backend
+- Python 3.11+
+- OR-Tools
+- PyYAML
+- Standard Library HTTP Server
+
+### Frontend
+- Vanilla JavaScript (ES Modules)
+- HTML5 Canvas
+- CSS
+
+### Desktop Wrapper
+- PyWebView
+
+---
+
+## Why This Project?
+
+Most factory planners focus on calculators.
+
+This project focuses on **optimization**.
+
+Given:
+
+- Available resources
+- Desired outputs
+- Machine restrictions
+- Power restrictions
+- Alternate recipe selections
+
+the solver determines the optimal production plan automatically.
+
+---
+
+## Project Structure
+
+```text
+satisfactory-planner/
 │
-├── index.html              ← Thin HTML shell — imports CSS/JS, zero embedded data
-└── frontend/
-    ├── style.css           ← All visual styles and CSS variables
-    ├── state.js            ← Shared mutable state (SC, RESULT, ALL_ITEMS, RECIPES, …)
-    ├── api.js              ← All fetch calls to the server (/api/items, /api/recipes, …)
-    ├── sidebar.js          ← Sidebar panels: KV editors, machines, alternates,
-    │                          recipe lookup, saved scenarios, topbar, warnings modal
-    └── graph.js            ← Canvas DAG renderer: layout, pan/zoom, node drag,
-                               click-to-expand, edge labels with actual flow rates
+├── app.py
+├── server.py
+├── solver.py
+├── recipes_complete.yaml
+│
+├── frontend/
+│   ├── graph.js
+│   ├── sidebar.js
+│   ├── state.js
+│   ├── api.js
+│   └── style.css
+│
+├── scenarios/
+│
+└── data/
 ```
 
 ---
 
-## Setup
+## Installation
+
+### Clone
 
 ```bash
-# 1. Install Python dependencies (once)
+git clone https://github.com/vajra-wielder/satisfactory-planner.git
+cd satisfactory-planner
+```
+
+### Install Dependencies
+
+```bash
 pip install ortools pyyaml pywebview
+```
 
-# 2. Copy solver.py from your original backend into this directory
-cp /path/to/your/original/solver.py .
+### Run
 
-# 3. Launch
+```bash
 python app.py
 ```
 
-`app.py` starts the server on port 5000 (pass a different port as `python app.py 5001`)
-then opens a native desktop window. The server also stays accessible in a browser
-at http://127.0.0.1:5000/ if you prefer that.
+The application launches as a native desktop window.
 
 ---
 
-## API endpoints
+## Solver Inputs
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/items` | Sorted list of all item keys; `?q=iron` for search |
-| GET | `/api/recipes` | All recipes: `{key: {display, machine, alternate, inputs, outputs}}` |
-| GET | `/api/item-display` | Map of `item_key → "Human Name"` |
-| GET | `/api/scenarios` | List of saved scenario metadata |
-| GET | `/api/scenarios/<name>` | Load a scenario YAML |
-| POST | `/api/scenarios/<name>` | Save a scenario |
-| DELETE | `/api/scenarios/<name>` | Delete a scenario |
-| POST | `/api/solve-inline` | Submit scenario JSON → get solver result |
+A scenario may contain:
 
----
-
-## Editing
-
-- **Recipes** — edit `recipes_complete.yaml` directly. Server copies it to `data/` on
-  next startup, so just restart `app.py` to pick up changes.
-- **Styles** — edit `frontend/style.css`. Reload the window (Ctrl+R) to apply.
-- **Graph behaviour** — edit `frontend/graph.js`.
-- **Sidebar panels** — edit `frontend/sidebar.js`.
-- **Shared state / data model** — edit `frontend/state.js`.
-- **Server routes** — edit `server.py`.
-
-No build step. All JS is vanilla ES modules, served directly.
+- Available Resources
+- Objective Outputs
+- Exact Production Targets
+- Minimum Production Targets
+- Maximum Production Targets
+- Power Limits
+- Machine Limits
+- Alternate Recipe Selection
+- Machine Availability
 
 ---
 
-## Graph controls
+## Graph Controls
 
-| Action | How |
-|--------|-----|
-| Pan | Click-drag on empty canvas |
-| Zoom | Scroll wheel, or +/− buttons |
-| Fit view | ⊡ button (bottom-left) |
-| Move a node | Click-drag the node |
-| Expand node detail (layout options) | Click the node (single click, no drag) |
-| Collapse | Click the expanded node again |
+| Action | Control |
+|----------|----------|
+| Pan | Drag empty canvas |
+| Zoom | Mouse wheel |
+| Move node | Drag node |
+| Expand node | Click node |
+| Fit graph | Fit button |
+
+---
+
+## Roadmap
+
+### Graph
+- Improved coordinate assignment
+- Focus mode
+- Search-to-node
+- Edge bundling
+- Semantic clustering
+- Minimap
+
+### Solver
+- Constraint-aware pruning
+- Dependency closure reduction
+- Sensitivity analysis
+- Bottleneck diagnostics
+
+### UX
+- Scenario diffing
+- Factory stages
+- Power analysis dashboard
+- Constraint conflict reporting
+
+---
+
+## Design Goals
+
+- Lightweight
+- No Electron
+- No Node.js
+- No Build Step
+- Fully Local
+- Fast Solve Times
+- Large Factory Support
+- Easy Modding
+
+---
+
+## Contributing
+
+Issues, feature requests, and pull requests are welcome.
+
+Please open an issue before making major architectural changes.
+
+---
+
+## License
+
+MIT License
+
+---
+
+## Disclaimer
+
+Satisfactory is developed by Coffee Stain Studios.
+
+This project is an independent fan-made tool and is not affiliated with or endorsed by Coffee Stain Studios.
