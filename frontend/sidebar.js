@@ -1,15 +1,17 @@
 /**
- * sidebar.js — all sidebar panel logic.
- * Data (items, recipes) is fetched from the server via api.js.
+ * sidebar.js — sidebar panels (Build, Machines & Alts, Saved tabs).
+ * Recipe lookup → recipe-lookup.js
+ * Analysis modal → analysis.js
  */
 
 import {
   SC, RESULT, ALL_ITEMS, RECIPES,
   mCol, MABBR, itemName, MTIERS, ALL_MACHINES,
 } from './state.js';
-import { fetchItems } from './api.js';
 
-// ── Section collapse ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// SECTION COLLAPSE
+// ══════════════════════════════════════════════════════════
 export function toggleSec(id) {
   const sec  = document.getElementById('sec-' + id);
   const body = sec.querySelector('.secb');
@@ -19,23 +21,45 @@ export function toggleSec(id) {
   chev.textContent   = hide ? '▼' : '▶';
 }
 
-// ── Tabs ──────────────────────────────────────────────────
-const TABS = ['build', 'machines', 'alts', 'recipes', 'saved'];
+// ══════════════════════════════════════════════════════════
+// TABS  (Build | Machines & Alts | Saved)
+// ══════════════════════════════════════════════════════════
+const TABS = ['build', 'machalt', 'saved'];
+
 export function initTabs(onTabChange) {
   document.querySelectorAll('.tabbt').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tabbt').forEach(b => b.classList.remove('act'));
       btn.classList.add('act');
       const tab = btn.dataset.tab;
-      TABS.forEach(t => { document.getElementById('tab-' + t).style.display = t === tab ? '' : 'none'; });
+      TABS.forEach(t => {
+        const el = document.getElementById('tab-' + t);
+        if (el) el.style.display = t === tab ? '' : 'none';
+      });
+      // Sync rail
+      document.querySelectorAll('.rail-btn[data-tab]').forEach(b =>
+        b.classList.toggle('act', b.dataset.tab === tab));
       onTabChange(tab);
     });
   });
 }
 
-// ── Autocomplete ──────────────────────────────────────────
-// Searches by both item key and display name, shows display name in dropdown
-export function makeAC(input, onPick) {
+// Called by rail buttons when sidebar is collapsed
+export function activateTab(tab) {
+  document.querySelectorAll('.tabbt').forEach(b =>
+    b.classList.toggle('act', b.dataset.tab === tab));
+  TABS.forEach(t => {
+    const el = document.getElementById('tab-' + t);
+    if (el) el.style.display = t === tab ? '' : 'none';
+  });
+  document.querySelectorAll('.rail-btn[data-tab]').forEach(b =>
+    b.classList.toggle('act', b.dataset.tab === tab));
+}
+
+// ══════════════════════════════════════════════════════════
+// AUTOCOMPLETE  (shared helper)
+// ══════════════════════════════════════════════════════════
+export function makeAC(input, onPick, dropParent) {
   let drop = null, cursor = -1;
 
   function suggestions(q) {
@@ -44,12 +68,11 @@ export function makeAC(input, onPick) {
     const qd = q.toLowerCase();
     return ALL_ITEMS
       .map(key => {
-        const kl = key.toLowerCase();
-        const dl = itemName(key).toLowerCase();
+        const kl = key.toLowerCase(), dl = itemName(key).toLowerCase();
         let score = 0;
-        if (kl.startsWith(ql) || dl.startsWith(qd))            score = 3;
-        else if (kl.includes(ql) || dl.includes(qd))           score = 2;
-        else if (dl.includes(qd.replace(/_/g, ' ')))           score = 1;
+        if (kl.startsWith(ql) || dl.startsWith(qd))  score = 3;
+        else if (kl.includes(ql) || dl.includes(qd))  score = 2;
+        else if (dl.includes(qd.replace(/_/g, ' ')))  score = 1;
         return { key, score };
       })
       .filter(x => x.score > 0)
@@ -65,16 +88,14 @@ export function makeAC(input, onPick) {
     drop = document.createElement('div');
     drop.className = 'acd';
     s.forEach(key => {
-      const d  = document.createElement('div');
+      const d = document.createElement('div');
       d.className = 'aci';
-      const dn = itemName(key);
-      // Show display name; if internal key differs meaningfully, show it too
-      d.textContent = dn;
+      d.textContent = itemName(key);
       d.dataset.key = key;
       d.addEventListener('mousedown', ev => { ev.preventDefault(); pick(key); });
       drop.appendChild(d);
     });
-    input.parentNode.appendChild(drop);
+    (dropParent || input.parentNode).appendChild(drop);
   }
 
   function closeDrop() {
@@ -90,18 +111,34 @@ export function makeAC(input, onPick) {
 
   input.addEventListener('focus', openDrop);
   input.addEventListener('input', () => { closeDrop(); openDrop(); });
-  input.addEventListener('blur',  () => setTimeout(closeDrop, 150));
+  input.addEventListener('blur',  () => setTimeout(closeDrop, 160));
   input.addEventListener('keydown', e => {
-    if (!drop) return;
-    const items = drop.querySelectorAll('.aci');
-    if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(cursor + 1, items.length - 1); items.forEach((el, i) => el.classList.toggle('active', i === cursor)); }
-    if (e.key === 'ArrowUp')   { e.preventDefault(); cursor = Math.max(cursor - 1, 0);                items.forEach((el, i) => el.classList.toggle('active', i === cursor)); }
-    if (e.key === 'Enter' && cursor >= 0) { e.preventDefault(); pick(items[cursor].dataset.key); }
+    if (!drop) {
+      // No autocomplete open — Enter on a non-empty input picks the top suggestion
+      if (e.key === 'Enter' && input.value.trim()) {
+        const top = suggestions(input.value)[0];
+        if (top) { e.preventDefault(); pick(top); }
+      }
+      return;
+    }
+    const its = drop.querySelectorAll('.aci');
+    if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(cursor + 1, its.length - 1); its.forEach((el, i) => el.classList.toggle('active', i === cursor)); }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); cursor = Math.max(cursor - 1, 0);               its.forEach((el, i) => el.classList.toggle('active', i === cursor)); }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // If user arrowed to a specific item use it, otherwise pick the top result
+      const key = cursor >= 0 ? its[cursor].dataset.key : its[0]?.dataset.key;
+      if (key) pick(key);
+    }
     if (e.key === 'Escape') closeDrop();
   });
+
+  return { closeDrop };
 }
 
-// ── KV editor ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// KV EDITOR
+// ══════════════════════════════════════════════════════════
 const KVS = {
   res:  { field: 'available_resources', rows: [] },
   obj:  { field: 'objective',           rows: [] },
@@ -127,8 +164,9 @@ export function renderKv(name) {
     ki.value = row.key ? itemName(row.key) : '';
     ki.addEventListener('change', () => {
       const raw = ki.value.trim().replace(/\s+/g, '_');
-      const found = ALL_ITEMS.find(k => k.toLowerCase() === raw.toLowerCase()
-                                    || itemName(k).toLowerCase() === ki.value.trim().toLowerCase());
+      const found = ALL_ITEMS.find(k =>
+        k.toLowerCase() === raw.toLowerCase() ||
+        itemName(k).toLowerCase() === ki.value.trim().toLowerCase());
       row.key = found || raw;
       syncKv(name);
     });
@@ -150,54 +188,56 @@ export function renderKv(name) {
 
 export function addKv(name) { KVS[name].rows.push({ key: '', val: '' }); renderKv(name); }
 
-export function loadKvFromScenario(name) {
+function loadKvFromScenario(name) {
   const st = KVS[name];
   st.rows = Object.entries(SC[st.field] || {}).map(([key, val]) => ({ key, val: String(val) }));
   renderKv(name);
 }
 export function loadAllKv() { Object.keys(KVS).forEach(loadKvFromScenario); }
 
-// ── Fill / read UI ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// FILL / READ UI
+// ══════════════════════════════════════════════════════════
 export function fillUI() {
   document.getElementById('sc-name').value = SC.name || '';
   document.getElementById('sc-desc').value = SC.description || '';
   document.getElementById('sc-sh').value   = SC.power_shards_available ?? '';
   document.getElementById('sc-sl').value   = SC.somersloops_available  ?? '';
   document.getElementById('sc-mp').value   = SC.max_power_mw           ?? '';
-  document.getElementById('sc-mm').value   = SC.max_machines            ?? '';
+  document.getElementById('sc-mm').value   = SC.max_machines           ?? '';
   document.getElementById('sc-nt').value   = SC.notes || '';
   loadAllKv();
-  renderMachines();
-  updMachBadge();
-  renderAlts();
-  updAltBadge();
+  renderMachines(); updMachBadge();
+  renderAlts();     updAltBadge();
 }
 
 export function readUI() {
-  SC.name                    = document.getElementById('sc-name').value || 'New Factory';
-  SC.description             = document.getElementById('sc-desc').value || '';
-  SC.power_shards_available  = pn(document.getElementById('sc-sh').value);
-  SC.somersloops_available   = pn(document.getElementById('sc-sl').value);
-  SC.max_power_mw            = pn(document.getElementById('sc-mp').value);
-  SC.max_machines            = pn(document.getElementById('sc-mm').value);
-  SC.notes                   = document.getElementById('sc-nt').value || '';
+  SC.name                   = document.getElementById('sc-name').value || 'New Factory';
+  SC.description            = document.getElementById('sc-desc').value || '';
+  SC.power_shards_available = pn(document.getElementById('sc-sh').value);
+  SC.somersloops_available  = pn(document.getElementById('sc-sl').value);
+  SC.max_power_mw           = pn(document.getElementById('sc-mp').value);
+  SC.max_machines           = pn(document.getElementById('sc-mm').value);
+  SC.notes                  = document.getElementById('sc-nt').value || '';
   Object.keys(KVS).forEach(syncKv);
 }
 
 function pn(v) { return (v === '' || v == null) ? null : parseFloat(v) || 0; }
 
-// ── Machines panel ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// MACHINES PANEL
+// ══════════════════════════════════════════════════════════
 export function renderMachines() {
   const p  = document.getElementById('machpanel'); p.innerHTML = '';
   const en = new Set(SC.enabled_machines.length ? SC.enabled_machines : ALL_MACHINES);
 
   MTIERS.forEach(tier => {
-    const wrap = document.createElement('div'); wrap.style.marginBottom = '10px';
-    const hdr  = document.createElement('div'); hdr.style.cssText = 'display:flex;align-items:center;gap:5px;margin-bottom:5px';
+    const wrap = document.createElement('div'); wrap.style.marginBottom = '8px';
+    const hdr  = document.createElement('div'); hdr.style.cssText = 'display:flex;align-items:center;gap:5px;margin-bottom:4px';
     const hbtn = document.createElement('button');
-    hbtn.className = 'bsm' + (tier.ms.every(m => en.has(m)) ? ' act' : '');
-    hbtn.style.cssText = 'font-size:10px;padding:2px 8px';
-    hbtn.textContent = tier.label;
+    hbtn.className    = 'bsm' + (tier.ms.every(m => en.has(m)) ? ' act' : '');
+    hbtn.style.cssText = 'font-size:10px;padding:2px 7px';
+    hbtn.textContent  = tier.label;
     hbtn.addEventListener('click', () => {
       const aon = tier.ms.every(m => en.has(m));
       tier.ms.forEach(m => aon ? en.delete(m) : en.add(m));
@@ -206,7 +246,7 @@ export function renderMachines() {
     hdr.appendChild(hbtn); wrap.appendChild(hdr);
 
     const chips = document.createElement('div');
-    chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding-left:2px';
+    chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;padding-left:2px';
     tier.ms.forEach(m => {
       const on   = en.has(m); const c = mCol(m);
       const chip = document.createElement('div'); chip.className = 'mchip';
@@ -220,40 +260,37 @@ export function renderMachines() {
 }
 
 function saveEn(en) {
-  const next = [...en];
-  SC.enabled_machines = next.length === ALL_MACHINES.length ? [] : next;
+  SC.enabled_machines = [...en].length === ALL_MACHINES.length ? [] : [...en];
   renderMachines(); updMachBadge();
 }
-
 export function updMachBadge() {
-  document.getElementById('mb').textContent =
-    SC.enabled_machines.length ? `${SC.enabled_machines.length}/${ALL_MACHINES.length}` : 'All';
+  const el = document.getElementById('mb');
+  if (el) el.textContent = SC.enabled_machines.length
+    ? `${SC.enabled_machines.length}/${ALL_MACHINES.length}` : 'All';
 }
 
-// ── Alternates panel ──────────────────────────────────────
-// Alt families fetched from server RECIPES, grouped by a heuristic
-let ALT_FAMILIES = null; // built lazily from RECIPES
-
+// ══════════════════════════════════════════════════════════
+// ALTERNATES PANEL
+// ══════════════════════════════════════════════════════════
+let ALT_FAMILIES = null;
 function buildAltFamilies() {
   if (ALT_FAMILIES) return ALT_FAMILIES;
-  // Group all alternate recipes by a simple family heuristic based on outputs
   const families = {};
+  const FAMILY_MAP = [
+    [['Iron_Ingot','Iron_Plate','Iron_Rod','Reinforced_Iron_Plate','Modular_Frame','Rotor','Stator','Motor','Screw','Wire','Iron_Rebar','Heavy_Modular_Frame','Smart_Plating','Automated_Wiring'], 'Iron'],
+    [['Steel_Ingot','Steel_Beam','Steel_Pipe','Encased_Industrial_Beam','Versatile_Framework'], 'Steel'],
+    [['Copper_Ingot','Copper_Sheet','Wire','Cable','Quickwire'], 'Copper'],
+    [['Caterium_Ingot','Quickwire'], 'Caterium'],
+    [['Circuit_Board','Circuit_Board_HS','Computer','Supercomputer','High_Speed_Connector','Crystal_Oscillator','Heat_Sink','Cooling_System','Battery','Electromagnetic_Control_Rod','Turbo_Motor'], 'Electronics'],
+    [['Fuel','Turbofuel','Rocket_Fuel','Heavy_Oil_Residue','Plastic','Rubber','Polymer_Resin','Fabric','Empty_Canister','Concrete','Compacted_Coal'], 'Oil & Fuel'],
+    [['Alumina_Solution','Aluminum_Scrap','Aluminum_Ingot','Silica','Quartz_Crystal','Dissolved_Silica','Aluminum_Casing'], 'Aluminum'],
+    [['Encased_Uranium_Cell','Uranium_Fuel_Rod','Non_Fissile_Uranium','Encased_Plutonium_Cell','Plutonium_Fuel_Rod'], 'Nuclear'],
+    [['Dark_Matter_Crystal','Diamonds','Time_Crystal','Ionized_Fuel'], 'Quantum'],
+  ];
   Object.entries(RECIPES).forEach(([key, r]) => {
     if (!r.alternate) return;
-    // Determine family from outputs
     const outKeys = Object.keys(r.outputs);
     let fam = 'Other';
-    const FAMILY_MAP = [
-      [['Iron_Ingot','Iron_Plate','Iron_Rod','Reinforced_Iron_Plate','Modular_Frame','Rotor','Stator','Motor','Screw','Wire','Iron_Rebar','Heavy_Modular_Frame','Smart_Plating','Automated_Wiring'], 'Iron & Steel'],
-      [['Steel_Ingot','Steel_Beam','Steel_Pipe','Encased_Industrial_Beam','Versatile_Framework'], 'Steel'],
-      [['Copper_Ingot','Copper_Sheet','Wire','Cable','Quickwire'], 'Copper'],
-      [['Caterium_Ingot','Quickwire'], 'Caterium'],
-      [['Circuit_Board','Circuit_Board_HS','Computer','Supercomputer','High_Speed_Connector','Crystal_Oscillator','Heat_Sink','Cooling_System','Battery','Electromagnetic_Control_Rod','Turbo_Motor'], 'Electronics'],
-      [['Fuel','Turbofuel','Rocket_Fuel','Heavy_Oil_Residue','Plastic','Rubber','Polymer_Resin','Fabric','Empty_Canister','Concrete','Compacted_Coal'], 'Oil & Fuel'],
-      [['Alumina_Solution','Aluminum_Scrap','Aluminum_Ingot','Silica','Quartz_Crystal','Dissolved_Silica','Aluminum_Casing'], 'Aluminum'],
-      [['Encased_Uranium_Cell','Uranium_Fuel_Rod','Non_Fissile_Uranium','Encased_Plutonium_Cell','Plutonium_Fuel_Rod'], 'Nuclear'],
-      [['Dark_Matter_Crystal','Diamonds','Time_Crystal','Ionized_Fuel'], 'Quantum'],
-    ];
     for (const [items, f] of FAMILY_MAP) {
       if (outKeys.some(k => items.includes(k))) { fam = f; break; }
     }
@@ -275,14 +312,14 @@ export function renderAlts() {
     const cnt   = fKeys.filter(k => en.has(k)).length;
     const open  = !!altFamOpen[fam];
 
-    const wrap = document.createElement('div'); wrap.style.marginBottom = '4px';
+    const wrap = document.createElement('div'); wrap.style.marginBottom = '3px';
     const hdr  = document.createElement('div');
-    hdr.style.cssText = 'display:flex;align-items:center;gap:5px;margin-bottom:' + (open ? '3' : '0') + 'px';
+    hdr.style.cssText = `display:flex;align-items:center;gap:5px;margin-bottom:${open ? '3' : '0'}px`;
 
     const hbtn = document.createElement('button');
-    hbtn.className = 'bsm' + (cnt === fKeys.length ? ' act' : '');
-    hbtn.style.cssText = 'font-size:10px;padding:2px 6px;min-width:30px';
-    hbtn.textContent = `${cnt}/${fKeys.length}`;
+    hbtn.className    = 'bsm' + (cnt === fKeys.length ? ' act' : '');
+    hbtn.style.cssText = 'font-size:10px;padding:2px 5px;min-width:28px';
+    hbtn.textContent  = `${cnt}/${fKeys.length}`;
     hbtn.addEventListener('click', () => {
       const aon = fKeys.every(k => en.has(k));
       aon ? fKeys.forEach(k => en.delete(k)) : fKeys.forEach(k => en.add(k));
@@ -290,7 +327,7 @@ export function renderAlts() {
     });
 
     const ft = document.createElement('div');
-    ft.style.cssText = 'cursor:pointer;flex:1;font-size:12px;font-weight:500;color:var(--t2);display:flex;align-items:center;gap:3px';
+    ft.style.cssText = 'cursor:pointer;flex:1;font-size:11px;font-weight:500;color:var(--t2);display:flex;align-items:center;gap:3px';
     ft.innerHTML = `${fam} <span style="font-size:10px;color:var(--t3)">${open ? '▼' : '▶'}</span>`;
     ft.addEventListener('click', () => { altFamOpen[fam] = !altFamOpen[fam]; renderAlts(); });
 
@@ -308,130 +345,26 @@ export function renderAlts() {
     });
     p.appendChild(wrap);
   });
-
   updAltBadge();
 }
 
 export function updAltBadge() {
-  const fams    = buildAltFamilies();
-  const total   = Object.values(fams).flat().length;
-  const enabled = (SC.alternate_recipes_enabled || []).length;
-  document.getElementById('ab').textContent = `${enabled}/${total}`;
+  const el = document.getElementById('ab'); if (!el) return;
+  const fams  = buildAltFamilies();
+  const total = Object.values(fams).flat().length;
+  el.textContent = `${(SC.alternate_recipes_enabled || []).length}/${total}`;
 }
-
-export function altsAll() {
+export function altsAll()  {
   const fams = buildAltFamilies();
   SC.alternate_recipes_enabled = Object.values(fams).flat().map(a => a.key);
   renderAlts(); updAltBadge();
 }
 export function altsNone() { SC.alternate_recipes_enabled = []; renderAlts(); updAltBadge(); }
 
-// ── Recipe lookup tab ─────────────────────────────────────
-export function initRecipeLookup() {
-  const inp = document.getElementById('rl-input');
-  makeAC(inp, key => { inp.value = itemName(key); showRecipeLookup(key); });
-  inp.addEventListener('input', () => {
-    const raw = inp.value.trim();
-    if (!raw) { document.getElementById('rl-results').innerHTML = ''; return; }
-    const ql  = raw.toLowerCase();
-    const found = ALL_ITEMS.find(k =>
-      itemName(k).toLowerCase() === ql || k.toLowerCase() === ql.replace(/\s+/g, '_')
-    );
-    if (found) showRecipeLookup(found);
-    else document.getElementById('rl-results').innerHTML =
-      '<p style="font-size:11px;color:var(--t3)">Keep typing…</p>';
-  });
-}
 
-function showRecipeLookup(item) {
-  const el = document.getElementById('rl-results'); el.innerHTML = '';
-  const produces = [], consumes = [];
-  Object.entries(RECIPES).forEach(([key, r]) => {
-    if (r.outputs[item])       produces.push({ key, r });
-    else if (r.inputs[item])   consumes.push({ key, r });
-  });
-
-  if (!produces.length && !consumes.length) {
-    el.innerHTML = `<p style="font-size:11px;color:var(--t3)">No recipes found for <b>${itemName(item)}</b>.</p>`;
-    return;
-  }
-
-  function recipeCard(key, r, role) {
-    const color    = mCol(r.machine);
-    const cleanDisp = r.display.replace(/^Alternate:\s*/i, '').replace(/\s*\(Alt\)/, '');
-    const rate     = role === 'prod' ? (r.outputs[item] || 0) : (r.inputs[item] || 0);
-    const card     = document.createElement('div');
-    card.className = 'rlcard ' + (role === 'prod' ? 'prod' : 'cons');
-
-    let ioHTML = '';
-    Object.entries(r.inputs ).forEach(([k, v]) => { ioHTML += `<div class="rlrow"><span>← ${itemName(k)}</span><span>${v}/min</span></div>`; });
-    ioHTML += '<div style="border-top:1px solid var(--b);margin:3px 0"></div>';
-    Object.entries(r.outputs).forEach(([k, v]) => { ioHTML += `<div class="rlrow"><span style="color:var(--ok)">→ ${itemName(k)}</span><span>${v}/min</span></div>`; });
-
-    const roleLabel = role === 'prod'
-      ? '<span style="color:var(--ok)">produces</span>'
-      : '<span style="color:#3b82f6">consumes</span>';
-
-    card.innerHTML = `
-      <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px;flex-wrap:wrap">
-        <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${color}22;color:${color};border:1px solid ${color}44;font-family:var(--mono);font-weight:600">${MABBR[r.machine] || r.machine}</span>
-        ${r.alternate ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--acc-glow);color:var(--acc);border:1px solid var(--acc)">ALT</span>' : ''}
-        <span class="rlrname">${cleanDisp}</span>
-        <span style="margin-left:auto;font-size:10px">${roleLabel} ${Number(rate).toFixed(2)}/min</span>
-      </div>
-      ${ioHTML}
-    `;
-    el.appendChild(card);
-  }
-
-  if (produces.length) {
-    const hd = document.createElement('div');
-    hd.style.cssText = 'font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--ok);margin-bottom:4px;margin-top:2px';
-    hd.textContent = `Produced by (${produces.length})`;
-    el.appendChild(hd);
-    produces.forEach(({ key, r }) => recipeCard(key, r, 'prod'));
-  }
-  if (consumes.length) {
-    const hd = document.createElement('div');
-    hd.style.cssText = 'font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#3b82f6;margin-bottom:4px;margin-top:6px';
-    hd.textContent = `Used in (${consumes.length})`;
-    el.appendChild(hd);
-    consumes.forEach(({ key, r }) => recipeCard(key, r, 'cons'));
-  }
-}
-
-// ── Topbar status badges ──────────────────────────────────
-export function renderTopbar(openWarnFn) {
-  const el = document.getElementById('tbst'); el.innerHTML = '';
-  const badge = (txt, cls = '', style = '', onclick = null) => {
-    const s = document.createElement('span'); s.className = 'tbb ' + cls;
-    if (style) s.style.cssText = style;
-    if (onclick) s.addEventListener('click', onclick);
-    s.textContent = txt; el.appendChild(s);
-  };
-  if (SC.name) badge(SC.name);
-  if (!RESULT) return;
-  const st = RESULT.status || '';
-  if (st.startsWith('Optimal')) {
-    const objs = Object.entries(RESULT.objective_items || {}).filter(([, v]) => v > 0)
-      .map(([k, v]) => `${v.toFixed(1)} ${itemName(k)}/min`).join(' · ');
-    badge('✓ ' + (objs || 'Optimal'), 'ok');
-  } else if (RESULT.status) badge('✗ ' + st, 'err');
-  if (RESULT.total_power_mw  > 0) badge(`⚡ ${RESULT.total_power_mw.toFixed(0)} MW`,  '', 'color:var(--warn);border-color:var(--warn)');
-  if (RESULT.total_machines  > 0) badge(`🏭 ${RESULT.total_machines} machines`,        '', 'color:var(--info);border-color:var(--info)');
-  if (RESULT.shards_used     > 0) badge(`💎 ${RESULT.shards_used} shards`,             '', 'color:#3b82f6;border-color:#3b82f6');
-  if (RESULT.sloops_used     > 0) badge(`🔮 ${RESULT.sloops_used} sloops`,             '', 'color:#a855f7;border-color:#a855f7');
-  const wc  = (RESULT.conflict_hints?.length ?? 0) + (RESULT.warnings?.length ?? 0);
-  const ec  = Object.keys(RESULT.error_sources  ?? {}).length + Object.keys(RESULT.error_sinks ?? {}).length;
-  const sc2 = Object.keys(RESULT.surplus_intermediates ?? {}).length;
-  const tot = wc + ec + sc2;
-  if (tot > 0) {
-    const col = ec > 0 ? 'var(--err)' : sc2 > 0 ? '#f59e0b' : 'var(--warn)';
-    badge(`⚠ ${tot} issue${tot !== 1 ? 's' : ''}`, '', `color:${col};border-color:${col};cursor:pointer`, openWarnFn);
-  }
-}
-
-// ── Warnings modal ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// WARNINGS MODAL
+// ══════════════════════════════════════════════════════════
 export function openWarn() {
   if (!RESULT) return;
   const items = [
@@ -441,9 +374,9 @@ export function openWarn() {
     ...(RESULT.conflict_hints ?? []).map(t => ({ t: 'warning', txt: t })),
     ...(RESULT.warnings       ?? []).map(t => ({ t: 'info',    txt: t })),
   ];
-  const COL = { error: 'var(--err)', warning: 'var(--warn)', info: 'var(--t3)', surplus: '#f59e0b' };
-  const BG  = { error: 'var(--err-dim)', warning: 'var(--warn-dim)', info: 'var(--p3)', surplus: 'rgba(245,158,11,.1)' };
-  const ICO = { error: '✕', warning: '⚠', info: 'ℹ', surplus: '↗' };
+  const COL = { error:'var(--err)', warning:'var(--warn)', info:'var(--t3)', surplus:'#f59e0b' };
+  const BG  = { error:'var(--err-dim)', warning:'var(--warn-dim)', info:'var(--p3)', surplus:'rgba(245,158,11,.1)' };
+  const ICO = { error:'✕', warning:'⚠', info:'ℹ', surplus:'↗' };
   document.getElementById('wmtit').textContent = `Solve Issues — ${items.length}`;
   const list = document.getElementById('wmit-list'); list.innerHTML = '';
   items.forEach(({ t, txt }) => {
@@ -456,7 +389,9 @@ export function openWarn() {
 }
 export function closeWarn() { document.getElementById('wo').classList.remove('show'); }
 
-// ── Results bar ───────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// RESULTS BAR + BUILD COST
+// ══════════════════════════════════════════════════════════
 export function renderResultsBar() {
   const rb = document.getElementById('rb');
   if (!RESULT?.status?.startsWith('Optimal')) { rb.style.display = 'none'; return; }
@@ -474,7 +409,6 @@ export function renderResultsBar() {
   rb.innerHTML = h;
 }
 
-// ── Build cost panel ──────────────────────────────────────
 let bcOpen = false;
 export function toggleBC() { bcOpen = !bcOpen; renderBuildCost(); }
 export function renderBuildCost() {
@@ -495,19 +429,13 @@ export function renderBuildCost() {
     r.innerHTML = `<span>${itemName(item)}</span><span>×${qty}</span>`;
     body.appendChild(r);
   });
-  if (shards) {
-    const r = document.createElement('div'); r.className = 'bcr';
-    r.innerHTML = `<span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span>`;
-    body.appendChild(r);
-  }
-  if (sloops) {
-    const r = document.createElement('div'); r.className = 'bcr';
-    r.innerHTML = `<span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span>`;
-    body.appendChild(r);
-  }
+  if (shards) { const r = document.createElement('div'); r.className = 'bcr'; r.innerHTML = `<span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span>`; body.appendChild(r); }
+  if (sloops) { const r = document.createElement('div'); r.className = 'bcr'; r.innerHTML = `<span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span>`; body.appendChild(r); }
 }
 
-// ── Saved scenarios tab ───────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// SAVED SCENARIOS TAB
+// ══════════════════════════════════════════════════════════
 export function renderSaved(saved, onLoad, onDelete) {
   const el = document.getElementById('savedlist');
   if (!saved.length) { el.innerHTML = '<p style="font-size:12px;color:var(--t3)">No saved scenarios.</p>'; return; }
@@ -515,11 +443,10 @@ export function renderSaved(saved, onLoad, onDelete) {
   saved.forEach(s => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:5px;margin-bottom:5px;padding:6px 8px;background:var(--p3);border-radius:var(--rsm);border:1px solid var(--b)';
-    const res = (s.resources || []).slice(0, 3).join(', ');
     row.innerHTML = `
       <div style="flex:1">
         <div style="font-size:12px;color:var(--t)">${s.name}</div>
-        <div style="font-size:10px;color:var(--t3);margin-top:1px">${res}</div>
+        <div style="font-size:10px;color:var(--t3);margin-top:1px">${(s.resources||[]).slice(0,3).join(', ')}</div>
       </div>
       <button class="bsm">Load</button>
       <button class="bsm dan">✕</button>

@@ -6,215 +6,718 @@
 <title>Satisfactory Factory Planner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/frontend/style.css">
+<style>
+/* ── Reset + CSS vars ───────────────────────────────────── */
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0c0e13;
+  --panel:    #13161e;
+  --p2:       #191d28;
+  --p3:       #1f2435;
+  --b:        #272d3d;
+  --b2:       #323a50;
+  --t:        #e8eaf0;
+  --t2:       #9aa0b4;
+  --t3:       #616880;
+  --acc:      #f59e0b;
+  --acc-glow: rgba(245,158,11,.15);
+  --ok:       #22c55e;
+  --ok-dim:   rgba(34,197,94,.12);
+  --err:      #ef4444;
+  --err-dim:  rgba(239,68,68,.12);
+  --info:     #38bdf8;
+  --warn:     #fb923c;
+  --warn-dim: rgba(251,146,60,.12);
+  --font:     'Inter', system-ui, sans-serif;
+  --mono:     'JetBrains Mono', monospace;
+  --sw:       334px;
+  --sw-rail:  44px;
+  --th:       44px;
+  --r:        10px;
+  --rsm:      6px;
+  --rlg:      14px;
+  --sb-dur:   220ms;
+  --sb-ease:  cubic-bezier(.4,0,.2,1);
+}
+
+html, body {
+  height: 100%; width: 100%;
+  overflow: hidden;
+  background: var(--bg); color: var(--t);
+  font-family: var(--font); font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--panel); }
+::-webkit-scrollbar-thumb { background: var(--b2); border-radius: 3px; }
+
+/* ══════════════════════════════════════════════════════════
+   LAYOUT
+══════════════════════════════════════════════════════════ */
+#app {
+  display: grid;
+  grid-template-rows: var(--th) 1fr;
+  grid-template-columns: var(--sw) 1fr;
+  grid-template-areas: "tb tb" "sb gr";
+  height: 100vh; width: 100vw;
+  transition: grid-template-columns var(--sb-dur) var(--sb-ease);
+}
+#app.sb-collapsed {
+  grid-template-columns: var(--sw-rail) 1fr;
+}
+
+/* ══════════════════════════════════════════════════════════
+   TOPBAR
+══════════════════════════════════════════════════════════ */
+#topbar {
+  grid-area: tb;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--b);
+  z-index: 100;
+  overflow: visible;   /* allow recipe panel to overflow below */
+  position: relative;
+}
+
+/* Sidebar toggle button */
+#sb-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px;
+  background: transparent; border: 1px solid var(--b);
+  border-radius: var(--rsm); color: var(--t3); cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+  flex-shrink: 0;
+}
+#sb-toggle:hover { color: var(--acc); border-color: var(--acc); background: var(--acc-glow); }
+
+/* Logo */
+.tbl {
+  font-size: 14px; font-weight: 700; color: var(--acc);
+  display: flex; align-items: center; gap: 7px; flex-shrink: 0;
+}
+
+/* Recipe lookup wrapper — absolutely centered in topbar */
+#tb-rl-wrap {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  flex-shrink: 0;
+}
+#tb-rl-wrap input {
+  width: 300px;
+  background: var(--p3); border: 1px solid var(--b);
+  border-radius: var(--rsm); color: var(--t);
+  font-family: var(--mono); font-size: 12px;
+  padding: 5px 8px 5px 28px;
+  outline: none; transition: border-color .15s;
+}
+#tb-rl-wrap input:focus { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc-glow); }
+
+/* Floating recipe results panel */
+#tb-rl-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 440px;
+  max-height: 70vh;
+  background: var(--p2);
+  border: 1px solid var(--b2);
+  border-radius: var(--rlg);
+  box-shadow: 0 16px 48px rgba(0,0,0,.7);
+  z-index: 500;
+  flex-direction: column;
+  overflow: hidden;
+}
+#tb-rl-results {
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+  max-height: 70vh;
+}
+
+/* Topbar action buttons */
+.tb-action-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 11px;
+  border: 1px solid var(--b2); border-radius: var(--rsm);
+  background: var(--p3); color: var(--t2);
+  font-size: 11px; font-family: var(--font); cursor: pointer;
+  transition: all .12s; white-space: nowrap;
+}
+.tb-action-btn:hover { border-color: var(--acc); color: var(--acc); background: var(--acc-glow); }
+.tb-action-btn.warn {
+  border-color: var(--issue-col, var(--warn));
+  color: var(--issue-col, var(--warn));
+  background: rgba(251,146,60,.1);
+}
+.tb-action-btn.warn:hover { opacity: .8; }
+.tb-action-btn.pinboard-active {
+  border-color: var(--acc);
+  color: var(--acc);
+  background: var(--acc-glow);
+  box-shadow: 0 0 0 1px var(--acc);
+}
+
+/* ══════════════════════════════════════════════════════════
+   SIDEBAR SHELL
+══════════════════════════════════════════════════════════ */
+#sidebar {
+  grid-area: sb;
+  background: var(--panel);
+  border-right: 1px solid var(--b);
+  overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  position: relative;
+}
+
+/* ── Icon rail (always visible) ──────────────────────────── */
+#sb-rail {
+  width: var(--sw-rail);
+  min-width: var(--sw-rail);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 0;
+  border-right: 1px solid var(--b);
+  background: var(--panel);
+  z-index: 2;
+}
+
+/* Rail buttons */
+.rail-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px;
+  border-radius: var(--rsm);
+  border: 1px solid transparent;
+  background: transparent; color: var(--t3);
+  cursor: pointer;
+  transition: color .12s, background .12s, border-color .12s;
+}
+.rail-btn:hover { color: var(--t2); background: var(--p3); }
+.rail-btn.act   { color: var(--acc); background: var(--acc-glow); border-color: var(--b); }
+.rail-solve {
+  color: var(--acc) !important;
+  border-color: var(--acc) !important;
+  background: var(--acc-glow) !important;
+}
+.rail-solve:hover { background: rgba(245,158,11,.25) !important; }
+
+/* ── Full sidebar content ─────────────────────────────────── */
+#sb-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  /* Slide + fade out when collapsed */
+  transition: opacity var(--sb-dur) var(--sb-ease),
+              transform var(--sb-dur) var(--sb-ease);
+  transform-origin: left center;
+  min-width: 0;
+}
+#app.sb-collapsed #sb-content {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-12px);
+}
+
+/* ══════════════════════════════════════════════════════════
+   SIDEBAR PANELS
+══════════════════════════════════════════════════════════ */
+.pc { padding: 11px 13px; border-bottom: 1px solid var(--b); }
+.pt {
+  font-size: 10px; font-weight: 600;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--t3); margin-bottom: 7px;
+  display: flex; align-items: center; gap: 5px;
+  cursor: pointer; user-select: none;
+}
+.ptbadge { margin-left: 6px; font-size: 10px; color: var(--acc); font-family: var(--mono); }
+
+/* ══════════════════════════════════════════════════════════
+   TABS  (3 tabs, each fills equal width)
+══════════════════════════════════════════════════════════ */
+.tabbar {
+  display: flex;
+  border-bottom: 1px solid var(--b);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.tabbt {
+  flex: 1;
+  padding: 7px 4px;
+  font-size: 11px; font-weight: 500; color: var(--t3);
+  border: none; border-bottom: 2px solid transparent;
+  background: none; cursor: pointer;
+  transition: all .12s;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tabbt:hover { color: var(--t2); }
+.tabbt.act   { color: var(--acc); border-bottom-color: var(--acc); }
+
+/* ══════════════════════════════════════════════════════════
+   FORM INPUTS
+══════════════════════════════════════════════════════════ */
+input[type=text], input[type=number], select, textarea {
+  width: 100%;
+  background: var(--p3); border: 1px solid var(--b);
+  border-radius: var(--rsm); color: var(--t);
+  font-family: var(--mono); font-size: 12px;
+  padding: 5px 8px; outline: none;
+  transition: border-color .15s;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--acc);
+  box-shadow: 0 0 0 2px var(--acc-glow);
+}
+input[type=number] { appearance: textfield; }
+input[type=number]::-webkit-inner-spin-button { display: none; }
+
+/* ══════════════════════════════════════════════════════════
+   KV ROWS
+══════════════════════════════════════════════════════════ */
+.kvr {
+  display: grid; grid-template-columns: 1fr 74px 20px;
+  gap: 3px; margin-bottom: 3px; align-items: center;
+}
+.bi {
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border: none; border-radius: 3px;
+  background: transparent; color: var(--t3); cursor: pointer; font-size: 12px;
+  transition: color .1s, background .1s;
+}
+.bi:hover { color: var(--err); background: var(--err-dim); }
+.arb {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  padding: 4px; border: 1px dashed var(--b2); border-radius: var(--rsm);
+  background: transparent; color: var(--t3); font-size: 11px; cursor: pointer;
+  transition: all .15s; margin-top: 2px;
+}
+.arb:hover { border-color: var(--acc); color: var(--acc); background: var(--acc-glow); }
+
+/* ══════════════════════════════════════════════════════════
+   AUTOCOMPLETE  (sidebar + topbar)
+══════════════════════════════════════════════════════════ */
+.acw { position: relative; }
+.acd {
+  position: absolute; top: calc(100% + 2px); left: 0; right: 0;
+  z-index: 600; background: var(--p2);
+  border: 1px solid var(--b2); border-radius: var(--rsm);
+  box-shadow: 0 8px 24px rgba(0,0,0,.6);
+  max-height: 180px; overflow-y: auto;
+}
+.aci {
+  padding: 5px 8px; font-family: var(--mono); font-size: 12px;
+  color: var(--t2); cursor: pointer; border-bottom: 1px solid var(--b);
+}
+.aci:last-child { border-bottom: none; }
+.aci:hover, .aci.active { background: var(--p3); color: var(--acc); }
+
+/* ══════════════════════════════════════════════════════════
+   BUTTONS
+══════════════════════════════════════════════════════════ */
+.bsolve {
+  width: 100%; padding: 10px; border: none; border-radius: var(--r);
+  background: var(--acc); color: #000; font-weight: 700; font-size: 13px;
+  cursor: pointer; transition: opacity .15s;
+}
+.bsolve:hover:not(:disabled) { opacity: .9; }
+.bsolve:disabled { opacity: .4; cursor: wait; }
+.bsm {
+  padding: 4px 8px; border: 1px solid var(--b2); border-radius: var(--rsm);
+  background: var(--p3); color: var(--t2); font-size: 11px; cursor: pointer;
+  transition: all .12s;
+}
+.bsm:hover { border-color: var(--acc); color: var(--acc); }
+.bsm.act   { border-color: var(--acc); color: var(--acc); background: var(--acc-glow); }
+.bsm.dan:hover { border-color: var(--err); color: var(--err); }
+
+/* ══════════════════════════════════════════════════════════
+   ALTERNATE RECIPE CHIPS
+══════════════════════════════════════════════════════════ */
+.altc {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 8px; border-radius: var(--rsm);
+  border: 1px solid var(--b); background: var(--p3);
+  margin-bottom: 2px; cursor: pointer; transition: all .12s;
+}
+.altc:hover { background: var(--p2); }
+.altc.act   { border-color: var(--acc); background: var(--acc-glow); }
+.altdot { width: 6px; height: 6px; border-radius: 50%; background: var(--b2); flex-shrink: 0; }
+.altc.act .altdot { background: var(--acc); }
+.altn { flex: 1; font-size: 11px; color: var(--t2); }
+.altm { font-size: 10px; color: var(--t3); font-family: var(--mono); }
+
+/* ══════════════════════════════════════════════════════════
+   MACHINE CHIPS
+══════════════════════════════════════════════════════════ */
+.mchip {
+  padding: 2px 7px; border-radius: 4px; cursor: pointer;
+  font-size: 11px; font-weight: 500;
+  border: 1px solid var(--b); background: var(--p3); color: var(--t3);
+  transition: all .12s; display: inline-flex;
+}
+
+/* ══════════════════════════════════════════════════════════
+   BUDGET GRID (overclocking)
+══════════════════════════════════════════════════════════ */
+.bgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.bcard { background: var(--p3); border: 1px solid var(--b); border-radius: var(--rsm); padding: 7px 9px; }
+.blbl  { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--t3); margin-bottom: 3px; }
+.blbl.sh { color: var(--acc); }
+.blbl.sl { color: #a855f7; }
+
+/* ══════════════════════════════════════════════════════════
+   SIDEBAR STICKY BOTTOM
+══════════════════════════════════════════════════════════ */
+#sbb {
+  margin-top: auto; padding: 10px 13px;
+  border-top: 1px solid var(--b); background: var(--panel);
+  position: sticky; bottom: 0; flex-shrink: 0;
+}
+
+/* ══════════════════════════════════════════════════════════
+   RECIPE LOOKUP CARDS  (topbar panel + was sidebar)
+══════════════════════════════════════════════════════════ */
+.rlcard {
+  background: var(--p3); border: 1px solid var(--b);
+  border-radius: var(--rsm); padding: 8px 10px; margin-bottom: 5px;
+}
+.rlcard.prod { border-color: var(--ok); }
+.rlcard.cons { border-color: #3b82f6; }
+.rlrname { font-size: 11px; font-weight: 600; color: var(--t); }
+.rlrow { display: flex; justify-content: space-between; font-size: 11px; padding: 1px 0; }
+.rlrow span:first-child { color: var(--t2); }
+.rlrow span:last-child  { font-family: var(--mono); color: var(--t3); }
+
+/* ══════════════════════════════════════════════════════════
+   GRAPH PANEL
+══════════════════════════════════════════════════════════ */
+#graph { grid-area: gr; position: relative; overflow: hidden; background: var(--bg); }
+#gc    { width: 100%; height: 100%; display: block; }
+
+.ge {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 10px; color: var(--t3); pointer-events: none;
+  transition: opacity .2s;
+}
+.ge p      { font-size: 12px; text-align: center; }
+.ge.hidden { opacity: 0; }
+
+/* Results bar (bottom-centre) */
+#rb {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  background: var(--p2); border: 1px solid var(--b2); border-radius: var(--rlg);
+  padding: 8px 16px; display: flex; gap: 18px; align-items: center;
+  box-shadow: 0 8px 32px rgba(0,0,0,.6); z-index: 20;
+  backdrop-filter: blur(8px); pointer-events: none;
+}
+.rbs { text-align: center; }
+.rbv { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--acc); }
+.rbl { font-size: 10px; color: var(--t3); text-transform: uppercase; letter-spacing: .05em; }
+.rbsep { width: 1px; height: 26px; background: var(--b); }
+
+/* Build cost panel (bottom-right) */
+#bc {
+  position: absolute; bottom: 12px; right: 12px; z-index: 20;
+  background: var(--p2); border: 1px solid var(--b2);
+  border-radius: var(--rlg); box-shadow: 0 8px 32px rgba(0,0,0,.6);
+  min-width: 200px; overflow: hidden;
+}
+.bch { padding: 8px 13px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; }
+.bch span  { font-size: 12px; font-weight: 600; color: var(--acc); }
+.bch small { font-size: 11px; color: var(--t3); }
+.bcb { padding: 6px 13px 10px; max-height: 240px; overflow-y: auto; border-top: 1px solid var(--b); }
+.bcr { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--b); font-size: 12px; }
+.bcr:last-child { border: none; }
+.bcr span:first-child { color: var(--t2); }
+.bcr span:last-child  { font-family: var(--mono); color: var(--acc); font-weight: 500; }
+
+/* Graph controls (bottom-left) */
+#gctrl { position: absolute; bottom: 12px; left: 12px; z-index: 20; display: flex; flex-direction: column; gap: 4px; }
+.gbt {
+  width: 28px; height: 28px;
+  background: var(--p2); border: 1px solid var(--b); color: var(--t2);
+  border-radius: 6px; cursor: pointer; font-size: 15px;
+  display: flex; align-items: center; justify-content: center;
+}
+.gbt:hover { border-color: var(--acc); color: var(--acc); }
+
+/* ══════════════════════════════════════════════════════════
+   WARNINGS MODAL
+══════════════════════════════════════════════════════════ */
+#wo {
+  display: none; position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.65); backdrop-filter: blur(4px);
+  align-items: center; justify-content: center;
+}
+#wo.show { display: flex; }
+#wm {
+  background: var(--p2); border: 1px solid var(--b2); border-radius: var(--rlg);
+  padding: 20px 24px; max-width: 520px; width: 90%; max-height: 66vh;
+  display: flex; flex-direction: column; gap: 9px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.7);
+}
+.wmh   { display: flex; justify-content: space-between; align-items: center; }
+.wmh h3 { font-size: 14px; font-weight: 600; }
+.wmc   { background: none; border: none; color: var(--t3); cursor: pointer; font-size: 17px; padding: 0 2px; }
+.wmit-list { overflow-y: auto; display: flex; flex-direction: column; gap: 5px; }
+.wmit {
+  padding: 7px 10px; border-radius: var(--rsm);
+  font-size: 12px; line-height: 1.5;
+  display: flex; gap: 6px; align-items: flex-start;
+}
+.wmf { font-size: 11px; color: var(--t3); }
+
+/* ══════════════════════════════════════════════════════════
+   ANALYSIS MODAL
+══════════════════════════════════════════════════════════ */
+#analysis-modal {
+  display: none; position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.65); backdrop-filter: blur(4px);
+  align-items: flex-start; justify-content: center;
+  padding-top: 60px;
+}
+#analysis-modal.show { display: flex; }
+#analysis-box {
+  background: var(--p2); border: 1px solid var(--b2); border-radius: var(--rlg);
+  padding: 20px 24px; max-width: 580px; width: 94%; max-height: 82vh;
+  display: flex; flex-direction: column; gap: 0;
+  box-shadow: 0 24px 64px rgba(0,0,0,.7);
+  overflow: hidden;
+}
+#analysis-body {
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+.an-section { margin-bottom: 18px; }
+.an-title {
+  font-size: 11px; font-weight: 600; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--t3);
+  padding-bottom: 6px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--b);
+}
+.an-body { font-size: 12px; }
+
+/* ══════════════════════════════════════════════════════════
+   UTILITY
+══════════════════════════════════════════════════════════ */
+.ts::-webkit-scrollbar { width: 4px; }
+.ts::-webkit-scrollbar-thumb { background: var(--b2); }
+
+/* ══════════════════════════════════════════════════════════
+   PINBOARD TOOLBAR  — mirrors .tb-action-btn exactly
+══════════════════════════════════════════════════════════ */
+.pb-tool {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px;
+  border: 1px solid var(--b2); border-radius: var(--rsm);
+  background: var(--p3); color: var(--t2);
+  font-size: 11px; font-family: var(--font); cursor: pointer;
+  transition: all .12s; white-space: nowrap;
+}
+.pb-tool:hover { border-color: var(--acc); color: var(--acc); background: var(--acc-glow); }
+.pb-tool.pb-tool-active {
+  border-color: var(--acc); color: var(--acc);
+  background: var(--acc-glow); box-shadow: 0 0 0 1px var(--acc);
+}
+.pb-tool.pb-tool-danger { color: var(--t3); }
+.pb-tool.pb-tool-danger:hover {
+  color: var(--err); border-color: var(--err);
+  background: rgba(239,68,68,.1); box-shadow: none;
+}
+.pb-tool.pb-tool-active.pb-tool-danger {
+  background: rgba(239,68,68,.15); border-color: var(--err);
+  color: var(--err); box-shadow: 0 0 0 1px var(--err);
+}
+
+</style>
 </head>
 <body>
 <div id="app">
 
-  <!-- ── TOPBAR ───────────────────────────────────────────── -->
-  <header id="topbar">
-    <div class="tbl">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="2" y="7" width="20" height="14" rx="2"/>
-        <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
-        <line x1="12" y1="12" x2="12" y2="16"/>
-        <line x1="10" y1="14" x2="14" y2="14"/>
+<header id="topbar">
+  <button id="sb-toggle" title="Toggle sidebar  [ ]">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>
+    </svg>
+  </button>
+  <div class="tbl">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="2" y="7" width="20" height="14" rx="2"/>
+      <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+      <line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/>
+    </svg>
+    Satisfactory Factory Planner
+  </div>
+  <div id="tb-rl-wrap">
+    <div style="position:relative;display:flex;align-items:center">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#616880" stroke-width="2"
+           style="position:absolute;left:8px;pointer-events:none">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
       </svg>
-      Satisfactory Factory Planner
+      <input id="tb-rl-input" type="text" placeholder="Recipe lookup" autocomplete="off"
+        style="padding-left:28px;width:300px;background:var(--p3);border:1px solid var(--b);
+               border-radius:var(--rsm);color:var(--t);font-family:var(--mono);font-size:12px;
+               padding-top:5px;padding-bottom:5px;outline:none"/>
     </div>
-    <span class="tbb" style="color:var(--t3);font-size:10px">v3 · Lite · OR-Tools</span>
-    <div class="tbsep"></div>
-    <div id="tbst"></div>
-  </header>
+    <div id="tb-rl-panel"><div id="tb-rl-results"></div></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+    <span style="font-size:10px;color:var(--t3);font-family:var(--mono)">v3 · OR-Tools</span>
+    <button id="btn-pinboard" class="tb-action-btn" title="Pinboard — pin and arrange recipes  (Ctrl+P)" style="position:relative">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/>
+      </svg>
+      Pinboard
+      <span id="pin-badge" style="
+        display:none;position:absolute;top:-5px;right:-5px;
+        min-width:16px;height:16px;padding:0 4px;
+        background:var(--acc);color:#000;border-radius:8px;
+        font-size:9px;font-weight:700;font-family:var(--mono);
+        line-height:16px;text-align:center;
+      ">0</span>
+    </button>
+    <button id="btn-analysis" class="tb-action-btn" title="Factory analysis">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
+        <line x1="6" y1="20" x2="6" y2="14"/>
+      </svg>
+      Analysis
+    </button>
+    <button id="btn-issues" class="tb-action-btn warn" style="display:none">
+      ⚠ <span id="btn-issues-count">0</span> issues
+    </button>
+  </div>
+</header>
 
-  <!-- ── SIDEBAR ──────────────────────────────────────────── -->
-  <aside id="sidebar">
+<aside id="sidebar">
+  <div id="sb-rail">
+    <button class="rail-btn act" id="rail-build" data-tab="build" title="Build">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+    </button>
+    <button class="rail-btn" id="rail-machalt" data-tab="machalt" title="Machines &amp; Alts  (Ctrl+A)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>
+    </button>
+    <button class="rail-btn" id="rail-saved" data-tab="saved" title="Saved scenarios">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+    </button>
+    <div style="flex:1"></div>
+    <button class="rail-btn rail-solve" id="rail-solve" title="Solve  (Ctrl+R)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    </button>
+  </div>
 
-    <!-- Scenario name / description -->
+  <div id="sb-content">
     <div class="pc">
       <div class="pt" style="cursor:default;margin-bottom:6px">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
-        </svg>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
         Scenario
       </div>
       <input type="text" id="sc-name" placeholder="Scenario name" style="margin-bottom:4px"/>
       <input type="text" id="sc-desc" placeholder="Description (optional)"/>
     </div>
 
-    <!-- Tab bar -->
     <div class="tabbar">
       <button class="tabbt act" data-tab="build">Build</button>
-      <button class="tabbt" data-tab="machines">Machines</button>
-      <button class="tabbt" data-tab="alts">Alternates</button>
-      <button class="tabbt" data-tab="recipes">Recipes</button>
+      <button class="tabbt" data-tab="machalt">Machines &amp; Alts</button>
       <button class="tabbt" data-tab="saved">Saved</button>
     </div>
 
-    <!-- ── BUILD TAB ──────────────────────────────────────── -->
     <div id="tab-build">
-
       <div class="pc" id="sec-res">
-        <div class="pt" onclick="SB.toggleSec('res')">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-          </svg>
-          Resources / Minute
-          <span class="chev" style="margin-left:auto">▼</span>
+        <div class="pt" id="tog-res">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Resources / Minute <span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
-          <p style="font-size:11px;color:var(--t3);margin-bottom:5px;line-height:1.4">
-            Hard limits — nothing else enters the system.
-          </p>
+          <p style="font-size:11px;color:var(--t3);margin-bottom:5px;line-height:1.4">Hard limits — nothing else enters the system.</p>
           <div id="kv-res"></div>
-          <button class="arb" onclick="SB.addKv('res')">+ Add Resource</button>
+          <button class="arb" id="add-res">+ Add Resource</button>
         </div>
       </div>
-
       <div class="pc" id="sec-obj">
-        <div class="pt" onclick="SB.toggleSec('obj')">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>
-          </svg>
-          Objective
-          <span class="chev" style="margin-left:auto">▼</span>
+        <div class="pt" id="tog-obj">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+          Objective <span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
           <p style="font-size:11px;color:var(--t3);margin-bottom:5px">Maximize this weighted sum.</p>
           <div id="kv-obj"></div>
-          <button class="arb" onclick="SB.addKv('obj')">+ Add Objective</button>
+          <button class="arb" id="add-obj">+ Add Objective</button>
         </div>
       </div>
-
       <div class="pc" id="sec-con">
-        <div class="pt" onclick="SB.toggleSec('con')">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10 2v7.31"/><path d="M14 9.3V1.99"/><path d="M8.5 2h7"/>
-            <path d="M14 9.3a6.5 6.5 0 1 1-4 0"/>
-          </svg>
-          Constraints
-          <span class="chev" style="margin-left:auto">▶</span>
+        <div class="pt" id="tog-con">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v7.31"/><path d="M14 9.3V1.99"/><path d="M8.5 2h7"/><path d="M14 9.3a6.5 6.5 0 1 1-4 0"/></svg>
+          Constraints <span class="chev" style="margin-left:auto">&#9654;</span>
         </div>
         <div class="secb" style="display:none">
           <div style="font-size:11px;color:var(--t3);margin-bottom:4px">Must produce exactly:</div>
           <div id="kv-must"></div>
-          <button class="arb" onclick="SB.addKv('must')">+ Add Equality</button>
-          <div style="font-size:11px;color:var(--t3);margin:6px 0 4px">Minimum ≥:</div>
+          <button class="arb" id="add-must">+ Add Equality</button>
+          <div style="font-size:11px;color:var(--t3);margin:6px 0 4px">Minimum &ge;:</div>
           <div id="kv-min"></div>
-          <button class="arb" onclick="SB.addKv('min')">+ Add Min</button>
-          <div style="font-size:11px;color:var(--t3);margin:6px 0 4px">Maximum ≤:</div>
+          <button class="arb" id="add-min">+ Add Min</button>
+          <div style="font-size:11px;color:var(--t3);margin:6px 0 4px">Maximum &le;:</div>
           <div id="kv-max"></div>
-          <button class="arb" onclick="SB.addKv('max')">+ Add Max</button>
+          <button class="arb" id="add-max">+ Add Max</button>
         </div>
       </div>
-
       <div class="pc" id="sec-oc">
-        <div class="pt" onclick="SB.toggleSec('oc')">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-          </svg>
-          Overclocking
-          <span class="chev" style="margin-left:auto">▼</span>
+        <div class="pt" id="tog-oc">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          Overclocking <span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
-          <p style="font-size:11px;color:var(--t3);margin-bottom:8px;line-height:1.4">
-            <span style="color:#3b82f6;font-weight:500">💎 Shards</span> overclock to reduce machine count.&nbsp;
-            <span style="color:#a855f7;font-weight:500">🔮 Sloops</span> amplify output within power budget.
-          </p>
           <div class="bgrid">
-            <div class="bcard">
-              <div class="blbl sh">💎 Power Shards</div>
-              <input type="number" id="sc-sh" placeholder="0" min="0" step="1"/>
-              <div style="font-size:10px;color:var(--t3);margin-top:2px">Total pool</div>
-            </div>
-            <div class="bcard">
-              <div class="blbl sl">🔮 Somersloops</div>
-              <input type="number" id="sc-sl" placeholder="0" min="0" max="106" step="1"/>
-              <div style="font-size:10px;color:var(--t3);margin-top:2px">Max 106</div>
-            </div>
+            <div class="bcard"><div class="blbl sh">&#x1F4CE; Shards</div><input type="number" id="sc-sh" placeholder="0" min="0" step="1"/><div style="font-size:10px;color:var(--t3);margin-top:2px">Total pool</div></div>
+            <div class="bcard"><div class="blbl sl">&#x1F52E; Sloops</div><input type="number" id="sc-sl" placeholder="0" min="0" max="106" step="1"/><div style="font-size:10px;color:var(--t3);margin-top:2px">Max 106</div></div>
             <div class="bcard" style="grid-column:1/-1">
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-                <div>
-                  <div style="font-size:10px;color:var(--t3);margin-bottom:2px">Power cap (MW)</div>
-                  <input type="number" id="sc-mp" placeholder="No limit" min="0" step="50"/>
-                </div>
-                <div>
-                  <div style="font-size:10px;color:var(--t3);margin-bottom:2px">Machine cap</div>
-                  <input type="number" id="sc-mm" placeholder="No limit" min="0" step="1"/>
-                </div>
+                <div><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Power cap (MW)</div><input type="number" id="sc-mp" placeholder="No limit" min="0" step="50"/></div>
+                <div><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Machine cap</div><input type="number" id="sc-mm" placeholder="No limit" min="0" step="1"/></div>
               </div>
             </div>
           </div>
         </div>
       </div>
-
       <div class="pc" id="sec-nt">
-        <div class="pt" onclick="SB.toggleSec('nt')">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-          </svg>
-          Notes
-          <span class="chev" style="margin-left:auto">▶</span>
+        <div class="pt" id="tog-nt">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Notes <span class="chev" style="margin-left:auto">&#9654;</span>
         </div>
         <div class="secb" style="display:none">
-          <textarea id="sc-nt" placeholder="Build phases, reminders…"
-            style="min-height:64px;resize:vertical;width:100%;font-family:var(--font);font-size:12px">
-          </textarea>
+          <textarea id="sc-nt" placeholder="Build phases, reminders..." style="min-height:60px;resize:vertical;width:100%;font-family:var(--font);font-size:12px"></textarea>
         </div>
-      </div>
-
-    </div><!-- /tab-build -->
-
-    <!-- ── MACHINES TAB ────────────────────────────────────── -->
-    <div id="tab-machines" style="display:none">
-      <div class="pc">
-        <div class="pt" style="cursor:default">
-          Machines <span id="mb" class="ptbadge">All</span>
-        </div>
-        <p style="font-size:11px;color:var(--t3);margin-bottom:8px">
-          Disabled machines are excluded from all solutions.
-        </p>
-        <div id="machpanel"></div>
       </div>
     </div>
 
-    <!-- ── ALTERNATES TAB ──────────────────────────────────── -->
-    <div id="tab-alts" style="display:none">
+    <div id="tab-machalt" style="display:none">
       <div class="pc">
-        <div class="pt" style="cursor:default">
-          Alternate Recipes <span id="ab" class="ptbadge">0/0</span>
-        </div>
-        <div style="display:flex;gap:5px;margin-bottom:8px;flex-wrap:wrap">
-          <button class="bsm" onclick="SB.altsAll()">Enable all</button>
-          <button class="bsm" onclick="SB.altsNone()">None</button>
+        <div class="pt" style="cursor:default">Machines <span id="mb" class="ptbadge">All</span></div>
+        <div id="machpanel"></div>
+      </div>
+      <div class="pc">
+        <div class="pt" style="cursor:default">Alternate Recipes <span id="ab" class="ptbadge">0/0</span></div>
+        <div style="display:flex;gap:5px;margin-bottom:7px;flex-wrap:wrap">
+          <button class="bsm" id="btn-alts-all">Enable all</button>
+          <button class="bsm" id="btn-alts-none">None</button>
         </div>
         <div id="altspanel"></div>
       </div>
     </div>
 
-    <!-- ── RECIPES TAB ─────────────────────────────────────── -->
-    <div id="tab-recipes" style="display:none">
-      <div class="pc">
-        <div class="pt" style="cursor:default">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
-            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
-          </svg>
-          Recipe Lookup
-        </div>
-        <p style="font-size:11px;color:var(--t3);margin-bottom:7px">
-          Type an item to see every recipe it appears in — as ingredient or product.
-        </p>
-        <div class="acw" id="rl-wrap">
-          <input type="text" id="rl-input" placeholder="Search item…" autocomplete="off"/>
-        </div>
-        <div id="rl-results" style="margin-top:8px"></div>
-      </div>
-    </div>
-
-    <!-- ── SAVED TAB ───────────────────────────────────────── -->
     <div id="tab-saved" style="display:none">
       <div class="pc">
         <div class="pt" style="cursor:default">Saved Scenarios</div>
@@ -222,224 +725,100 @@
       </div>
     </div>
 
-    <!-- Sticky bottom controls -->
     <div id="sbb">
-      <button class="bsolve" id="bsolve" onclick="handleSolve()">▶ Solve</button>
+      <button class="bsolve" id="bsolve">&#9654; Solve</button>
       <div style="display:flex;gap:5px;margin-top:5px">
-        <button class="bsm" style="flex:1" id="bsave" onclick="handleSave()">💾 Save</button>
-        <button class="bsm" onclick="handleReset()" title="Reset all fields">↺ Reset</button>
+        <button class="bsm" style="flex:1" id="bsave">&#x1F4BE; Save</button>
+        <button class="bsm" id="breset" title="Reset all fields">&#8635;</button>
       </div>
     </div>
+  </div>
+</aside>
 
-  </aside><!-- /sidebar -->
-
-  <!-- ── GRAPH PANEL ──────────────────────────────────────── -->
-  <div id="graph">
-    <canvas id="gc"></canvas>
-
-    <!-- Empty-state overlay — hidden via .hidden class when result is present -->
-    <div class="ge" id="ge">
-      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="1" opacity=".18">
-        <rect x="2" y="7" width="20" height="14" rx="2"/>
-        <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
-        <line x1="12" y1="12" x2="12" y2="16"/>
-        <line x1="10" y1="14" x2="14" y2="14"/>
-      </svg>
-      <p>Configure your factory and hit Solve</p>
-      <p style="font-size:11px">White = inputs · Green = outputs · Red = errors · Amber = surplus</p>
-      <p style="font-size:11px">💎 Blue = shard · 🔮 Purple = sloop</p>
-      <p style="font-size:11px">Click = focus chain · Double-click = expand / centre · Drag to reposition · Scroll to zoom</p>
-      <p style="font-size:11px">Ctrl+F to search · Esc to clear focus</p>
-    </div>
-
-    <!-- Results bar (bottom-centre) -->
-    <div id="rb" style="display:none"></div>
-
-    <!-- Build cost panel (bottom-right) -->
-    <div id="bc" style="display:none">
-      <div class="bch" onclick="SB.toggleBC()">
-        <span>🏗 Build Cost</span>
-        <small id="bcc"></small>
+<div id="graph">
+  <canvas id="gc"></canvas>
+  <div class="ge" id="ge">
+    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity=".18">
+      <rect x="2" y="7" width="20" height="14" rx="2"/>
+      <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+      <line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/>
+    </svg>
+    <p>Configure your factory and hit Solve</p>
+    <p style="font-size:11px">White = inputs &middot; Green = outputs &middot; Red = errors &middot; Amber = surplus</p>
+    <p style="font-size:11px">Click = focus &middot; Double-click = expand/centre &middot; Scroll = zoom</p>
+    <p style="font-size:11px">Ctrl+R = solve &middot; Ctrl+S = save &middot; Ctrl+Q = recipe lookup &middot; Ctrl+A = machines</p>
+    <p style="font-size:11px">Ctrl+F = search graph &middot; Ctrl+P = pinboard &middot; [ ] = toggle sidebar</p>
+  </div>
+  <div id="rb" style="display:none"></div>
+  <div id="bc" style="display:none">
+    <div class="bch" id="bc-toggle"><span>&#x1F3D7; Build Cost</span><small id="bcc"></small></div>
+    <div class="bcb ts" id="bcb" style="display:none"></div>
+  </div>
+  <div id="gctrl">
+    <button class="gbt" id="btn-zoom-in"  title="Zoom in">+</button>
+    <button class="gbt" id="btn-zoom-out" title="Zoom out">&minus;</button>
+    <button class="gbt" id="btn-fit"      title="Fit view">&#x229F;</button>
+    <button class="gbt" id="btn-search"   title="Search graph  (Ctrl+F)" style="font-size:13px">&#x2315;</button>
+  </div>
+  <!-- Pinboard mode overlay bar (shown at top of canvas in pinboard mode) -->
+  <div id="pinboard-overlay" style="display:none;position:absolute;top:0;left:0;right:0;pointer-events:none;z-index:25">
+    <div style="
+      display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+      padding:8px 14px;pointer-events:all;
+      background:linear-gradient(to bottom,rgba(12,14,19,0.97) 80%,transparent);
+    ">
+      <div style="
+        display:flex;align-items:center;gap:6px;
+        background:rgba(245,158,11,.12);border:1px solid var(--acc);
+        border-radius:6px;padding:4px 10px;flex-shrink:0;
+      ">
+        <span style="font-size:10px;font-weight:700;color:var(--acc);letter-spacing:.08em">📌 PINBOARD</span>
       </div>
-      <div class="bcb ts" id="bcb" style="display:none"></div>
+      <div style="width:1px;height:24px;background:var(--b2);flex-shrink:0"></div>
+      <div style="display:flex;gap:4px;align-items:center">
+        <button id="pb-tool-select" class="pb-tool pb-tool-active" title="Select / Drag  (default)">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2l4 10 2-4 4-2L2 2z"/></svg>
+          Select
+        </button>
+        <button id="pb-tool-group" class="pb-tool" title="Group — drag a rectangle on the canvas to create a sticky note group">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="10" height="10" rx="2" stroke-dasharray="3 2"/></svg>
+          Group
+        </button>
+        <button id="pb-tool-arrow" class="pb-tool" title="Arrow — click a source node/group, then click a target to draw a connector">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="2" y1="12" x2="12" y2="2"/><polyline points="6,2 12,2 12,8"/></svg>
+          Arrow
+        </button>
+        <button id="pb-tool-unpin" class="pb-tool pb-tool-danger" title="Unpin — click any recipe node to remove it from the pinboard">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="3" y1="3" x2="11" y2="11"/><line x1="11" y1="3" x2="3" y2="11"/></svg>
+          Unpin
+        </button>
+      </div>
+      <div style="width:1px;height:24px;background:var(--b2);flex-shrink:0"></div>
+      <span id="pb-tool-hint" style="font-size:11px;color:var(--t3)">
+        Drag nodes to rearrange &nbsp;·&nbsp; Dbl-click group to edit &nbsp;·&nbsp; Esc = cancel &nbsp;·&nbsp; Ctrl+P = exit
+      </span>
     </div>
-
-    <!-- Zoom controls (bottom-left) -->
-    <div id="gctrl">
-      <button class="gbt" onclick="GR.zoomBy(1.2)" title="Zoom in">+</button>
-      <button class="gbt" onclick="GR.zoomBy(0.8)" title="Zoom out">−</button>
-      <button class="gbt" onclick="GR.fitAll()"    title="Fit view">⊡</button>
-      <button class="gbt" onclick="GR.openSearch()" title="Search (Ctrl+F)"
-        style="font-size:12px">⌕</button>
-    </div>
-  </div><!-- /graph -->
-
-</div><!-- /app -->
-
-<!-- ── WARNINGS MODAL ────────────────────────────────────── -->
-<div id="wo" onclick="SB.closeWarn()">
-  <div id="wm" onclick="event.stopPropagation()">
-    <div class="wmh">
-      <h3 id="wmtit">Solve Issues</h3>
-      <button class="wmc" onclick="SB.closeWarn()">✕</button>
-    </div>
-    <div class="wmit-list ts" id="wmit-list"></div>
-    <div class="wmf">Click outside to close. Red nodes show where items are missing or surplus.</div>
   </div>
 </div>
 
-<!-- ── BOOT ──────────────────────────────────────────────── -->
-<script type="module">
-import * as State from '/frontend/state.js';
-import * as Api   from '/frontend/api.js';
-import * as SB    from '/frontend/sidebar.js';
-import * as GR    from '/frontend/graph.js';
+<div id="wo">
+  <div id="wm">
+    <div class="wmh"><h3 id="wmtit">Solve Issues</h3><button id="btn-close-warn" class="wmc">&times;</button></div>
+    <div class="wmit-list ts" id="wmit-list"></div>
+    <div class="wmf">Click outside to close.</div>
+  </div>
+</div>
+<div id="analysis-modal">
+  <div id="analysis-box">
+    <div class="wmh" style="margin-bottom:10px">
+      <h3>Factory Analysis</h3>
+      <button id="btn-close-analysis" class="wmc">&times;</button>
+    </div>
+    <div id="analysis-body" class="ts"></div>
+  </div>
+</div>
 
-// Expose to onclick handlers in HTML (modules are scoped)
-window.SB = SB;
-window.GR = GR;
 
-// ── Boot sequence ─────────────────────────────────────────
-async function boot() {
-  // Show a loading state
-  document.getElementById('ge').querySelector('p').textContent = 'Loading game data…';
-
-  // Fetch all server data in parallel
-  const [items, recipes, itemDisplay] = await Promise.all([
-    Api.fetchAllItems(),
-    Api.fetchRecipes(),
-    Api.fetchItemDisplay(),
-  ]);
-
-  State.setAllItems(items);
-  State.setRecipes(recipes);
-  State.buildItemDisplay(itemDisplay);
-
-  // Restore empty-state message
-  document.getElementById('ge').querySelector('p').textContent =
-    'Configure your factory and hit Solve';
-
-  // Wire tabs
-  SB.initTabs(tab => {
-    if (tab === 'saved') loadSaved();
-  });
-
-  // Wire recipe lookup
-  SB.initRecipeLookup();
-
-  // Populate sidebar from default scenario
-  SB.fillUI();
-  SB.renderTopbar(() => SB.openWarn());
-
-  // Initialise canvas
-  GR.resize();
-  GR.draw();
-}
-
-// ── Solve ─────────────────────────────────────────────────
-let solving = false;
-
-window.handleSolve = async function() {
-  if (solving) return;
-  SB.readUI();
-
-  // Apply field defaults before sending
-  const payload = { ...State.SC };
-  if (payload.power_shards_available == null) payload.power_shards_available = 0;
-  if (payload.somersloops_available  == null) payload.somersloops_available  = 0;
-
-  solving = true;
-  const btn = document.getElementById('bsolve');
-  btn.disabled   = true;
-  btn.textContent = '⟳ Solving…';
-
-  try {
-    const result = await Api.solveScenario(payload);
-    State.setResult(result);
-
-    const hasIssues =
-      (result.conflict_hints?.length > 0) ||
-      (result.warnings?.length > 0)       ||
-      Object.keys(result.error_sources ?? {}).length > 0 ||
-      Object.keys(result.error_sinks   ?? {}).length > 0;
-    if (hasIssues) SB.openWarn();
-
-  } catch (e) {
-    State.setResult({
-      status: 'Error: ' + e.message,
-      flows: [], net_items: {}, objective_items: {}, build_cost: {},
-      source_nodes: {}, sink_nodes: {}, error_sources: {}, error_sinks: {},
-      surplus_intermediates: {}, warnings: [e.message], conflict_hints: [],
-    });
-  } finally {
-    solving  = false;
-    btn.disabled   = false;
-    btn.textContent = '▶ Solve';
-    SB.renderTopbar(() => SB.openWarn());
-    SB.renderResultsBar();
-    SB.renderBuildCost();
-    GR.initLayout();   // rebuild graph from new result
-  }
-};
-
-// ── Save ──────────────────────────────────────────────────
-window.handleSave = async function() {
-  SB.readUI();
-  const key = State.SC.name.replace(/\s+/g, '_').toLowerCase();
-  try {
-    await Api.saveScenario(key, State.SC);
-    const btn = document.getElementById('bsave');
-    btn.textContent = '💾 Saved ✓';
-    setTimeout(() => btn.textContent = '💾 Save', 2200);
-    await loadSaved();
-  } catch (e) {
-    alert('Save failed: ' + e.message);
-  }
-};
-
-// ── Reset ─────────────────────────────────────────────────
-window.handleReset = function() {
-  State.resetSC();
-  State.setResult(null);
-  SB.fillUI();
-  SB.renderTopbar(() => SB.openWarn());
-  SB.renderResultsBar();
-  SB.renderBuildCost();
-  GR.initLayout();
-};
-
-// ── Saved scenarios ───────────────────────────────────────
-async function loadSaved() {
-  try {
-    const saved = await Api.fetchScenarios();
-    SB.renderSaved(
-      saved,
-      async key => {                         // onLoad
-        const data = await Api.fetchScenario(key);
-        Object.assign(State.SC, data);
-        State.setResult(null);
-        SB.fillUI();
-        SB.renderTopbar(() => SB.openWarn());
-        GR.initLayout();
-      },
-      async key => {                         // onDelete
-        await Api.deleteScenario(key);
-        await loadSaved();
-      }
-    );
-  } catch (e) {
-    document.getElementById('savedlist').innerHTML =
-      '<p style="font-size:12px;color:var(--t3)">Server not reachable.</p>';
-  }
-}
-
-// ── Start ─────────────────────────────────────────────────
-boot().catch(e => {
-  document.getElementById('ge').querySelector('p').textContent =
-    'Boot error: ' + e.message + ' — is server.py running?';
-  console.error(e);
-});
-</script>
+<script type="module" src="/frontend/main.js"></script>
 </body>
 </html>

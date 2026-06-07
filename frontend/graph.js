@@ -20,11 +20,18 @@
  */
 
 import { RESULT, mCol, MABBR, itemName } from './state.js';
+import { isPinboardActive } from './pinboard.js';
 
-// ── Canvas refs ───────────────────────────────────────────
-const CV = document.getElementById('gc');
-const C  = CV.getContext('2d');
-const GE = document.getElementById('ge');
+// ── Canvas refs (lazy — resolved on first use, not at module parse time) ──────
+let CV = null, C = null, GE = null;
+function initCanvasRefs() {
+  if (CV) return true;
+  CV = document.getElementById('gc');
+  GE = document.getElementById('ge');
+  if (!CV || !GE) return false;
+  C = CV.getContext('2d');
+  return true;
+}
 
 // ── Viewport ──────────────────────────────────────────────
 let PAN  = { x: 0, y: 0 };
@@ -48,6 +55,7 @@ let FOCUS_DN = new Set();  // downstream ids of focused node
 // ── Animation ────────────────────────────────────────────
 let animFrame = null;
 function schedDraw() {
+  if (isPinboardActive()) return;
   if (animFrame) return;
   animFrame = requestAnimationFrame(() => { animFrame = null; draw(); });
 }
@@ -95,6 +103,8 @@ function nodeH(node) {
 
 // ── DPI resize ───────────────────────────────────────────
 export function resize() {
+  if (isPinboardActive()) return;
+  if (!initCanvasRefs()) return;
   const dpr  = window.devicePixelRatio || 1;
   const rect = CV.parentElement.getBoundingClientRect();
   C.setTransform(1, 0, 0, 1, 0, 0);
@@ -112,6 +122,8 @@ window.addEventListener('resize', resize);
 // LAYOUT PIPELINE
 // ═══════════════════════════════════════════════════════════
 export function initLayout() {
+  if (isPinboardActive()) return;
+  if (!initCanvasRefs()) return;
   NODES = []; EDGES = []; NODEMAP = {};
   SPATGRID = null;
   clearFocus();
@@ -126,7 +138,6 @@ export function initLayout() {
   const flows   = RESULT.flows;
   const flowMap = Object.fromEntries(flows.map(f => [f.recipe_key, f]));
 
-  // ── Producer / consumer maps ──────────────────────────────
   const producers = {}, consumers = {};
   flows.forEach(f => {
     Object.keys(f.outputs || {}).forEach(item =>
@@ -135,23 +146,21 @@ export function initLayout() {
       (consumers[item] = consumers[item] || []).push(f.recipe_key));
   });
 
-  // ── 1. Rank assignment (longest path) ─────────────────────
+  // ── 1. Rank assignment ─────────────────────────────────────
   const rank = {};
   flows.forEach(f => rank[f.recipe_key] = 0);
-  for (let it = 0; it < 50; it++) {
+  for (let it = 0; it < 60; it++) {
     let changed = false;
     flows.forEach(f => {
       let maxR = 0;
-      Object.keys(f.inputs || {}).forEach(item => {
+      Object.keys(f.inputs || {}).forEach(item =>
         (producers[item] || []).filter(k => k !== f.recipe_key)
-          .forEach(k => { maxR = Math.max(maxR, (rank[k] ?? 0) + 1); });
-      });
+          .forEach(k => { maxR = Math.max(maxR, (rank[k] ?? 0) + 1); }));
       if (maxR !== rank[f.recipe_key]) { rank[f.recipe_key] = maxR; changed = true; }
     });
     if (!changed) break;
   }
 
-  // Group by rank into layers
   const byRank = {};
   flows.forEach(f => {
     const r = rank[f.recipe_key] ?? 0;
@@ -159,237 +168,289 @@ export function initLayout() {
   });
   const layers = Object.keys(byRank).sort((a, b) => +a - +b).map(r => byRank[r]);
 
-  // ── 2. Adjacency for crossing reduction ───────────────────
-  const prevOf = {}, nextOf = {};
+  // ── 2. Directed adjacency ──────────────────────────────────
+  const prev = {}, next = {};
   flows.forEach(f => {
     Object.keys(f.inputs || {}).forEach(item => {
-      (producers[item] || []).filter(p => p !== f.recipe_key && (rank[p] ?? 0) < (rank[f.recipe_key] ?? 0))
+      (producers[item] || [])
+        .filter(p => p !== f.recipe_key && (rank[p] ?? 0) < (rank[f.recipe_key] ?? 0))
         .forEach(p => {
-          (prevOf[f.recipe_key] = prevOf[f.recipe_key] || new Set()).add(p);
-          (nextOf[p] = nextOf[p] || new Set()).add(f.recipe_key);
+          (prev[f.recipe_key] = prev[f.recipe_key] || []).push(p);
+          (next[p] = next[p] || []).push(f.recipe_key);
         });
     });
   });
-  // Convert Sets to arrays for iteration
-  const prev = {}, next = {};
-  Object.keys(prevOf).forEach(k => prev[k] = [...prevOf[k]]);
-  Object.keys(nextOf).forEach(k => next[k] = [...nextOf[k]]);
+  Object.keys(prev).forEach(k => { prev[k] = [...new Set(prev[k])]; });
+  Object.keys(next).forEach(k => { next[k] = [...new Set(next[k])]; });
 
-  // ── 3. Barycenter crossing reduction ─────────────────────
-  const posOrd = {};  // key → integer order within layer
+  // ── 3. Index-based barycenter (8 passes) ──────────────────
+  const posOrd = {};
   layers.forEach(layer => layer.forEach((k, i) => posOrd[k] = i));
-
-  function bcSort(layer, usePrev) {
+  function bcIndex(layer, usePrev) {
     return [...layer].sort((a, b) => {
-      const na = usePrev ? (prev[a] || []) : (next[a] || []);
-      const nb = usePrev ? (prev[b] || []) : (next[b] || []);
+      const na = (usePrev ? prev[a] : next[a]) || [];
+      const nb = (usePrev ? prev[b] : next[b]) || [];
       const ya = na.length ? na.reduce((s, k) => s + (posOrd[k] ?? 0), 0) / na.length : posOrd[a] ?? 0;
       const yb = nb.length ? nb.reduce((s, k) => s + (posOrd[k] ?? 0), 0) / nb.length : posOrd[b] ?? 0;
       return ya - yb;
     });
   }
-
-  for (let pass = 0; pass < 6; pass++) {
+  for (let pass = 0; pass < 8; pass++) {
     const fwd = pass % 2 === 0;
     (fwd ? layers : [...layers].reverse()).forEach(layer => {
-      const sorted = bcSort(layer, fwd);
-      sorted.forEach((k, i) => { layer[i] = k; posOrd[k] = i; });
+      bcIndex(layer, fwd).forEach((k, i) => { layer[i] = k; posOrd[k] = i; });
     });
   }
 
-  // ── 4. Fan-out aware vertical gap ─────────────────────────
-  // Recipes with many outputs get more space below them.
-  function ygapAfter(key) {
-    const f   = flowMap[key];
-    const out = Object.keys(f?.outputs || {}).length;
-    const inn = Object.keys(f?.inputs  || {}).length;
-    return YGAP_BASE + Math.max(0, out + inn - 4) * 8;
-  }
-
-  // ── 5. First pixel pass — uniform top-down placement ─────
-  let curX   = SRC_W + 50;
+  // ── 4. Pixel placement — uniform top-down ─────────────────
+  const YGAP = 40;
+  let curX = SRC_W + 50;
   const posMap = {};
-
   layers.forEach(layer => {
     let curY = TOP_PAD;
     layer.forEach(key => {
-      const f = flowMap[key];
       const n = { id: key, x: curX, y: curY, w: NW, h: 0,
-                  type: 'recipe', data: f, expanded: false };
+                  type: 'recipe', data: flowMap[key], expanded: false };
       n.h = nodeH(n);
-      NODES.push(n);
-      posMap[key] = n;
-      curY += n.h + ygapAfter(key);
+      NODES.push(n); posMap[key] = n;
+      curY += n.h + YGAP;
     });
     curX += NW + XGAP;
   });
 
-  // ── 6. Brandes-Köpf compaction — pull nodes toward neighbour centres ──────
-  // Three sweeps (top-down, bottom-up, average) to compact the layout.
-  function midY(key) {
-    const n = posMap[key];
-    return n ? n.y + n.h / 2 : 0;
-  }
+  // ── 5. Pixel-accurate barycenter + reassign ────────────────
+  function midY(key) { const n = posMap[key]; return n ? n.y + n.h / 2 : 0; }
 
-  function idealY(key) {
-    const ps = prev[key] || [], ns = next[key] || [];
-    const all = [...ps, ...ns].filter(k => posMap[k]);
-    if (!all.length) return null;
-    return all.reduce((s, k) => s + midY(k), 0) / all.length - posMap[key].h / 2;
-  }
-
-  function compactLayer(layer, direction) {
-    // direction: 1 = top→bottom (can move down), -1 = bottom→up
-    const ordered = direction === 1 ? layer : [...layer].reverse();
-    ordered.forEach(key => {
-      const n    = posMap[key];
-      if (!n) return;
-      const ideal = idealY(key);
-      if (ideal === null) return;
-      // Move toward ideal but don't cross neighbours
-      const target = Math.round((n.y + ideal) / 2);
-      n.y = Math.max(TOP_PAD, target);
+  function bcPixel(layer, usePrev) {
+    return [...layer].sort((a, b) => {
+      const na = (usePrev ? prev[a] : next[a]) || [];
+      const nb = (usePrev ? prev[b] : next[b]) || [];
+      const ya = na.length ? na.reduce((s, k) => s + midY(k), 0) / na.length : midY(a);
+      const yb = nb.length ? nb.reduce((s, k) => s + midY(k), 0) / nb.length : midY(b);
+      return ya - yb;
     });
-    // Resolve collisions in one sweep
-    resolveCollisions(layer.map(k => posMap[k]).filter(Boolean));
   }
-
+  function reassignY(layer) {
+    let curY = TOP_PAD;
+    layer.forEach(key => { const n = posMap[key]; if (!n) return; n.y = curY; curY += n.h + YGAP; });
+  }
   function resolveCollisions(nodeList) {
-    const sorted = nodeList.sort((a, b) => a.y - b.y);
-    for (let i = 1; i < sorted.length; i++) {
-      const prev2 = sorted[i - 1], cur = sorted[i];
-      const gap   = ygapAfter(prev2.id);
-      const minY  = prev2.y + prev2.h + gap;
-      if (cur.y < minY) cur.y = minY;
+    const s = [...nodeList].sort((a, b) => a.y - b.y);
+    for (let i = 1; i < s.length; i++) {
+      const minY = s[i-1].y + s[i-1].h + YGAP;
+      if (s[i].y < minY) s[i].y = minY;
     }
-    // Also push upward from bottom
-    for (let i = sorted.length - 2; i >= 0; i--) {
-      const next2 = sorted[i + 1], cur = sorted[i];
-      const gap   = ygapAfter(cur.id);
-      const maxY  = next2.y - cur.h - gap;
-      if (cur.y > maxY) cur.y = Math.max(TOP_PAD, maxY);
+    for (let i = s.length - 2; i >= 0; i--) {
+      const maxBot = s[i+1].y - YGAP;
+      if (s[i].y + s[i].h > maxBot) s[i].y = Math.max(TOP_PAD, maxBot - s[i].h);
     }
   }
-
-  // Run compaction passes
-  for (let pass = 0; pass < 4; pass++) {
-    layers.forEach(layer => compactLayer(layer, 1));
-    [...layers].reverse().forEach(layer => compactLayer(layer, -1));
+  for (let pass = 0; pass < 6; pass++) {
+    const fwd = pass % 2 === 0;
+    (fwd ? layers : [...layers].reverse()).forEach(layer => {
+      bcPixel(layer, fwd).forEach((k, i) => layer[i] = k);
+      reassignY(layer);
+    });
   }
 
-  // ── 7. Vertical centre each layer relative to the tallest ─
-  const colBots = layers.map(layer =>
-    Math.max(...layer.map(k => posMap[k] ? posMap[k].y + posMap[k].h : 0))
-  );
-  const globalBot = Math.max(...colBots, 1);
-  layers.forEach((layer, li) => {
-    const shift = (globalBot - colBots[li]) / 2;
-    if (shift > 1) layer.forEach(k => { if (posMap[k]) posMap[k].y += shift; });
+  // ── 6. Compaction — pull toward neighbour midY ─────────────
+  function idealMidY(key) {
+    const all = [...(prev[key] || []), ...(next[key] || [])].filter(k => posMap[k]);
+    if (!all.length) return null;
+    return all.reduce((s, k) => s + midY(k), 0) / all.length;
+  }
+  for (let pass = 0; pass < 6; pass++) {
+    const fwd = pass % 2 === 0;
+    (fwd ? layers : [...layers].reverse()).forEach(layer => {
+      layer.forEach(key => {
+        const n = posMap[key]; if (!n) return;
+        const im = idealMidY(key); if (im === null) return;
+        n.y = Math.max(TOP_PAD, n.y + (im - n.h / 2 - n.y) * 0.6);
+      });
+      resolveCollisions(layer.map(k => posMap[k]).filter(Boolean));
+    });
+  }
+
+  // ── 7. Chain alignment ─────────────────────────────────────
+  // A node that has exactly one predecessor, and that predecessor
+  // feeds exactly this node (linear chain), is snapped to the same
+  // Y-centre as its predecessor. Eliminates staircase patterns.
+  function chainAlignFwd() {
+    layers.forEach(layer => {
+      layer.forEach(key => {
+        const ps = prev[key] || [];
+        if (ps.length !== 1) return;
+        const pKey = ps[0];
+        if ((next[pKey] || []).length !== 1) return;
+        const n = posMap[key], p = posMap[pKey]; if (!n || !p) return;
+        n.y = Math.max(TOP_PAD, p.y + p.h / 2 - n.h / 2);
+      });
+      resolveCollisions(layer.map(k => posMap[k]).filter(Boolean));
+    });
+  }
+  function chainAlignBwd() {
+    [...layers].reverse().forEach(layer => {
+      layer.forEach(key => {
+        const ns = next[key] || [];
+        if (ns.length !== 1) return;
+        const nKey = ns[0];
+        if ((prev[nKey] || []).length !== 1) return;
+        const n = posMap[key], c = posMap[nKey]; if (!n || !c) return;
+        n.y = Math.max(TOP_PAD, c.y + c.h / 2 - n.h / 2);
+      });
+      resolveCollisions(layer.map(k => posMap[k]).filter(Boolean));
+    });
+  }
+  chainAlignFwd();
+  chainAlignBwd();
+  chainAlignFwd(); // one more fwd pass to propagate bwd corrections
+
+  // ── 8. Global vertical centring ───────────────────────────
+  const spans = layers.map(layer => {
+    const ns = layer.map(k => posMap[k]).filter(Boolean);
+    if (!ns.length) return null;
+    return { top: Math.min(...ns.map(n => n.y)), bot: Math.max(...ns.map(n => n.y + n.h)) };
   });
+  const validSpans = spans.filter(Boolean);
+  let gMidFinal = TOP_PAD;
+  if (validSpans.length) {
+    const gTop = Math.min(...validSpans.map(s => s.top));
+    const gBot = Math.max(...validSpans.map(s => s.bot));
+    gMidFinal = (gTop + gBot) / 2;
+    layers.forEach((layer, li) => {
+      const sp = spans[li]; if (!sp) return;
+      const shift = gMidFinal - (sp.top + sp.bot) / 2;
+      if (Math.abs(shift) > 2)
+        layer.forEach(k => { const n = posMap[k]; if (n) n.y = Math.max(TOP_PAD, n.y + shift); });
+    });
+  }
 
-  // ── 8. Source nodes — placed in own column, Y-aligned to consumers ────────
-  // Compute actual rate consumed per source item across all recipes
+  // ── 9. Source nodes ────────────────────────────────────────
   const srcActual = {};
   Object.keys(RESULT.source_nodes || {}).forEach(item => {
     let total = 0;
-    (consumers[item] || []).forEach(k => {
-      total += (flowMap[k]?.inputs[item] || 0);
-    });
+    (consumers[item] || []).forEach(k => { total += flowMap[k]?.inputs[item] || 0; });
     srcActual[item] = total || RESULT.source_nodes[item];
   });
-
-  // Group sources by which layer-0 recipe they primarily feed
-  const srcEntries = Object.entries(RESULT.source_nodes || {});
-  srcEntries.forEach(([item]) => {
+  Object.entries(RESULT.source_nodes || {}).forEach(([item]) => {
     const cons = (consumers[item] || []).filter(k => posMap[k]);
-    let targetY;
-    if (cons.length) {
-      const midYs = cons.map(k => posMap[k].y + posMap[k].h / 2).sort((a, b) => a - b);
-      targetY = midYs[Math.floor(midYs.length / 2)] - SRC_H / 2;
-    } else {
-      targetY = TOP_PAD;
-    }
-    const node = {
-      id: 'SRC_' + item, x: 20, y: targetY, w: SRC_W, h: SRC_H,
-      type: 'source', data: { item, rate: srcActual[item] },
-    };
-    NODES.push(node);
-    posMap['SRC_' + item] = node;
+    let ty;
+    if (cons.length === 1) {
+      const cn = posMap[cons[0]]; ty = cn.y + cn.h / 2 - SRC_H / 2;
+    } else if (cons.length > 1) {
+      const mys = cons.map(k => posMap[k].y + posMap[k].h / 2).sort((a, b) => a - b);
+      ty = mys[Math.floor(mys.length / 2)] - SRC_H / 2;
+    } else { ty = gMidFinal - SRC_H / 2; }
+    NODES.push({ id: 'SRC_' + item, x: 20, y: Math.max(TOP_PAD, ty),
+                 w: SRC_W, h: SRC_H, type: 'source', data: { item, rate: srcActual[item] } });
+    posMap['SRC_' + item] = NODES[NODES.length - 1];
   });
+  NODES.filter(n => n.type === 'source').sort((a, b) => a.y - b.y)
+    .forEach((n, i, arr) => { if (i > 0 && n.y < arr[i-1].y + arr[i-1].h + 10) n.y = arr[i-1].y + arr[i-1].h + 10; });
 
-  // Resolve source column overlaps
-  const srcCol = NODES.filter(n => n.type === 'source').sort((a, b) => a.y - b.y);
-  for (let i = 1; i < srcCol.length; i++) {
-    const p = srcCol[i - 1], c = srcCol[i];
-    if (c.y < p.y + p.h + 10) c.y = p.y + p.h + 10;
-  }
+  // ── 10. Sink/output nodes — Y-aligned to producers ─────────
+  const sinkDefs = [
+    ...Object.entries(RESULT.sink_nodes            || {}).map(([i, r]) => ({ id: 'SNK_'    + i, type: 'sink',        item: i, rate: r })),
+    ...Object.entries(RESULT.error_sinks           || {}).map(([i, r]) => ({ id: 'ERRSNK_' + i, type: 'errorsink',   item: i, rate: r })),
+    ...Object.entries(RESULT.surplus_intermediates || {}).map(([i, r]) => ({ id: 'SURP_'   + i, type: 'surplus',     item: i, rate: r })),
+    ...Object.entries(RESULT.error_sources         || {}).map(([i, r]) => ({ id: 'ERRSRC_' + i, type: 'errorsource', item: i, rate: r })),
+  ];
+  sinkDefs.forEach(({ id, type, item, rate }) => {
+    const related = (type === 'errorsource' ? consumers[item] : producers[item] || []).filter(k => posMap[k]);
+    let ty;
+    if (related.length === 1) {
+      const rn = posMap[related[0]]; ty = rn.y + rn.h / 2 - SRC_H / 2;
+    } else if (related.length > 1) {
+      const mys = related.map(k => posMap[k].y + posMap[k].h / 2).sort((a, b) => a - b);
+      ty = mys[Math.floor(mys.length / 2)] - SRC_H / 2;
+    } else { ty = gMidFinal - SRC_H / 2; }
+    const n = { id, x: curX, y: Math.max(TOP_PAD, ty), w: SRC_W, h: SRC_H, type, data: { item, rate } };
+    NODES.push(n); posMap[id] = n;
+  });
+  sinkDefs.map(e => posMap[e.id]).filter(Boolean).sort((a, b) => a.y - b.y)
+    .forEach((n, i, arr) => { if (i > 0 && n.y < arr[i-1].y + arr[i-1].h + 10) n.y = arr[i-1].y + arr[i-1].h + 10; });
 
-  // ── 9. Right-side nodes ───────────────────────────────────
-  let ry = TOP_PAD;
-  const addRight = (id, type, item, rate) => {
-    const n = { id, x: curX, y: ry, w: SRC_W, h: SRC_H, type, data: { item, rate } };
-    NODES.push(n); posMap[id] = n; ry += SRC_H + 10;
-  };
-  Object.entries(RESULT.sink_nodes            || {}).forEach(([i, r]) => addRight('SNK_'    + i, 'sink',        i, r));
-  Object.entries(RESULT.error_sinks           || {}).forEach(([i, r]) => addRight('ERRSNK_' + i, 'errorsink',   i, r));
-  Object.entries(RESULT.surplus_intermediates || {}).forEach(([i, r]) => addRight('SURP_'   + i, 'surplus',     i, r));
-  Object.entries(RESULT.error_sources         || {}).forEach(([i, r]) => addRight('ERRSRC_' + i, 'errorsource', i, r));
-
-  // ── 10. Build NODEMAP and spatial hash ────────────────────
+  // ── 11. Finalise ───────────────────────────────────────────
   NODES.forEach(n => { NODEMAP[n.id] = n; n.h = nodeH(n); });
   buildSpatialHash();
 
-  // ── 11. Build edges with pre-computed bezier geometry ─────
-  function addEdge(src, tgt, item, rate, color, dashed = false) {
+  // addEdge: rate = this edge's actual flow; totalRate = full demand/supply at
+  // the destination end (used by the label renderer for split-flow annotation).
+  function addEdge(src, tgt, item, rate, totalRate, color, dashed = false) {
     if (!posMap[src] || !posMap[tgt]) return;
-    EDGES.push({ src, tgt, item, rate, color, dashed });
+    EDGES.push({ src, tgt, item, rate, totalRate, color, dashed });
   }
 
-  // Source → recipe: consumer's actual input rate (NOT total available)
+  // Return { recipeKey: outputRate } for all producers of an item.
+  function producerOutputRates(item, prodKeys) {
+    const out = {};
+    prodKeys.forEach(k => { out[k] = flowMap[k]?.outputs[item] ?? 0; });
+    return out;
+  }
+
+  // ── SOURCE → RECIPE ───────────────────────────────────────────────────────
   Object.entries(RESULT.source_nodes || {}).forEach(([item]) => {
     (consumers[item] || []).filter(k => posMap[k]).forEach(k => {
-      addEdge('SRC_' + item, k, item, flowMap[k]?.inputs[item] ?? 0, '#cbd5e1');
+      const rate = flowMap[k]?.inputs[item] ?? 0;
+      addEdge('SRC_' + item, k, item, rate, rate, '#cbd5e1');
     });
   });
 
-  // Recipe → recipe
+  // ── RECIPE → RECIPE ───────────────────────────────────────────────────────
+  // Apportion each consumer's total demand across its upstream producers in
+  // proportion to their output rates, so split-supply edges carry the correct
+  // partial flow rather than the full demand on every edge.
   flows.forEach(tgt => {
-    Object.entries(tgt.inputs || {}).forEach(([item, rate]) => {
-      (producers[item] || [])
-        .filter(src => src !== tgt.recipe_key && posMap[src])
-        .forEach(src => addEdge(src, tgt.recipe_key, item, rate, mCol(flowMap[src]?.machine)));
+    Object.entries(tgt.inputs || {}).forEach(([item, totalConsumed]) => {
+      const prodKeys = (producers[item] || [])
+        .filter(src => src !== tgt.recipe_key && posMap[src]);
+      if (!prodKeys.length) return;
+      const rates       = producerOutputRates(item, prodKeys);
+      const totalOut    = prodKeys.reduce((s, k) => s + (rates[k] || 0), 0);
+      prodKeys.forEach(src => {
+        const share = totalOut > 0
+          ? (rates[src] / totalOut) * totalConsumed
+          : totalConsumed / prodKeys.length;
+        addEdge(src, tgt.recipe_key, item, share, totalConsumed,
+                mCol(flowMap[src]?.machine));
+      });
     });
   });
 
-  // Recipe → sink
-  Object.entries(RESULT.sink_nodes || {}).forEach(([item, qty]) => {
-    (producers[item] || []).filter(k => posMap[k])
-      .forEach(k => addEdge(k, 'SNK_' + item, item, qty, mCol(flowMap[k]?.machine)));
+  // ── RECIPE → SINK / SURPLUS / ERROR ──────────────────────────────────────
+  function addSinkEdges(itemMap, idPrefix, color, dashed) {
+    Object.entries(itemMap || {}).forEach(([item, qty]) => {
+      const prodKeys = (producers[item] || []).filter(k => posMap[k]);
+      if (!prodKeys.length) return;
+      const rates    = producerOutputRates(item, prodKeys);
+      const totalOut = prodKeys.reduce((s, k) => s + (rates[k] || 0), 0);
+      prodKeys.forEach(k => {
+        const share = totalOut > 0
+          ? (rates[k] / totalOut) * qty
+          : qty / prodKeys.length;
+        addEdge(k, idPrefix + item, item, share, qty, color, dashed);
+      });
+    });
+  }
+  addSinkEdges(RESULT.sink_nodes,            'SNK_',    null,      false);
+  addSinkEdges(RESULT.error_sinks,           'ERRSNK_', '#ef4444', true);
+  addSinkEdges(RESULT.surplus_intermediates, 'SURP_',   '#f59e0b', true);
+  // Sink edges with color=null get the producer's machine colour.
+  EDGES.forEach(e => {
+    if (e.color === null && e.src in flowMap)
+      e.color = mCol(flowMap[e.src]?.machine);
   });
 
-  // Recipe → error sink
-  Object.entries(RESULT.error_sinks || {}).forEach(([item, qty]) => {
-    (producers[item] || []).filter(k => posMap[k])
-      .forEach(k => addEdge(k, 'ERRSNK_' + item, item, qty, '#ef4444', true));
-  });
-
-  // Recipe → surplus
-  Object.entries(RESULT.surplus_intermediates || {}).forEach(([item, qty]) => {
-    (producers[item] || []).filter(k => posMap[k])
-      .forEach(k => addEdge(k, 'SURP_' + item, item, qty, '#f59e0b', true));
-  });
-
-  // Error source → recipe
+  // ── ERROR SOURCE → RECIPE ─────────────────────────────────────────────────
   Object.entries(RESULT.error_sources || {}).forEach(([item, qty]) => {
-    (consumers[item] || []).filter(k => posMap[k])
-      .forEach(k => addEdge('ERRSRC_' + item, k, item, qty, '#ef4444', true));
+    (consumers[item] || []).filter(k => posMap[k]).forEach(k =>
+      addEdge('ERRSRC_' + item, k, item, qty, qty, '#ef4444', true));
   });
 
-  // Pre-compute edge bezier paths
   cacheEdgePaths();
-
   fitAll();
 }
+
 
 // ── Pre-compute bezier control points for all edges ───────
 function cacheEdgePaths() {
@@ -656,6 +717,27 @@ function centreOnNode(nodeId, animate = true) {
 // DRAW
 // ═══════════════════════════════════════════════════════════
 export function draw() {
+  if (isPinboardActive()) return;
+  if (!initCanvasRefs()) return;
+  try {
+    _draw();
+  } catch (err) {
+    console.error('Graph draw error:', err);
+    // Show a non-fatal message on the canvas instead of a blank screen
+    const W = CV.clientWidth, H = CV.clientHeight;
+    C.setTransform(lastDpr, 0, 0, lastDpr, 0, 0);
+    C.clearRect(0, 0, W, H);
+    C.fillStyle = '#0c0e13';
+    C.fillRect(0, 0, W, H);
+    C.fillStyle = 'rgba(239,68,68,0.85)';
+    C.font = '13px monospace';
+    C.textAlign = 'center';
+    C.fillText('Graph render error — check console for details', W / 2, H / 2);
+    C.textAlign = 'left';
+  }
+}
+
+function _draw() {
   const W = CV.clientWidth, H = CV.clientHeight;
   C.setTransform(lastDpr, 0, 0, lastDpr, 0, 0);
   C.clearRect(0, 0, W, H);
@@ -731,19 +813,45 @@ function drawEdge(e) {
   C.fillStyle = e.color;
   C.fill();
 
-  // Edge label (only when reasonably zoomed in and alpha high enough)
-  if (ZOOM >= 0.25 && alpha > 0.3) {
-    const lbl = `${itemName(e.item)}  ${Number(e.rate).toFixed(1)}/m`;
-    const fs  = Math.max(8, 10 / ZOOM);
+  // Edge label.
+  // Split edges (partial flow from one of N producers) render as
+  // "ItemName  50 of 200/m" with the partial amount in edge colour and the
+  // total in dim grey, so both the per-edge contribution and the full
+  // demand/supply are always visible.  Non-split edges use the plain "200/m".
+  if (ZOOM >= 0.35 && alpha > 0.3) {
+    const isSplit = e.totalRate != null && Math.abs(e.totalRate - e.rate) > 0.05;
+    const rateStr = isSplit
+      ? `${Number(e.rate).toFixed(1)} of ${Number(e.totalRate).toFixed(1)}/m`
+      : `${Number(e.rate).toFixed(1)}/m`;
+    const lbl = `${itemName(e.item)}  ${rateStr}`;
+
+    const fs  = 10;
     C.font    = `${fs}px 'JetBrains Mono',monospace`;
     const tw  = C.measureText(lbl).width;
-    const pad = 4 / ZOOM;
-    C.fillStyle = 'rgba(25,29,40,0.92)';
+    const pad = 4;
+
+    // Warm-tinted background pill for split edges so they stand out.
+    C.fillStyle = isSplit ? 'rgba(30,24,10,0.94)' : 'rgba(25,29,40,0.92)';
     C.fillRect(e._mx - tw / 2 - pad, e._my - fs * 0.72 - pad / 2, tw + pad * 2, fs + pad);
-    C.fillStyle    = e.color;
-    C.textAlign    = 'center';
-    C.textBaseline = 'middle';
-    C.fillText(lbl, e._mx, e._my);
+
+    if (isSplit) {
+      // Three colour segments: "ItemName  " grey | "50 " edge colour | "of 200/m" dim
+      const prefixStr = `${itemName(e.item)}  `;
+      const splitStr  = `${Number(e.rate).toFixed(1)} `;
+      const ofStr     = `of ${Number(e.totalRate).toFixed(1)}/m`;
+      const startX    = e._mx - tw / 2;
+      const pW = C.measureText(prefixStr).width;
+      const sW = C.measureText(splitStr).width;
+      C.textAlign = 'left'; C.textBaseline = 'middle';
+      C.fillStyle = '#9aa0b4'; C.fillText(prefixStr, startX, e._my);
+      C.fillStyle = e.color;   C.fillText(splitStr,  startX + pW, e._my);
+      C.fillStyle = '#616880'; C.fillText(ofStr,     startX + pW + sW, e._my);
+    } else {
+      C.fillStyle    = e.color;
+      C.textAlign    = 'center';
+      C.textBaseline = 'middle';
+      C.fillText(lbl, e._mx, e._my);
+    }
     C.textAlign    = 'left';
     C.textBaseline = 'alphabetic';
   }
@@ -967,101 +1075,102 @@ function getPos(e) {
   return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
-CV.addEventListener('mousedown', e => {
-  if (e.button !== 0) return;
-  const pos  = getPos(e);
-  const node = hitNode(pos.x, pos.y);
-  if (node) {
-    DRAG = { node, sx: pos.x, sy: pos.y, ox: node.x, oy: node.y, moved: false };
-  } else {
-    PANSTART = { x: pos.x, y: pos.y, px: PAN.x, py: PAN.y };
-    CV.style.cursor = 'grabbing';
-  }
-});
+// ── Input event wiring ────────────────────────────────────
+// Called once from main.js after the DOM is ready, so CV is guaranteed to exist.
+export function initGraphEvents() {
+  initCanvasRefs();
 
-window.addEventListener('mousemove', e => {
-  const pos = getPos(e);
-  if (DRAG) {
-    const dx = (pos.x - DRAG.sx) / ZOOM, dy = (pos.y - DRAG.sy) / ZOOM;
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) DRAG.moved = true;
-    if (DRAG.moved) {
-      DRAG.node.x = DRAG.ox + dx;
-      DRAG.node.y = DRAG.oy + dy;
-      // Rebuild spatial hash after drag (fast enough)
-      buildSpatialHash();
-      cacheEdgePaths();
+  CV.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const pos  = getPos(e);
+    const node = hitNode(pos.x, pos.y);
+    if (node) {
+      DRAG = { node, sx: pos.x, sy: pos.y, ox: node.x, oy: node.y, moved: false };
+    } else {
+      PANSTART = { x: pos.x, y: pos.y, px: PAN.x, py: PAN.y };
+      CV.style.cursor = 'grabbing';
+    }
+  });
+
+  window.addEventListener('mousemove', e => {
+    const pos = getPos(e);
+    if (DRAG) {
+      const dx = (pos.x - DRAG.sx) / ZOOM, dy = (pos.y - DRAG.sy) / ZOOM;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) DRAG.moved = true;
+      if (DRAG.moved) {
+        DRAG.node.x = DRAG.ox + dx;
+        DRAG.node.y = DRAG.oy + dy;
+        buildSpatialHash();
+        cacheEdgePaths();
+        schedDraw();
+      }
+      return;
+    }
+    if (PANSTART) {
+      PAN.x = PANSTART.px + (pos.x - PANSTART.x);
+      PAN.y = PANSTART.py + (pos.y - PANSTART.y);
+      schedDraw();
+      return;
+    }
+    const node   = hitNode(pos.x, pos.y);
+    const newHit = node ? node.id : null;
+    if (newHit !== HIT) {
+      HIT = newHit;
+      CV.style.cursor = HIT ? 'pointer' : 'default';
       schedDraw();
     }
-    return;
-  }
-  if (PANSTART) {
-    PAN.x = PANSTART.px + (pos.x - PANSTART.x);
-    PAN.y = PANSTART.py + (pos.y - PANSTART.y);
-    schedDraw();
-    return;
-  }
-  const node   = hitNode(pos.x, pos.y);
-  const newHit = node ? node.id : null;
-  if (newHit !== HIT) {
-    HIT = newHit;
-    CV.style.cursor = HIT ? 'pointer' : 'default';
-    schedDraw();
-  }
-});
+  });
 
-window.addEventListener('mouseup', () => {
-  if (DRAG) {
-    if (!DRAG.moved) {
-      const n = DRAG.node;
-      if (n.type === 'recipe') {
-        // Single click = focus/unfocus
-        setFocus(n.id);
+  window.addEventListener('mouseup', () => {
+    if (DRAG) {
+      if (!DRAG.moved) {
+        const n = DRAG.node;
+        if (n.type === 'recipe') setFocus(n.id);
       }
+      DRAG = null;
     }
-    DRAG = null;
-  }
-  PANSTART = null;
-  CV.style.cursor = HIT ? 'pointer' : 'default';
-});
+    PANSTART = null;
+    CV.style.cursor = HIT ? 'pointer' : 'default';
+  });
 
-CV.addEventListener('dblclick', e => {
-  const pos  = getPos(e);
-  const node = hitNode(pos.x, pos.y);
-  if (node) {
-    // Double-click: expand/collapse if recipe, always centre
-    if (node.type === 'recipe') {
-      node.expanded = !node.expanded;
-      node._hcache_exp_dirty = true;
-      node.h = nodeH(node);
-      buildSpatialHash();
-      cacheEdgePaths();
+  CV.addEventListener('dblclick', e => {
+    const pos  = getPos(e);
+    const node = hitNode(pos.x, pos.y);
+    if (node) {
+      if (node.type === 'recipe') {
+        node.expanded = !node.expanded;
+        node._hcache_exp_dirty = true;
+        node.h = nodeH(node);
+        buildSpatialHash();
+        cacheEdgePaths();
+      }
+      centreOnNode(node.id);
+    } else {
+      clearFocus();
     }
-    centreOnNode(node.id);
-  } else {
-    clearFocus();
-  }
-});
+  });
 
-CV.addEventListener('wheel', e => {
-  e.preventDefault();
-  const pos  = getPos(e);
-  const nz   = Math.min(3, Math.max(0.05, ZOOM * (e.deltaY > 0 ? 0.85 : 1.18)));
-  PAN.x = pos.x - (pos.x - PAN.x) * (nz / ZOOM);
-  PAN.y = pos.y - (pos.y - PAN.y) * (nz / ZOOM);
-  ZOOM  = nz;
-  schedDraw();
-}, { passive: false });
-
-// Ctrl+F → search
-window.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-    // Only intercept if graph panel is visible
-    if (!document.getElementById('graph')?.offsetParent === null) return;
+  CV.addEventListener('wheel', e => {
     e.preventDefault();
-    openSearch();
-  }
-  if (e.key === 'Escape') {
-    if (searchActive) { closeSearch(); return; }
-    clearFocus();
-  }
-});
+    const pos = getPos(e);
+    const nz  = Math.min(3, Math.max(0.05, ZOOM * (e.deltaY > 0 ? 0.85 : 1.18)));
+    PAN.x = pos.x - (pos.x - PAN.x) * (nz / ZOOM);
+    PAN.y = pos.y - (pos.y - PAN.y) * (nz / ZOOM);
+    ZOOM  = nz;
+    schedDraw();
+  }, { passive: false });
+
+  // Ctrl+F → graph node search (Ctrl+Q is topbar recipe lookup, handled in main.js)
+  window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+      const graphEl = document.getElementById('graph');
+      if (!graphEl || graphEl.style.display === 'none') return;
+      e.preventDefault();
+      openSearch();
+    }
+    if (e.key === 'Escape') {
+      if (searchActive) { closeSearch(); return; }
+      clearFocus();
+    }
+  });
+}

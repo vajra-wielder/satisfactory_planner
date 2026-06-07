@@ -1,49 +1,38 @@
 """
-Satisfactory Factory Planner — Lite Server
-==========================================
+Satisfactory Factory Planner — HTTP Server
+===========================================
 Single-file stdlib HTTP server. No Flask, no Vite, no Node.
-Serves index.html at / and handles /api/* routes in-process.
+Serves index.html + frontend/* statically and handles /api/* in-process.
 
-Run:  python server.py
-Open: http://localhost:5000
+Intended to be imported and started by app.py.
+Can also be run directly for browser-only use:
+
+    python server.py
+    python server.py 5001   # custom port
 """
 
-import json, sys, os
+import json, sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import yaml
 
-# ── Locate files relative to this script ─────────────────────────────────────
 HERE = Path(__file__).parent
-sys.path.insert(0, str(HERE))  # so `import solver` works
-
-# solver.py expects recipes at HERE/data/recipes_complete.yaml
-# We keep the canonical copy at HERE/recipes_complete.yaml for easy editing,
-# and ensure the data/ subdirectory always has a current copy.
-_DATA_DIR   = HERE / "data"
-_YAML_SRC   = HERE / "recipes_complete.yaml"
-_YAML_DST   = _DATA_DIR / "recipes_complete.yaml"
-_DATA_DIR.mkdir(exist_ok=True)
-if _YAML_SRC.exists():
-    import shutil as _shutil
-    # Only copy if source is newer or destination missing
-    if not _YAML_DST.exists() or _YAML_SRC.stat().st_mtime > _YAML_DST.stat().st_mtime:
-        _shutil.copy2(_YAML_SRC, _YAML_DST)
+sys.path.insert(0, str(HERE))
 
 from solver import (
     load_recipes, load_machine_meta, load_scenario, solve,
     result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR
 )
 
-# Pre-load on startup (same as original api.py)
 ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
 
-print(f"🏭 Satisfactory Planner Lite — http://localhost:5000")
-print(f"   {len(ALL_RECIPES)} recipes  "
+print(f"🏭 Satisfactory Planner — {len(ALL_RECIPES)} recipes "
       f"({sum(1 for r in ALL_RECIPES.values() if r.alternate)} alternates)")
 
+
+# ── Scenario builder ──────────────────────────────────────────────────────────
 
 def _build_scenario(b: dict) -> Scenario:
     return Scenario(
@@ -64,12 +53,26 @@ def _build_scenario(b: dict) -> Scenario:
     )
 
 
+# ── MIME types ────────────────────────────────────────────────────────────────
+
+_MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".js":   "application/javascript; charset=utf-8",
+    ".css":  "text/css; charset=utf-8",
+    ".yaml": "text/yaml; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+}
+
+
+# ── Request handler ───────────────────────────────────────────────────────────
+
 class Handler(BaseHTTPRequestHandler):
+
     def log_message(self, fmt, *args):
-        # Quieter logging — just method + path + status
         print(f"  {self.command} {self.path.split('?')[0]} → {args[1]}")
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Send helpers ──────────────────────────────────────────────────────────
+
     def _send(self, code: int, body: bytes, ctype: str = "application/json"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -89,7 +92,15 @@ class Handler(BaseHTTPRequestHandler):
         SCENARIOS_DIR.mkdir(exist_ok=True)
         return SCENARIOS_DIR / f"{name}.yaml"
 
-    # ── OPTIONS (CORS preflight) ───────────────────────────────────────────────
+    def _serve_file(self, fpath: Path):
+        if not fpath.exists() or not fpath.is_file():
+            self._json(404, {"error": f"Not found: {fpath.name}"})
+            return
+        ctype = _MIME.get(fpath.suffix.lower(), "application/octet-stream")
+        self._send(200, fpath.read_bytes(), ctype)
+
+    # ── CORS preflight ────────────────────────────────────────────────────────
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -98,38 +109,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     # ── GET ───────────────────────────────────────────────────────────────────
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path   = parsed.path.rstrip("/") or "/"
         qs     = parse_qs(parsed.query)
 
-        # ── Static files ───────────────────────────────────────────────────────
-        if path == "/" or path == "/index.html":
-            self._send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
+        # ── Static files ──────────────────────────────────────────────────────
+
+        if path in ("/", "/index.html"):
+            self._serve_file(HERE / "index.html")
             return
 
-        # Frontend module files  (e.g. /frontend/graph.js)
         if path.startswith("/frontend/"):
-            rel  = path.lstrip("/")           # "frontend/graph.js"
-            fpath = HERE / rel
-            if fpath.exists() and fpath.is_file():
-                ext   = fpath.suffix.lower()
-                ctype = {
-                    ".js":  "application/javascript; charset=utf-8",
-                    ".css": "text/css; charset=utf-8",
-                    ".mjs": "application/javascript; charset=utf-8",
-                }.get(ext, "application/octet-stream")
-                self._send(200, fpath.read_bytes(), ctype)
-            else:
-                self._json(404, {"error": f"Not found: {rel}"})
+            self._serve_file(HERE / path.lstrip("/"))
             return
 
-        # API routes
+        # ── API routes ────────────────────────────────────────────────────────
+
         if path == "/api/items":
-            q  = (qs.get("q", [""])[0]).lower().replace(" ", "_")
+            q     = qs.get("q", [""])[0].lower().replace(" ", "_")
             all_i = get_all_items(ALL_RECIPES)
             if q:
-                matched = [i for i in all_i if i.lower().startswith(q)]
+                matched  = [i for i in all_i if i.lower().startswith(q)]
                 matched += [i for i in all_i if q in i.lower() and not i.lower().startswith(q)]
                 self._json(200, matched[:14])
             else:
@@ -144,15 +146,10 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        # Item display names derived from recipe data — used by frontend state.js
         if path == "/api/item-display":
-            # Build item_key -> human display name from recipe inputs/outputs
-            disp = {}
-            for r in ALL_RECIPES.values():
-                for key in list(r.inputs) + list(r.outputs):
-                    if key not in disp:
-                        disp[key] = key.replace("_", " ")
-            # Known overrides where internal key differs from in-game display name
+            disp = {key: key.replace("_", " ")
+                    for r in ALL_RECIPES.values()
+                    for key in list(r.inputs) + list(r.outputs)}
             disp.update({
                 "Circuit_Board_HS":  "AI Limiter",
                 "Lightweight_Frame": "Radio Control Unit",
@@ -166,7 +163,8 @@ class Handler(BaseHTTPRequestHandler):
             for name in list_scenarios():
                 try:
                     s = load_scenario(self._scenario_path(name))
-                    out.append({"key": name, "name": s.name, "description": s.description,
+                    out.append({"key": name, "name": s.name,
+                                "description": s.description,
                                 "resources": list(s.available_resources.keys()),
                                 "objectives": list(s.objective.keys())})
                 except Exception as e:
@@ -176,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/scenarios/"):
             name = path[len("/api/scenarios/"):]
-            p = self._scenario_path(name)
+            p    = self._scenario_path(name)
             if not p.exists():
                 self._json(404, {"error": "Not found"})
                 return
@@ -186,16 +184,13 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(404, {"error": "Not found"})
 
-    # ── POST / PUT ─────────────────────────────────────────────────────────────
-    def do_POST(self):
-        self._handle_write()
+    # ── POST / PUT ────────────────────────────────────────────────────────────
 
-    def do_PUT(self):
-        self._handle_write()
+    def do_POST(self): self._handle_write()
+    def do_PUT(self):  self._handle_write()
 
     def _handle_write(self):
-        parsed = urlparse(self.path)
-        path   = parsed.path.rstrip("/")
+        path = urlparse(self.path).path.rstrip("/")
 
         if path == "/api/solve-inline":
             b = self._read_json()
@@ -207,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = solve(s, ALL_RECIPES)
                 self._json(200, result_to_dict(result, s, MACHINE_META))
             except Exception as e:
+                import traceback; traceback.print_exc()
                 self._json(500, {"error": str(e)})
             return
 
@@ -222,6 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "Not found"})
 
     # ── DELETE ────────────────────────────────────────────────────────────────
+
     def do_DELETE(self):
         path = urlparse(self.path).path.rstrip("/")
         if path.startswith("/api/scenarios/"):
@@ -236,11 +233,16 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "Not found"})
 
 
-if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000
-    httpd = HTTPServer(("", port), Handler)
-    print(f"   Press Ctrl+C to stop.\n")
+# ── Standalone entry point (browser-only mode) ────────────────────────────────
+
+def run(port: int = 5000):
+    httpd = HTTPServer(("127.0.0.1", port), Handler)
+    print(f"   http://127.0.0.1:{port}/  —  Ctrl+C to stop\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n👋 Stopped.")
+
+
+if __name__ == "__main__":
+    run(int(sys.argv[1]) if len(sys.argv) > 1 else 5000)

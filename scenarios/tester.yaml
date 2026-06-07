@@ -1,0 +1,106 @@
+name: Tester
+description: ''
+alternate_recipes_enabled:
+- Alt_Steel_Rod
+- Alt_Pure_Iron_Ingot
+- Alt_Plastic_Smart_Plating
+- Alt_Automated_Speed_Wiring
+- Alt_Heavy_Flexible_Frame
+- Alt_Fused_Wire
+- Alt_Copper_Rotor
+- Alt_Coated_Iron_Plate
+- Alt_Bolted_Frame
+- Alt_Adhered_Iron_Plate
+- Alt_Electric_Motor
+- Alt_Steel_Cast_Plate
+- Alt_Aluminum_Rod
+- Alt_Leached_Iron_Ingot
+- Alt_Basic_Iron_Ingot
+- Alt_Caterium_Wire
+- Alt_Iron_Wire
+- Alt_Quickwire_Stator
+- Alt_Steel_Screws
+- Alt_Cast_Screws
+- Alt_Steel_Rotor
+- Alt_Stitched_Iron_Plate
+- Alt_Bolted_Iron_Plate
+- Alt_Rigor_Motor
+- Alt_Steeled_Frame
+- Alt_Iron_Alloy_Ingot
+- Alt_Heavy_Encased_Frame
+- Alt_Flexible_Framework
+- Alt_Coke_Steel_Ingot
+- Alt_Molded_Steel_Pipe
+- Alt_Iron_Pipe
+- Alt_Molded_Beam
+- Alt_Aluminum_Beam
+- Alt_Encased_Industrial_Pipe
+- Alt_Compacted_Steel_Ingot
+- Alt_Solid_Steel_Ingot
+- Alt_Pure_Caterium_Ingot
+- Alt_Radio_Control_System
+- Alt_Heat_Fused_Frame
+- Alt_Fertile_Uranium
+- Alt_Tempered_Caterium_Ingot
+- Alt_Leached_Caterium_Ingot
+- Alt_Radio_Connection_Unit
+- Alt_Fine_Black_Powder
+enabled_machines:
+- Smelter
+- Constructor
+- Assembler
+- Foundry
+- Manufacturer
+- Refinery
+available_resources:
+  Iron_Ore: 500
+  Coal: 500
+  Limestone: 300
+must_produce:
+  Steel_Beam: 15
+  Steel_Pipe: 10
+min_produce:
+  Encased_Industrial_Beam: 10
+max_produce: {}
+objective:
+  Versatile_Framework: 1000
+  Steel_Beam: 0.1
+  Steel_Pipe: 0.1
+  Encased_Industrial_Beam: 1
+power_shards_available: null
+somersloops_available: null
+max_power_mw: null
+max_machines: null
+notes: ''
+pinboard:
+  pinned_recipes:
+  - Adaptive_Control_Unit
+  - Assembly_Director_System
+  pin_groups:
+  - id: pvr7ygxt
+    title: Here it is
+    note: lets see if it is even useful
+    x: 221.12889301941462
+    y: 278.0469027970205
+    w: 240
+    h: 120
+    color: '#f59e0b22'
+    border: '#f59e0b'
+  pin_arrows:
+  - id: fbwjhh7m
+    fromType: node
+    fromId: Adaptive_Control_Unit
+    toType: node
+    toId: Assembly_Director_System
+  - id: yu13i60p
+    fromType: node
+    fromId: Adaptive_Control_Unit
+    toType: group
+    toId: pvr7ygxt
+  node_positions:
+    Adaptive_Control_Unit:
+      x: 182.06186705224837
+      y: 40.727073623329204
+    Assembly_Director_System:
+      x: 518
+      y: 60

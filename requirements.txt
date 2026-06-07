@@ -1,0 +1,7 @@
+# Satisfactory Factory Planner — Python dependencies
+# Install: pip install -r requirements.txt
+
+ortools>=9.8
+PyYAML>=6.0
+pywebview>=4.4     # optional — only needed for the native desktop window
+                   # omit or comment out if you prefer to use a browser
