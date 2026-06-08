@@ -11,7 +11,7 @@ Can also be run directly for browser-only use:
     python server.py 5001   # custom port
 """
 
-import json, sys
+import json, os, sys, tempfile, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -22,11 +22,20 @@ sys.path.insert(0, str(HERE))
 
 from solver import (
     load_recipes, load_machine_meta, load_scenario, solve,
-    result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR
+    result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR,
+    compute_duals,
 )
 
 ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
+ALL_ITEMS    = get_all_items(ALL_RECIPES)   # computed once; never changes at runtime
+
+# Cache the last solved scenario so /api/duals can re-use it without re-solving.
+_dual_cache: dict = {}   # {'scenario': Scenario, 'spm': dict, 'usable': dict}
+_dual_lock = threading.Lock()
+
+# Scenario list cache — keyed by (name, mtime) pairs so stale entries auto-invalidate.
+_scenario_list_cache: dict = {}   # {frozenset of (name, mtime): list[dict]}
 
 print(f"🏭 Satisfactory Planner — {len(ALL_RECIPES)} recipes "
       f"({sum(1 for r in ALL_RECIPES.values() if r.alternate)} alternates)")
@@ -129,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/items":
             q     = qs.get("q", [""])[0].lower().replace(" ", "_")
-            all_i = get_all_items(ALL_RECIPES)
+            all_i = ALL_ITEMS
             if q:
                 matched  = [i for i in all_i if i.lower().startswith(q)]
                 matched += [i for i in all_i if q in i.lower() and not i.lower().startswith(q)]
@@ -159,8 +168,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/scenarios":
+            # Build a fingerprint from (name, mtime) for every scenario file.
+            # If it matches the cached fingerprint the YAML has not changed.
+            names = list_scenarios()
+            fingerprint = frozenset(
+                (n, self._scenario_path(n).stat().st_mtime)
+                for n in names
+                if self._scenario_path(n).exists()
+            )
+            if fingerprint in _scenario_list_cache:
+                self._json(200, _scenario_list_cache[fingerprint])
+                return
             out = []
-            for name in list_scenarios():
+            for name in names:
                 try:
                     s = load_scenario(self._scenario_path(name))
                     out.append({"key": name, "name": s.name,
@@ -169,6 +189,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "objectives": list(s.objective.keys())})
                 except Exception as e:
                     out.append({"key": name, "name": name, "error": str(e)})
+            _scenario_list_cache.clear()   # only keep the latest fingerprint
+            _scenario_list_cache[fingerprint] = out
             self._json(200, out)
             return
 
@@ -180,6 +202,23 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with open(p) as f:
                 self._json(200, yaml.safe_load(f))
+            return
+
+        if path == "/api/duals":
+            with _dual_lock:
+                cache = dict(_dual_cache)
+            if not cache:
+                self._json(200, {"shadow_prices": {}, "saturation_points": {},
+                                 "note": "No solve result cached yet."})
+                return
+            try:
+                shadow, sat = compute_duals(
+                    cache["scenario"], ALL_RECIPES,
+                    cache.get("spm"), cache.get("usable"))
+                self._json(200, {"shadow_prices": shadow, "saturation_points": sat})
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._json(500, {"error": str(e)})
             return
 
         self._json(404, {"error": "Not found"})
@@ -199,8 +238,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 s      = _build_scenario(b)
-                result = solve(s, ALL_RECIPES)
-                self._json(200, result_to_dict(result, s, MACHINE_META))
+                result = solve(s, ALL_RECIPES, MACHINE_META)
+                d      = result_to_dict(result, s, MACHINE_META)
+                # Cache scenario + spm for lazy dual computation (thread-safe)
+                new_cache = {
+                    "scenario": s,
+                    "spm": {f["recipe_key"]: f["sloops_per_machine"]
+                            for f in d.get("flows", [])
+                            if f.get("sloops_per_machine", 0) > 0},
+                    # Pre-pruned recipe set: lets compute_duals skip re-pruning
+                    "usable": getattr(result, "_usable", None),
+                }
+                with _dual_lock:
+                    _dual_cache.clear()
+                    _dual_cache.update(new_cache)
+                self._json(200, d)
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._json(500, {"error": str(e)})
@@ -210,8 +262,21 @@ class Handler(BaseHTTPRequestHandler):
             name = path[len("/api/scenarios/"):]
             data = self._read_json()
             p    = self._scenario_path(name)
-            with open(p, "w") as f:
-                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            # Write to a temp file beside the target, then atomically rename.
+            # Prevents a truncated file if the process is killed mid-write.
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=p.parent, prefix=f".{p.stem}_", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w") as f:
+                    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+                os.replace(tmp_path, p)  # atomic on POSIX; near-atomic on Windows
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             self._json(200, {"status": "saved", "key": name})
             return
 

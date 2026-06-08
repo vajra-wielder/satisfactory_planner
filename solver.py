@@ -22,6 +22,7 @@ PRUNING:
 """
 
 import math, yaml, json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
@@ -336,6 +337,54 @@ def _solve_lp(
     return "Optimal", slvr.Objective().Value(), q_vals
 
 
+def _sat_search(
+    item: str,
+    scenario: 'Scenario',
+    usable: dict,
+    spm: dict,
+) -> Optional[float]:
+    """
+    Binary search for the supply level of `item` where its shadow price drops
+    to zero (i.e. adding more stops helping the objective).
+    Runs as an independent task — safe to call from a thread pool.
+    Returns the saturation supply level, rounded to 1 decimal place.
+    """
+    lo = scenario.available_resources[item]
+    hi = max(lo * 20 + 5000, lo + 50000)  # generous upper bound
+    for _ in range(28):  # up to 28 iterations; early-exit when converged
+        if hi - lo < 0.5:  # precision sufficient — stop early
+            break
+        mid = (lo + hi) / 2
+        res2 = dict(scenario.available_resources)
+        res2[item] = mid
+        sc2 = Scenario(
+            name=scenario.name, description='',
+            alternate_recipes_enabled=scenario.alternate_recipes_enabled,
+            enabled_machines=scenario.enabled_machines,
+            available_resources=res2,
+            must_produce=scenario.must_produce,
+            min_produce=scenario.min_produce,
+            max_produce=scenario.max_produce,
+            objective=scenario.objective,
+            power_shards_available=scenario.power_shards_available,
+            somersloops_available=scenario.somersloops_available,
+            max_power_mw=scenario.max_power_mw,
+            max_machines=scenario.max_machines,
+            notes='',
+        )
+        slvr2, _, _, _, res_ct2 = _build_lp(sc2, usable, spm)
+        slvr2.Solve()
+        try:
+            dual_mid = res_ct2[item].dual_value()
+        except Exception:
+            dual_mid = 0.0
+        if dual_mid < 0.001:
+            hi = mid
+        else:
+            lo = mid
+    return round(hi, 1)
+
+
 def _solve_lp_with_duals(
     scenario: Scenario,
     usable: Dict[str,Recipe],
@@ -374,45 +423,24 @@ def _solve_lp_with_duals(
         except Exception:
             shadow[item] = 0.0
 
-    # Compute saturation point for each binding resource via binary search
-    saturation: Dict[str, Optional[float]] = {}
-    for item, sp in shadow.items():
-        if sp < 0.001:
-            saturation[item] = None  # already not binding
-            continue
-        # Binary search for the supply level where dual drops to ~0
-        lo  = scenario.available_resources[item]
-        hi  = lo * 20 + 5000   # generous upper bound
-        for _ in range(28):    # 28 iterations → precision < 0.0001
-            mid = (lo + hi) / 2
-            res2 = dict(scenario.available_resources)
-            res2[item] = mid
-            sc2  = Scenario(
-                name=scenario.name, description='',
-                alternate_recipes_enabled=scenario.alternate_recipes_enabled,
-                enabled_machines=scenario.enabled_machines,
-                available_resources=res2,
-                must_produce=scenario.must_produce,
-                min_produce=scenario.min_produce,
-                max_produce=scenario.max_produce,
-                objective=scenario.objective,
-                power_shards_available=scenario.power_shards_available,
-                somersloops_available=scenario.somersloops_available,
-                max_power_mw=scenario.max_power_mw,
-                max_machines=scenario.max_machines,
-                notes='',
-            )
-            slvr2, _, _, _, res_ct2 = _build_lp(sc2, usable, spm)
-            slvr2.Solve()
-            try:
-                dual_mid = res_ct2[item].dual_value()
-            except Exception:
-                dual_mid = 0.0
-            if dual_mid < 0.001:
-                hi = mid
-            else:
-                lo = mid
-        saturation[item] = round(hi, 1)
+    # Compute saturation points in parallel — each binary search is independent
+    binding_items = {item: sp for item, sp in shadow.items() if sp >= 0.001}
+    saturation: Dict[str, Optional[float]] = {
+        item: None for item in shadow if shadow[item] < 0.001
+    }
+
+    if binding_items:
+        with ThreadPoolExecutor(max_workers=min(len(binding_items), 8)) as ex:
+            futs = {
+                ex.submit(_sat_search, item, scenario, usable, spm): item
+                for item in binding_items
+            }
+            for fut in as_completed(futs):
+                item = futs[fut]
+                try:
+                    saturation[item] = fut.result()
+                except Exception:
+                    saturation[item] = None
 
     return "Optimal", slvr.Objective().Value(), q_vals, shadow, saturation
 
@@ -438,6 +466,45 @@ def _total_power(
 
 
 # ── Iterative sloop allocation ────────────────────────────────────────────────
+def _trial_sloop(
+    k: str,
+    scenario: Scenario,
+    usable: Dict[str,Recipe],
+    spm: Dict[str,int],
+    best_q: Dict[str,float],
+    best_obj: float,
+    budget: int,
+) -> Optional[Tuple[str, float, float, Dict[str,float], int]]:
+    """
+    Worker: evaluate adding one sloop slot to recipe k.
+    Returns (k, gain, obj_val, q_vals, cost) if viable, else None.
+    Safe to call from a thread pool — builds and solves its own LP with no
+    shared mutable state (trial_spm is a local copy).
+    """
+    r = usable[k]
+    if spm[k] >= r.sloop_slots:
+        return None  # already maxed
+
+    n_machines = max(1, math.ceil(best_q.get(k, 0.0)))
+    cost = n_machines
+    if cost > budget:
+        return None
+
+    trial_spm = dict(spm)
+    trial_spm[k] = spm[k] + 1
+
+    status, obj_val, q_vals = _solve_lp(scenario, usable, trial_spm)
+    if status != "Optimal":
+        return None
+
+    pw = _total_power(usable, q_vals, trial_spm, {})
+    if scenario.max_power_mw is not None and pw > scenario.max_power_mw:
+        return None
+
+    gain = obj_val - best_obj
+    return (k, gain, obj_val, q_vals, cost)
+
+
 def _iterate_sloops(
     scenario: Scenario,
     usable: Dict[str,Recipe],
@@ -446,10 +513,10 @@ def _iterate_sloops(
 ) -> Tuple[Dict[str,int], Dict[str,float], float]:
     """
     spm[k] = sloops per machine (0..max_slots). Starts at 0.
-    Each iteration: try incrementing spm[k] by 1 for each eligible recipe.
+    Each round: all eligible candidates are evaluated in parallel via a
+    ThreadPoolExecutor; the one with the highest objective gain is committed.
     Budget cost = ceil(q[k]) sloops (one per physical machine).
     Accept if objective improves and power stays within cap.
-    Re-solve LP each time so network rebalances without surplus.
     Pruned recipe set is fixed — only LP inputs change.
     """
     if scenario.somersloops_available == 0:
@@ -460,52 +527,48 @@ def _iterate_sloops(
     best_obj = base_obj
     budget   = scenario.somersloops_available
 
-    candidates = [k for k,r in usable.items() if r.sloop_slots > 0]
+    candidates = [k for k, r in usable.items() if r.sloop_slots > 0]
 
     while budget > 0:
-        best_gain   = 0.0
-        best_k      = None
-        best_new_q  = None
-        best_new_obj = None
+        # Evaluate all candidates concurrently — each is an independent LP
+        eligible = [k for k in candidates if spm[k] < usable[k].sloop_slots
+                    and max(1, math.ceil(best_q.get(k, 0.0))) <= budget]
+        if not eligible:
+            break
 
-        for k in candidates:
-            r = usable[k]
-            if spm[k] >= r.sloop_slots: continue  # maxed out
+        workers = min(len(eligible), 8)
+        results = []
+        # spm and best_q are read-only in workers; pass directly (no copy needed).
+        # _trial_sloop creates its own trial_spm copy internally.
+        frozen_spm = spm        # workers must not mutate — they don't
+        frozen_q   = best_q
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {
+                ex.submit(
+                    _trial_sloop, k, scenario, usable,
+                    frozen_spm, frozen_q, best_obj, budget
+                ): k
+                for k in eligible
+            }
+            for fut in as_completed(futs):
+                res = fut.result()
+                if res is not None:
+                    results.append(res)
 
-            # Cost: one more sloop on every physical machine of this recipe
-            # Machine count estimated from current best_q
-            n_machines = max(1, math.ceil(best_q.get(k, 0.0)))
-            cost = n_machines  # sloops consumed
+        if not results:
+            break
 
-            if cost > budget: continue
+        # Pick the candidate with the highest objective gain
+        best = max(results, key=lambda r: r[1])
+        best_k, best_gain, best_obj_val, best_new_q, best_cost = best
 
-            # Trial: increment spm[k] by 1
-            trial_spm = dict(spm)
-            trial_spm[k] = spm[k] + 1
-
-            status, obj_val, q_vals = _solve_lp(scenario, usable, trial_spm)
-            if status != "Optimal": continue
-
-            # Power check at underclocked baseline (no shards applied yet)
-            pw = _total_power(usable, q_vals, trial_spm, {})
-            if scenario.max_power_mw is not None and pw > scenario.max_power_mw:
-                continue
-
-            gain = obj_val - best_obj
-            if gain > best_gain or (best_k is None and gain >= -1e-6):
-                best_gain    = gain
-                best_k       = k
-                best_new_q   = q_vals
-                best_new_obj = obj_val
-                best_cost    = cost
-
-        if best_k is None or best_gain <= 0:
-            break  # no objective-improving assignments remain
+        if best_gain <= 0:
+            break  # no objective-improving assignment found this round
 
         spm[best_k] += 1
-        best_q       = best_new_q
-        best_obj     = best_new_obj
-        budget      -= best_cost
+        best_q        = best_new_q
+        best_obj      = best_obj_val
+        budget       -= best_cost
 
     return spm, best_q, best_obj
 
@@ -529,7 +592,7 @@ def _allocate_shards(
     for k, r in usable.items():
         qv = q_vals.get(k, 0.0)
         if qv < 1e-5:
-            result[k] = {"machines": 0, "clock_pct": 100.0, "shards": 0, "power_mw": 0.0}
+            # Skip inactive recipes — callers only read active-recipe entries
             continue
 
         ceil_n  = math.ceil(qv)
@@ -583,7 +646,8 @@ def _layout_options(r: Recipe, qv: float, s: int) -> List[LayoutOption]:
 
 
 # ── Main solve ────────────────────────────────────────────────────────────────
-def solve(scenario: Scenario, all_recipes: Dict[str,Recipe]) -> SolveResult:
+def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
+          machine_meta: Dict = None) -> SolveResult:
     warnings:       List[str] = []
     conflict_hints: List[str] = []
     cap_overshoot:  Dict[str,float] = {}
@@ -597,11 +661,13 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe]) -> SolveResult:
         return SolveResult("No recipes", 0, [], {}, {}, {}, {}, {}, {}, {},
                           0, 0, 0, 0, warnings, conflict_hints, 0, {})
 
-    # Stage 1: base LP (no sloops) — also extracts shadow prices + saturation points
+    # Stage 1: base LP (no sloops) — cheap solve; duals are computed lazily on demand
     if usable:
-        status, base_obj, base_q, shadow_prices, saturation_points = _solve_lp_with_duals(scenario, usable, {})
+        status, base_obj, base_q = _solve_lp(scenario, usable, {})
     else:
-        status, base_obj, base_q, shadow_prices, saturation_points = "Infeasible", 0.0, {}, {}, {}
+        status, base_obj, base_q = "Infeasible", 0.0, {}
+    shadow_prices: Dict[str,float] = {}
+    saturation_points: Dict[str,object] = {}
 
     # Stage 2: iterative sloop assignment (LP re-solved each step, same pruned set)
     if status == "Optimal" and scenario.somersloops_available > 0:
@@ -616,7 +682,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe]) -> SolveResult:
     )
 
     # Build flows
-    meta = load_machine_meta()
+    meta = machine_meta if machine_meta is not None else load_machine_meta()
     flows: List[FlowResult] = []
     total_power        = 0.0
     total_machines_int = 0
@@ -690,13 +756,15 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe]) -> SolveResult:
             source_nodes[item] = supply
 
     sink_nodes: Dict[str,float] = {}
-    for item in list(scenario.objective.keys()) + list(scenario.must_produce.keys()):
+    for item in (list(scenario.objective.keys()) + list(scenario.must_produce.keys())
+                 + list(scenario.min_produce.keys()) + list(scenario.max_produce.keys())):
         val = net_items.get(item, 0)
         if val > 1e-5:
             sink_nodes[item] = round(val, 4)
 
     wanted = (set(scenario.objective.keys()) | set(scenario.must_produce.keys())
-            | set(scenario.min_produce.keys()) | set(scenario.available_resources.keys()))
+            | set(scenario.min_produce.keys()) | set(scenario.max_produce.keys())
+            | set(scenario.available_resources.keys()))
     has_consumer = set()
     for r in usable.values(): has_consumer.update(r.inputs.keys())
 
@@ -731,7 +799,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe]) -> SolveResult:
                     else "Optimal (with errors)" if status == "Optimal"
                     else "Infeasible")
 
-    return SolveResult(
+    result = SolveResult(
         status=final_status, objective_value=round(obj_val, 4),
         flows=flows, net_items=net_items,
         objective_items={item: round(net_items.get(item,0),4) for item in scenario.objective},
@@ -746,6 +814,29 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe]) -> SolveResult:
         shadow_prices=shadow_prices,
         saturation_points=saturation_points,
     )
+    # Attach the pruned recipe set so callers can pass it to compute_duals,
+    # avoiding a redundant prune_recipes call when the Analysis modal opens.
+    result._usable = usable  # type: ignore[attr-defined]
+    return result
+
+
+def compute_duals(scenario: Scenario, all_recipes: Dict[str,Recipe],
+                  spm: Optional[Dict[str,int]] = None,
+                  usable: Optional[Dict[str,Recipe]] = None,
+                 ) -> Tuple[Dict[str,float], Dict[str,object]]:
+    """
+    Run the dual LP for shadow prices + saturation points.
+    Called lazily (only when Analysis modal is opened).
+    spm: sloops-per-machine mapping from the last solve (or {} / None for no sloops).
+    usable: pre-pruned recipe set from the last solve — skips re-pruning when provided.
+    Returns (shadow_prices, saturation_points).
+    """
+    if usable is None:
+        usable, _ = prune_recipes(scenario, all_recipes)
+    if not usable:
+        return {}, {}
+    _, _, _, shadow, saturation = _solve_lp_with_duals(scenario, usable, spm or {})
+    return shadow, saturation
 
 
 def compute_build_cost(result: SolveResult, machine_meta: Dict) -> Dict[str,int]:

@@ -646,32 +646,32 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
           <button class="arb" id="add-res">+ Add Resource</button>
         </div>
       </div>
-      <div class="pc" id="sec-obj">
-        <div class="pt" id="tog-obj">
+      <div class="pc" id="sec-goals">
+        <div class="pt" id="tog-goals">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-          Objective <span class="chev" style="margin-left:auto">&#9660;</span>
+          Goals <span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
-          <p style="font-size:11px;color:var(--t3);margin-bottom:5px">Maximize this weighted sum.</p>
-          <div id="kv-obj"></div>
-          <button class="arb" id="add-obj">+ Add Objective</button>
-        </div>
-      </div>
-      <div class="pc" id="sec-con">
-        <div class="pt" id="tog-con">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v7.31"/><path d="M14 9.3V1.99"/><path d="M8.5 2h7"/><path d="M14 9.3a6.5 6.5 0 1 1-4 0"/></svg>
-          Constraints <span class="chev" style="margin-left:auto">&#9654;</span>
-        </div>
-        <div class="secb" style="display:none">
-          <div style="font-size:11px;color:var(--t3);margin-bottom:4px">Must produce exactly:</div>
-          <div id="kv-must"></div>
-          <button class="arb" id="add-must">+ Add Equality</button>
-          <div style="font-size:11px;color:var(--t3);margin:6px 0 4px">Minimum &ge;:</div>
-          <div id="kv-min"></div>
-          <button class="arb" id="add-min">+ Add Min</button>
-          <div style="font-size:11px;color:var(--t3);margin:6px 0 4px">Maximum &le;:</div>
-          <div id="kv-max"></div>
-          <button class="arb" id="add-max">+ Add Max</button>
+          <div class="goals-group">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:4px">Maximize <span style="color:var(--t4);font-size:10px">— weight sets priority between items</span></div>
+            <div id="kv-obj"></div>
+            <button class="arb" id="add-obj">+ Add</button>
+          </div>
+          <div class="goals-group">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:4px">Produce exactly</div>
+            <div id="kv-must"></div>
+            <button class="arb" id="add-must">+ Add</button>
+          </div>
+          <div class="goals-group">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:4px">At least &ge;</div>
+            <div id="kv-min"></div>
+            <button class="arb" id="add-min">+ Add</button>
+          </div>
+          <div class="goals-group">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:4px">At most &le;</div>
+            <div id="kv-max"></div>
+            <button class="arb" id="add-max">+ Add</button>
+          </div>
         </div>
       </div>
       <div class="pc" id="sec-oc">

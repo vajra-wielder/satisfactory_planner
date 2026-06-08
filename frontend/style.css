@@ -518,3 +518,13 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .pb-tool.pb-tool-danger { color: var(--t3); }
 .pb-tool.pb-tool-danger:hover { color: var(--err); border-color: var(--err); background: rgba(239,68,68,.1); box-shadow: none; }
 .pb-tool.pb-tool-active.pb-tool-danger { background: rgba(239,68,68,.15); border-color: var(--err); color: var(--err); box-shadow: 0 0 0 1px var(--err); }
+
+/* ══════════════════════════════════════════════════════════
+   GOALS SECTION  sub-group dividers
+══════════════════════════════════════════════════════════ */
+.goals-group {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--b);
+}
+.goals-group:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }

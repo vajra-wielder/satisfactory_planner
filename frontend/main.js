@@ -114,21 +114,29 @@ function updateIssuesBadge(result) {
 // ── Solve ─────────────────────────────────────────────────────────────────────
 
 let solving = false;
+let solveAbort = null;  // AbortController for the in-flight solve fetch
 
 function handleSolve() {
-  if (solving) return;
+  // Cancel any in-flight request before starting a new one
+  if (solveAbort) {
+    solveAbort.abort();
+    solveAbort = null;
+  }
+
   readUI();
   const payload = { ...SC };
   if (payload.power_shards_available == null) payload.power_shards_available = 0;
   if (payload.somersloops_available  == null) payload.somersloops_available  = 0;
 
   solving = true;
+  solveAbort = new AbortController();
   const mySeq = nextSolveSeq();
+  const myAbort = solveAbort;
   const btn = document.getElementById('bsolve');
   btn.disabled = true;
   btn.textContent = 'Solving...';
 
-  solveScenario(payload)
+  solveScenario(payload, myAbort.signal)
     .then(result => {
       // Discard stale results if a newer solve was fired
       if (mySeq !== solveSeq) return;
@@ -141,6 +149,7 @@ function handleSolve() {
       if (hasIssues) openWarn();
     })
     .catch(err => {
+      if (err.name === 'AbortError') return;  // intentionally cancelled
       if (mySeq !== solveSeq) return;
       setResult({
         status: 'Error: ' + err.message, flows: [], net_items: {},
@@ -153,6 +162,7 @@ function handleSolve() {
     .finally(() => {
       if (mySeq !== solveSeq) return;
       solving = false;
+      solveAbort = null;
       btn.disabled = false;
       btn.textContent = '▶ Solve';
       renderResultsBar();
@@ -241,7 +251,7 @@ document.getElementById('rail-saved')   .addEventListener('click', () => expandT
 document.getElementById('rail-solve')   .addEventListener('click', handleSolve);
 
 // Section toggles
-['res', 'obj', 'con', 'oc', 'nt'].forEach(id =>
+['res', 'goals', 'oc', 'nt'].forEach(id =>
   document.getElementById('tog-' + id).addEventListener('click', () => toggleSec(id)));
 
 // KV add-row buttons

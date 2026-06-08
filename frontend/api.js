@@ -5,9 +5,10 @@
 
 const BASE = '';  // same origin
 
-export async function apiFetch(path, method = 'GET', body = null) {
+export async function apiFetch(path, method = 'GET', body = null, signal = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body !== null) opts.body = JSON.stringify(body);
+  if (signal !== null) opts.signal = signal;
   const r = await fetch(BASE + path, opts);
   if (!r.ok) throw new Error(`Server error ${r.status}: ${await r.text()}`);
   return r.json();
@@ -40,6 +41,9 @@ export const saveScenario = (name, data) =>
 export const deleteScenario = (name) =>
   apiFetch(`/api/scenarios/${name}`, 'DELETE');
 
-// Solve
-export const solveScenario = (scenario) =>
-  apiFetch('/api/solve-inline', 'POST', scenario);
+// Solve — accepts an optional AbortSignal to cancel in-flight requests
+export const solveScenario = (scenario, signal = null) =>
+  apiFetch('/api/solve-inline', 'POST', scenario, signal);
+
+// Lazy dual LP — called only when Analysis modal opens
+export const fetchDuals = () => apiFetch('/api/duals');

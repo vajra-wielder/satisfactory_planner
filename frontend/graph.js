@@ -813,45 +813,22 @@ function drawEdge(e) {
   C.fillStyle = e.color;
   C.fill();
 
-  // Edge label.
-  // Split edges (partial flow from one of N producers) render as
-  // "ItemName  50 of 200/m" with the partial amount in edge colour and the
-  // total in dim grey, so both the per-edge contribution and the full
-  // demand/supply are always visible.  Non-split edges use the plain "200/m".
+  // Edge label — always "ItemName  rate/m", same format for split and non-split edges.
   if (ZOOM >= 0.35 && alpha > 0.3) {
-    const isSplit = e.totalRate != null && Math.abs(e.totalRate - e.rate) > 0.05;
-    const rateStr = isSplit
-      ? `${Number(e.rate).toFixed(1)} of ${Number(e.totalRate).toFixed(1)}/m`
-      : `${Number(e.rate).toFixed(1)}/m`;
-    const lbl = `${itemName(e.item)}  ${rateStr}`;
+    const rateStr = `${Number(e.rate).toFixed(1)}/m`;
+    const lbl     = `${itemName(e.item)}  ${rateStr}`;
 
     const fs  = 10;
     C.font    = `${fs}px 'JetBrains Mono',monospace`;
     const tw  = C.measureText(lbl).width;
     const pad = 4;
 
-    // Warm-tinted background pill for split edges so they stand out.
-    C.fillStyle = isSplit ? 'rgba(30,24,10,0.94)' : 'rgba(25,29,40,0.92)';
+    C.fillStyle = 'rgba(25,29,40,0.92)';
     C.fillRect(e._mx - tw / 2 - pad, e._my - fs * 0.72 - pad / 2, tw + pad * 2, fs + pad);
-
-    if (isSplit) {
-      // Three colour segments: "ItemName  " grey | "50 " edge colour | "of 200/m" dim
-      const prefixStr = `${itemName(e.item)}  `;
-      const splitStr  = `${Number(e.rate).toFixed(1)} `;
-      const ofStr     = `of ${Number(e.totalRate).toFixed(1)}/m`;
-      const startX    = e._mx - tw / 2;
-      const pW = C.measureText(prefixStr).width;
-      const sW = C.measureText(splitStr).width;
-      C.textAlign = 'left'; C.textBaseline = 'middle';
-      C.fillStyle = '#9aa0b4'; C.fillText(prefixStr, startX, e._my);
-      C.fillStyle = e.color;   C.fillText(splitStr,  startX + pW, e._my);
-      C.fillStyle = '#616880'; C.fillText(ofStr,     startX + pW + sW, e._my);
-    } else {
-      C.fillStyle    = e.color;
-      C.textAlign    = 'center';
-      C.textBaseline = 'middle';
-      C.fillText(lbl, e._mx, e._my);
-    }
+    C.fillStyle    = e.color;
+    C.textAlign    = 'center';
+    C.textBaseline = 'middle';
+    C.fillText(lbl, e._mx, e._my);
     C.textAlign    = 'left';
     C.textBaseline = 'alphabetic';
   }

@@ -4,6 +4,7 @@
  */
 
 import { RESULT, mCol, itemName } from './state.js';
+import { fetchDuals } from './api.js';
 
 // ── DOM helpers ───────────────────────────────────────────
 function section(parent, title, extraHTML = '') {
@@ -23,7 +24,31 @@ function statCard(label, val, color) {
 // ── Public API ────────────────────────────────────────────
 export function openAnalysis() {
   document.getElementById('analysis-modal').classList.add('show');
-  renderAnalysis();
+  renderAnalysis();          // render immediately with whatever we have
+
+  // Fetch duals lazily if we have a result but no shadow prices yet
+  if (RESULT?.status?.startsWith('Optimal') &&
+      Object.keys(RESULT.shadow_prices || {}).length === 0) {
+    const body = document.getElementById('analysis-body');
+    // Subtle loading indicator — don't wipe the already-rendered content
+    const loadingBanner = document.createElement('div');
+    loadingBanner.id = 'duals-loading';
+    loadingBanner.style.cssText =
+      'font-size:11px;color:var(--t3);padding:6px 12px;text-align:center';
+    loadingBanner.textContent = 'Computing shadow prices…';
+    body.prepend(loadingBanner);
+
+    fetchDuals()
+      .then(({ shadow_prices, saturation_points }) => {
+        RESULT.shadow_prices     = shadow_prices     || {};
+        RESULT.saturation_points = saturation_points || {};
+        renderAnalysis();   // re-render with full dual data
+      })
+      .catch(() => {
+        const banner = document.getElementById('duals-loading');
+        if (banner) banner.textContent = 'Shadow prices unavailable.';
+      });
+  }
 }
 
 export function closeAnalysis() {

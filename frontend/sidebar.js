@@ -61,12 +61,15 @@ export function activateTab(tab) {
 // ══════════════════════════════════════════════════════════
 export function makeAC(input, onPick, dropParent) {
   let drop = null, cursor = -1;
+  let _lastQ = null, _lastSuggestions = null;  // memoize last result
 
   function suggestions(q) {
-    if (!q) return ALL_ITEMS.slice(0, 10);
+    if (q === _lastQ) return _lastSuggestions;   // same query — skip rescan
+    _lastQ = q;
+    if (!q) return (_lastSuggestions = ALL_ITEMS.slice(0, 10));
     const ql = q.toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
     const qd = q.toLowerCase();
-    return ALL_ITEMS
+    _lastSuggestions = ALL_ITEMS
       .map(key => {
         const kl = key.toLowerCase(), dl = itemName(key).toLowerCase();
         let score = 0;
@@ -79,6 +82,7 @@ export function makeAC(input, onPick, dropParent) {
       .sort((a, b) => b.score - a.score)
       .slice(0, 14)
       .map(x => x.key);
+    return _lastSuggestions;
   }
 
   function openDrop() {
@@ -109,8 +113,12 @@ export function makeAC(input, onPick, dropParent) {
     closeDrop();
   }
 
+  let _inputTimer = null;
   input.addEventListener('focus', openDrop);
-  input.addEventListener('input', () => { closeDrop(); openDrop(); });
+  input.addEventListener('input', () => {
+    clearTimeout(_inputTimer);
+    _inputTimer = setTimeout(() => { closeDrop(); openDrop(); }, 120);
+  });
   input.addEventListener('blur',  () => setTimeout(closeDrop, 160));
   input.addEventListener('keydown', e => {
     if (!drop) {
@@ -153,10 +161,14 @@ function syncKv(name) {
   st.rows.forEach(({ key, val }) => { if (key) SC[st.field][key] = parseFloat(val) || 0; });
 }
 
-export function renderKv(name) {
+export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
   const st = KVS[name];
   const c  = document.getElementById('kv-' + name);
   c.innerHTML = '';
+
+  const keyInputs = [];
+  const valInputs = [];
+
   st.rows.forEach((row, i) => {
     const div  = document.createElement('div'); div.className = 'kvr';
     const wrap = document.createElement('div'); wrap.className = 'acw';
@@ -171,22 +183,67 @@ export function renderKv(name) {
       syncKv(name);
     });
     wrap.appendChild(ki);
-    makeAC(ki, key => { row.key = key; syncKv(name); });
+    keyInputs.push(ki);
 
     const vi = document.createElement('input'); vi.type = 'number'; vi.placeholder = '0'; vi.min = '0';
     vi.style.fontFamily = 'var(--mono)'; vi.style.fontSize = '12px';
     vi.value = row.val || '';
     vi.addEventListener('input', () => { row.val = vi.value; syncKv(name); });
+    valInputs.push(vi);
 
     const rb = document.createElement('button'); rb.className = 'bi'; rb.innerHTML = '✕';
-    rb.addEventListener('click', () => { st.rows.splice(i, 1); renderKv(name); syncKv(name); });
+    rb.addEventListener('click', () => {
+      st.rows.splice(i, 1);
+      div.remove();   // remove just this row — no full re-render needed
+      syncKv(name);
+    });
 
     div.appendChild(wrap); div.appendChild(vi); div.appendChild(rb);
     c.appendChild(div);
   });
+
+  // Wire autocomplete: picking an item jumps focus to the value input
+  keyInputs.forEach((ki, i) => {
+    makeAC(ki, key => {
+      st.rows[i].key = key;
+      syncKv(name);
+      requestAnimationFrame(() => {
+        valInputs[i].focus();
+        valInputs[i].select();
+      });
+    });
+  });
+
+  // Wire value Enter: advance to next row or add a new row
+  valInputs.forEach((vi, i) => {
+    vi.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      st.rows[i].val = vi.value;
+      syncKv(name);
+      if (i < st.rows.length - 1) {
+        keyInputs[i + 1].focus();
+        keyInputs[i + 1].select();
+      } else {
+        st.rows.push({ key: '', val: '' });
+        renderKv(name, st.rows.length - 1, 'key');
+      }
+    });
+  });
+
+  // Restore focus after re-render
+  if (focusRowIndex >= 0 && focusRowIndex < st.rows.length) {
+    requestAnimationFrame(() => {
+      const el = focusTarget === 'val' ? valInputs[focusRowIndex] : keyInputs[focusRowIndex];
+      if (el) { el.focus(); el.select(); }
+    });
+  }
 }
 
-export function addKv(name) { KVS[name].rows.push({ key: '', val: '' }); renderKv(name); }
+export function addKv(name) {
+  KVS[name].rows.push({ key: '', val: '' });
+  renderKv(name, KVS[name].rows.length - 1, 'key');
+}
 
 function loadKvFromScenario(name) {
   const st = KVS[name];
@@ -399,9 +456,25 @@ export function renderResultsBar() {
   const st  = (label, val, color = 'var(--acc)') =>
     `<div class="rbs"><div class="rbv" style="color:${color}">${val}</div><div class="rbl">${label}</div></div>`;
   const sep = '<div class="rbsep"></div>';
-  const objs = Object.entries(RESULT.objective_items || {}).filter(([, v]) => v > 0);
-  let h = st('Status', 'Optimal', 'var(--ok)') + sep;
-  objs.forEach(([k, v]) => { h += st(itemName(k), `${v.toFixed(1)}/m`) + sep; });
+
+  // All net-positive items (sinks + any positive net), sorted: objectives first, then by rate desc
+  const objKeys = new Set(Object.keys(RESULT.objective_items || {}));
+  const allOutputs = Object.entries(RESULT.net_items || {})
+    .filter(([, v]) => v > 0.01)
+    .sort(([ka, va], [kb, vb]) => {
+      const aObj = objKeys.has(ka) ? 1 : 0;
+      const bObj = objKeys.has(kb) ? 1 : 0;
+      if (bObj !== aObj) return bObj - aObj;  // objectives first
+      return vb - va;                          // then by rate descending
+    });
+
+  let h = '';
+  allOutputs.forEach(([k, v], i) => {
+    const color = objKeys.has(k) ? 'var(--ok)' : 'var(--acc)';
+    h += st(itemName(k), `${v.toFixed(1)}/m`, color);
+    if (i < allOutputs.length - 1) h += sep;
+  });
+  if (allOutputs.length) h += sep;
   h += st('Machines', RESULT.total_machines) + sep;
   h += st('Power', `${RESULT.total_power_mw?.toFixed(0)} MW`, 'var(--warn)');
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
