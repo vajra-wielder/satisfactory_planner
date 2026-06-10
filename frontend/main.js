@@ -134,7 +134,14 @@ function handleSolve() {
   const myAbort = solveAbort;
   const btn = document.getElementById('bsolve');
   btn.disabled = true;
-  btn.textContent = 'Solving...';
+  btn.textContent = 'Solving…';
+
+  // Animated progress dots so the UI feels alive during long solves
+  const _dotFrames = ['Solving·', 'Solving··', 'Solving···', 'Solving…'];
+  let _dotIdx = 0;
+  const _dotTimer = setInterval(() => {
+    if (btn.disabled) btn.textContent = _dotFrames[_dotIdx++ % _dotFrames.length];
+  }, 400);
 
   solveScenario(payload, myAbort.signal)
     .then(result => {
@@ -160,6 +167,7 @@ function handleSolve() {
       updateIssuesBadge(RESULT);
     })
     .finally(() => {
+      clearInterval(_dotTimer);
       if (mySeq !== solveSeq) return;
       solving = false;
       solveAbort = null;

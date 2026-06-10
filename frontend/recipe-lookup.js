@@ -21,13 +21,19 @@ export function initRecipeLookup() {
     rlPanel.style.display = 'flex';
   });
 
+  // Memoize last query so repeated identical keystrokes skip re-scanning ALL_ITEMS
+  let _rlLastRaw = null, _rlLastFound = null;
   inp.addEventListener('input', () => {
     const raw = inp.value.trim();
-    if (!raw) { rlPanel.style.display = 'none'; return; }
+    if (!raw) { rlPanel.style.display = 'none'; _rlLastRaw = null; return; }
+    if (raw === _rlLastRaw) return;   // same text — nothing to do
+    _rlLastRaw = raw;
     const ql    = raw.toLowerCase();
     const found = ALL_ITEMS.find(k =>
       itemName(k).toLowerCase() === ql ||
       k.toLowerCase() === ql.replace(/\s+/g, '_'));
+    if (found === _rlLastFound) return;  // same item — skip re-render
+    _rlLastFound = found;
     if (found) {
       showRecipeLookup(found, rlPanel);
       rlPanel.style.display = 'flex';

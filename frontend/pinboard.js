@@ -677,6 +677,31 @@ export function draw() {
   try { _draw(); } catch (err) { console.error('Pinboard draw error:', err); }
 }
 
+// ── Viewport culling ─────────────────────────────────────
+function pbViewportBounds(W, H, margin = 60) {
+  return {
+    x1: (-PAN.x / ZOOM) - margin,
+    y1: (-PAN.y / ZOOM) - margin,
+    x2: (-PAN.x + W) / ZOOM + margin,
+    y2: (-PAN.y + H) / ZOOM + margin,
+  };
+}
+function pbNodeInView(n, vp) {
+  const h = nodeH(n);
+  return n.x + n.w >= vp.x1 && n.x <= vp.x2 &&
+         n.y + h   >= vp.y1 && n.y <= vp.y2;
+}
+function pbGroupInView(g, vp) {
+  return g.x + g.w >= vp.x1 && g.x <= vp.x2 &&
+         g.y + g.h >= vp.y1 && g.y <= vp.y2;
+}
+function pbEdgeInView(e, vp) {
+  if (e._x1 == null) return false;
+  const minX = Math.min(e._x1, e._x2), maxX = Math.max(e._x1, e._x2);
+  const minY = Math.min(e._y1, e._y2), maxY = Math.max(e._y1, e._y2);
+  return maxX >= vp.x1 && minX <= vp.x2 && maxY >= vp.y1 && minY <= vp.y2;
+}
+
 function _draw() {
   const W = CV.clientWidth, H = CV.clientHeight;
   const dpr = window.devicePixelRatio || 1;
@@ -698,17 +723,19 @@ function _draw() {
   C.translate(PAN.x, PAN.y);
   C.scale(ZOOM, ZOOM);
 
-  // Groups behind everything
-  GROUPS.forEach(g => drawGroup(g));
+  const vp = pbViewportBounds(W, H);
 
-  // User-drawn arrows
+  // Groups behind everything — cull off-screen groups
+  GROUPS.forEach(g => { if (pbGroupInView(g, vp)) drawGroup(g); });
+
+  // User-drawn arrows (always draw — they span between nodes, bounds complex)
   drawArrows();
 
-  // Item-flow edges
-  EDGES.forEach(e => drawEdge(e));
+  // Item-flow edges — cull off-screen edges
+  EDGES.forEach(e => { if (pbEdgeInView(e, vp)) drawEdge(e); });
 
-  // Nodes
-  NODES.forEach(n => drawPinNode(n));
+  // Nodes — cull off-screen nodes
+  NODES.forEach(n => { if (pbNodeInView(n, vp)) drawPinNode(n); });
 
   // Group-draw rectangle being dragged
   if (GROUP_RECT && GROUP_RECT.w > 0) {

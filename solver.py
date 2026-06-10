@@ -21,10 +21,10 @@ PRUNING:
   reused for every LP re-solve in the iterative loop. O(1) prune cost.
 """
 
-import math, yaml, json
+import math, yaml, json, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from ortools.linear_solver import pywraplp
 
@@ -108,6 +108,7 @@ class SolveResult:
     cap_overshoot: Dict[str,float]
     shadow_prices: Dict[str,float] = field(default_factory=dict)
     saturation_points: Dict[str,object] = field(default_factory=dict)
+    usable: Optional[Dict[str,"Recipe"]] = field(default=None, repr=False)
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -119,26 +120,38 @@ def _sf(v, d=0.0):
     try: return float(v) if v is not None else d
     except: return d
 
-def load_recipes(path=RECIPES_PATH) -> Dict[str,Recipe]:
-    with open(path) as f: raw = yaml.safe_load(f)
+def _load_raw_yaml(path=RECIPES_PATH) -> dict:
+    """Parse the recipes YAML once; callers slice what they need."""
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+def _build_recipes(raw: dict) -> Dict[str, "Recipe"]:
+    """Construct the Recipe dict from a parsed YAML blob. Used by both loaders."""
     meta = raw.get("machine_meta", {})
-    out = {}
+    out: Dict[str, Recipe] = {}
     for key, d in raw["recipes"].items():
         machine = d["machine"]
         m = meta.get(machine, {})
         out[key] = Recipe(
             key=key, display=d.get("display", key), machine=machine,
             alternate=d.get("alternate", False),
-            inputs={k: float(v) for k,v in d.get("inputs", {}).items()},
-            outputs={k: float(v) for k,v in d.get("outputs", {}).items()},
+            inputs={k: float(v) for k, v in d.get("inputs", {}).items()},
+            outputs={k: float(v) for k, v in d.get("outputs", {}).items()},
             base_power_mw=float(m.get("base_power_mw", 10.0)),
             sloop_slots=int(SLOOP_SLOTS_BY_MACHINE.get(machine, 0)),
         )
     return out
 
+def load_recipes(path=RECIPES_PATH) -> Dict[str,Recipe]:
+    return _build_recipes(_load_raw_yaml(path))
+
 def load_machine_meta(path=RECIPES_PATH) -> Dict:
-    with open(path) as f: raw = yaml.safe_load(f)
-    return raw.get("machine_meta", {})
+    return _load_raw_yaml(path).get("machine_meta", {})
+
+def load_recipes_and_meta(path=RECIPES_PATH) -> Tuple[Dict[str,Recipe], Dict]:
+    """Load both in one YAML parse — use this at startup instead of calling each separately."""
+    raw = _load_raw_yaml(path)
+    return _build_recipes(raw), raw.get("machine_meta", {})
 
 def load_scenario(path) -> Scenario:
     with open(path) as f: raw = yaml.safe_load(f)
@@ -164,10 +177,22 @@ def list_scenarios():
     return [p.stem for p in SCENARIOS_DIR.glob("*.yaml")]
 
 def get_all_items(recipes: Dict[str,Recipe]) -> List[str]:
-    items = set()
+    items: Set[str] = set()
     for r in recipes.values():
         items.update(r.inputs.keys()); items.update(r.outputs.keys())
     return sorted(items)
+
+
+# ── Power helpers ─────────────────────────────────────────────────────────────
+# Defined early so they are available to both WarmLP and the free functions below.
+
+def _sloop_power_mult(r: Recipe, spm_val: int) -> float:
+    """(1 + sloops_per_machine / max_slots)^2  — power scaling factor."""
+    return (1.0 + spm_val / r.sloop_slots) ** 2 if r.sloop_slots > 0 else 1.0
+
+def _output_mult(r: Recipe, spm_val: int) -> float:
+    """1 + sloops_per_machine / max_slots  — throughput scaling factor."""
+    return 1.0 + (spm_val / r.sloop_slots) if r.sloop_slots > 0 else 1.0
 
 
 # ── Pruning — forward grounding + backward demand ─────────────────────────────
@@ -177,40 +202,66 @@ def prune_recipes(
 ) -> Tuple[Dict[str,Recipe], Dict[str,List[str]]]:
     """
     Phase 1: Forward topological grounding (eliminates cycles).
+             Iterates only the un-fired candidates each pass — O(E) total.
     Phase 2: Backward demand from objectives through fireable recipes.
-    Phase 3: Unsatisfiable detection for error nodes.
+    Phase 3: Unsatisfiable detection with human-readable reasons.
     Pruned set is reused for all LP solves in the iterative loop.
     """
     available_raw = set(scenario.available_resources.keys())
-    target_items = (set(scenario.objective.keys()) | set(scenario.must_produce.keys())
-                  | set(scenario.min_produce.keys()) | set(scenario.max_produce.keys()))
+    target_items  = (set(scenario.objective.keys()) | set(scenario.must_produce.keys())
+                   | set(scenario.min_produce.keys()) | set(scenario.max_produce.keys()))
 
-    def is_allowed(key, r):
-        if scenario.enabled_machines and r.machine not in scenario.enabled_machines:
+    enabled_machines_set = set(scenario.enabled_machines)
+    alt_enabled_set      = set(scenario.alternate_recipes_enabled)
+
+    def is_allowed(key: str, r: Recipe) -> bool:
+        if enabled_machines_set and r.machine not in enabled_machines_set:
             return False
-        if r.alternate and key not in scenario.alternate_recipes_enabled:
+        if r.alternate and key not in alt_enabled_set:
             return False
         return True
 
-    allowed = {k: r for k,r in all_recipes.items() if is_allowed(k, r)}
+    allowed = {k: r for k, r in all_recipes.items() if is_allowed(k, r)}
 
-    # Phase 1: forward grounding
+    # Phase 1: forward grounding — process only not-yet-fired candidates.
+    # Build a reverse index: item → list of candidate recipe keys that need it.
+    # When a new item is added to `grounded`, only those recipes are re-checked.
+    # This is essentially a topological worklist algorithm: O(recipes + items).
     grounded: Set[str] = set(available_raw)
     fireable: Set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for key, r in allowed.items():
-            if key in fireable: continue
-            if all(inp in grounded for inp in r.inputs):
-                fireable.add(key)
-                new = set(r.outputs.keys()) - grounded
-                if new:
-                    grounded.update(new)
-                    changed = True
 
-    # Phase 2: backward demand through fireable only
-    allowed_producers: Dict[str,List[str]] = {}
+    # blocked[k] = set of inputs still missing for recipe k
+    blocked: Dict[str, Set[str]] = {
+        k: {inp for inp in r.inputs if inp not in grounded}
+        for k, r in allowed.items()
+    }
+    # waiting_on[item] = list of recipe keys blocked by that item
+    waiting_on: Dict[str, List[str]] = {}
+    for k, missing in blocked.items():
+        for inp in missing:
+            waiting_on.setdefault(inp, []).append(k)
+
+    # Seed: recipes with no missing inputs are immediately fireable
+    worklist = [k for k, m in blocked.items() if not m]
+    for k in worklist:
+        fireable.add(k)
+
+    while worklist:
+        k = worklist.pop()
+        for item in allowed[k].outputs:
+            if item in grounded:
+                continue
+            grounded.add(item)
+            for k2 in waiting_on.get(item, []):
+                if k2 in fireable:
+                    continue
+                blocked[k2].discard(item)
+                if not blocked[k2]:
+                    fireable.add(k2)
+                    worklist.append(k2)
+
+    # Phase 2: backward demand through fireable recipes only
+    allowed_producers: Dict[str, List[str]] = {}
     for key in fireable:
         for item in allowed[key].outputs:
             allowed_producers.setdefault(item, []).append(key)
@@ -220,38 +271,42 @@ def prune_recipes(
     queue = list(target_items)
     while queue:
         item = queue.pop()
-        if item in visited: continue
+        if item in visited:
+            continue
         visited.add(item)
         for rkey in allowed_producers.get(item, []):
             needed.add(rkey)
             for inp in allowed[rkey].inputs:
-                if inp not in visited: queue.append(inp)
+                if inp not in visited:
+                    queue.append(inp)
 
     usable = {k: allowed[k] for k in needed}
 
-    # Phase 3: unsatisfiable detection
-    all_prod: Dict[str,List[str]] = {}
-    for key, r in all_recipes.items():
-        for item in r.outputs:
-            all_prod.setdefault(item, []).append(key)
+    # Phase 3: unsatisfiable detection.
+    # Build all_prod only when at least one target item is not grounded — the
+    # common case (every target reachable) pays zero cost for this phase.
+    unsatisfiable: Dict[str, List[str]] = {}
+    if target_items - grounded:
+        all_prod: Dict[str, List[str]] = {}
+        for key, r in all_recipes.items():
+            for item in r.outputs:
+                all_prod.setdefault(item, []).append(key)
 
-    unsatisfiable: Dict[str,List[str]] = {}
-    for item in target_items:
-        if item in grounded: continue
-        reasons = []
-        for rkey in all_prod.get(item, []):
-            r = all_recipes[rkey]
-            if scenario.enabled_machines and r.machine not in scenario.enabled_machines:
-                reasons.append(f"requires {r.machine} (not enabled)")
-            elif r.alternate and rkey not in scenario.alternate_recipes_enabled:
-                reasons.append(f"requires alternate '{r.display}' (not enabled)")
-            else:
-                missing = [inp for inp in r.inputs if inp not in grounded]
-                if missing:
-                    reasons.append(f"inputs unavailable: {', '.join(missing[:3])}")
-        if not reasons:
-            reasons = ["no recipe exists for this item"]
-        unsatisfiable[item] = list(dict.fromkeys(reasons))
+        for item in target_items:
+            if item in grounded:
+                continue
+            reasons: List[str] = []
+            for rkey in all_prod.get(item, []):
+                r = all_recipes[rkey]
+                if enabled_machines_set and r.machine not in enabled_machines_set:
+                    reasons.append(f"requires {r.machine} (not enabled)")
+                elif r.alternate and rkey not in alt_enabled_set:
+                    reasons.append(f"requires alternate '{r.display}' (not enabled)")
+                else:
+                    missing = [inp for inp in r.inputs if inp not in grounded]
+                    if missing:
+                        reasons.append(f"inputs unavailable: {', '.join(missing[:3])}")
+            unsatisfiable[item] = list(dict.fromkeys(reasons)) or ["no recipe exists for this item"]
 
     return usable, unsatisfiable
 
@@ -261,63 +316,137 @@ def _build_lp(
     scenario: Scenario,
     usable: Dict[str,Recipe],
     spm: Dict[str,int],
-) -> Tuple[object, list, dict, dict, dict]:
+) -> Tuple[object, list, list, dict, dict]:
     """
-    Build the GLOP LP and return (solver, q_vars, net_expr, resource_constraints, item_set).
+    Build the GLOP LP. Returns (solver, q_vars, rkeys, net_expr, res_constraints).
     Separated from solving so callers can extract duals after solving.
+
+    Avoids duplicate cons/prod sums: resource items share their net expression
+    with the res_constraint (computed once, used for both flow-balance and cap).
+    Non-zero filtering mirrors WarmLP to keep both implementations symmetric.
     """
     rkeys = list(usable.keys())
     n     = len(rkeys)
 
-    eff_out = {}
+    # Effective output rates with sloop multiplier baked in
+    eff_out: Dict[str, Dict[str, float]] = {}
     for k in rkeys:
         r = usable[k]; s = spm.get(k, 0)
-        mult = 1.0 + (s / r.sloop_slots) if r.sloop_slots > 0 else 1.0
+        mult = _output_mult(r, s)
         eff_out[k] = {item: rate * mult for item, rate in r.outputs.items()}
 
-    item_set = set(scenario.available_resources.keys())
+    # Collect all items that appear in the LP
+    item_set: Set[str] = set(scenario.available_resources.keys())
     for k in rkeys:
         item_set.update(usable[k].inputs.keys())
         item_set.update(eff_out[k].keys())
-    items = list(item_set)
 
     slvr = pywraplp.Solver.CreateSolver("GLOP")
     slvr.SuppressOutput()
     INF = slvr.infinity()
     q   = [slvr.NumVar(0, INF, f"q{i}") for i in range(n)]
 
-    def net(item):
-        supply = scenario.available_resources.get(item, 0.0)
-        prod   = slvr.Sum([q[i] * eff_out[rkeys[i]].get(item, 0.0) for i in range(n)])
-        cons   = slvr.Sum([q[i] * usable[rkeys[i]].inputs.get(item, 0.0) for i in range(n)])
-        return prod - cons + supply
+    # Build net(item) expressions by accumulating only non-zero coefficients.
+    # For each item, net_coeff[i] = eff_out[rkeys[i]][item] - inputs[rkeys[i]][item].
+    # Storing as sparse {var_index: coeff} avoids O(n * items) zero multiplications.
+    def sparse_net(item: str) -> Dict[int, float]:
+        d: Dict[int, float] = {}
+        for i, k in enumerate(rkeys):
+            c = eff_out[k].get(item, 0.0) - usable[k].inputs.get(item, 0.0)
+            if c:
+                d[i] = c
+        return d
 
-    net_expr = {item: net(item) for item in items}
+    net_sparse = {item: sparse_net(item) for item in item_set}
 
-    for item in items:
+    # Non-resource flow-balance constraints: net(item) >= 0 for all items.
+    # This permits unavoidable byproducts (e.g. Heavy Oil Residue alongside Rubber)
+    # to be surplus without making the LP infeasible.
+    # Gratuitous resource use is suppressed via the epsilon penalty below instead.
+    net_expr: Dict[str, object] = {}
+    for item in item_set:
+        sp = net_sparse[item]
+        expr = slvr.Sum([q[i] * c for i, c in sp.items()])
+        net_expr[item] = expr  # used by must/min/max produce below
+
         if item not in scenario.available_resources:
-            slvr.Add(net_expr[item] >= 0.0)
+            ct = slvr.Constraint(0.0, INF, f"flow_{item}")
+            for i, c in sp.items():
+                ct.SetCoefficient(q[i], c)
 
-    # Resource capacity constraints — kept separately so we can read their duals
+    # Resource capacity constraints: cons - prod <= supply
+    # Equivalent to: -net(item) <= supply - supply_const  →  -net_q <= supply
+    # We express as sum(input_i - eff_out_i) * q[i] <= supply.
+    # Kept separately so duals can be read after solving.
     res_constraints: Dict[str, object] = {}
     for item, supply in scenario.available_resources.items():
-        cons = slvr.Sum([q[i] * usable[rkeys[i]].inputs.get(item, 0.0) for i in range(n)])
-        prod = slvr.Sum([q[i] * eff_out[rkeys[i]].get(item, 0.0) for i in range(n)])
-        ct   = slvr.Add(cons - prod <= supply)
+        ct = slvr.Constraint(-INF, supply, f"res_{item}")
+        sp = net_sparse[item]
+        for i, c in sp.items():
+            ct.SetCoefficient(q[i], -c)   # cons - prod = -(eff_out - inputs)
         res_constraints[item] = ct
 
+    # Goal constraints
     for item, qty in scenario.must_produce.items():
-        if item in net_expr: slvr.Add(net_expr[item] == qty)
+        if item not in net_expr:
+            continue
+        ct = slvr.Constraint(qty, qty, f"must_{item}")
+        sp = net_sparse[item]
+        supply = scenario.available_resources.get(item, 0.0)
+        # net(item) == qty  →  sum(net_coeff * q) == qty - supply
+        for i, c in sp.items():
+            ct.SetCoefficient(q[i], c)
+        ct.SetBounds(qty - supply, qty - supply)
+
     for item, qty in scenario.min_produce.items():
-        if item in net_expr: slvr.Add(net_expr[item] >= qty)
+        if item not in net_expr:
+            continue
+        supply = scenario.available_resources.get(item, 0.0)
+        ct = slvr.Constraint(qty - supply, INF, f"min_{item}")
+        for i, c in net_sparse[item].items():
+            ct.SetCoefficient(q[i], c)
+
     for item, qty in scenario.max_produce.items():
-        if item in net_expr: slvr.Add(net_expr[item] <= qty)
+        if item not in net_expr:
+            continue
+        supply = scenario.available_resources.get(item, 0.0)
+        ct = slvr.Constraint(-INF, qty - supply, f"max_{item}")
+        for i, c in net_sparse[item].items():
+            ct.SetCoefficient(q[i], c)
 
     if scenario.max_machines is not None:
-        slvr.Add(slvr.Sum(q) <= float(scenario.max_machines))
+        ct = slvr.Constraint(-INF, float(scenario.max_machines), "max_machines")
+        for qi in q:
+            ct.SetCoefficient(qi, 1.0)
 
-    obj_in = [item for item in scenario.objective if item in net_expr]
-    slvr.Maximize(slvr.Sum([scenario.objective[item] * net_expr[item] for item in obj_in]))
+    # Objective: maximise sum(weight * net(item)) over objective items.
+    # Plus a tiny epsilon penalty on resource consumption to break ties in favour
+    # of using fewer resources when it doesn't affect the real objective.
+    #
+    # The penalty is applied as -ε × consumption per recipe per resource.
+    # ε must satisfy: ε × max_total_consumption << min_nonzero_objective_weight.
+    # With objective weights typically >= 1 and total consumption << 1e6,
+    # ε = 1e-7 is safe — it never changes which solution is optimal, only
+    # which tie is broken (e.g. 200 idle Limestone stays idle instead of
+    # being routed through Concrete with no benefit to the real objective).
+    _EPS = 1e-7
+    obj = slvr.Objective()
+    obj.SetMaximization()
+    for item, w in scenario.objective.items():
+        if item not in net_sparse:
+            continue
+        for i, c in net_sparse[item].items():
+            obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + w * c)
+        # supply * w is a constant and does not affect q — omitted intentionally
+
+    # Epsilon penalty: subtract ε × (consumption - production) for each resource.
+    # consumption - production = -(net_coeff) = the res_ct coefficient per recipe.
+    # This rewards recipes that consume less of each raw resource.
+    for item in scenario.available_resources:
+        sp = net_sparse.get(item, {})
+        for i, c in sp.items():
+            # c = eff_out - inputs  →  resource consumption contribution = -c
+            obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + _EPS * c)
 
     return slvr, q, rkeys, net_expr, res_constraints
 
@@ -327,55 +456,308 @@ def _solve_lp(
     usable: Dict[str,Recipe],
     spm: Dict[str,int],
 ) -> Tuple[str, float, Dict[str,float]]:
-    """Standard solve — returns status, objective, q_values."""
-    if not usable: return "No recipes", 0.0, {}
+    """Standard solve — returns (status, objective, q_values)."""
+    if not usable:
+        return "No recipes", 0.0, {}
     slvr, q, rkeys, _, _ = _build_lp(scenario, usable, spm)
     status = slvr.Solve()
     ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-    if not ok: return "Infeasible", 0.0, {}
+    if not ok:
+        return "Infeasible", 0.0, {}
     q_vals = {rkeys[i]: max(0.0, q[i].solution_value()) for i in range(len(rkeys))}
     return "Optimal", slvr.Objective().Value(), q_vals
 
 
+# ── Warm-start LP wrapper ─────────────────────────────────────────────────────
+class WarmLP:
+    """
+    Wraps a GLOP solver instance and exposes patch_spm() to update output
+    multipliers for a single recipe without rebuilding the entire LP.
+
+    When sloops_per_machine changes for recipe k:
+      new_mult = 1 + new_spm / r.sloop_slots   (or 1.0 if no slots)
+      For every output item of k, the coefficient of q[k] changes in:
+        - each non-resource net constraint   (coeff = new_out - input)
+        - each resource capacity constraint  (coeff = input  - new_out)
+        - the objective expression           (coeff = obj_weight * new_out)
+      All other variables and constraints are untouched.
+    """
+
+    def __init__(self, scenario: Scenario, usable: Dict[str, Recipe],
+                 spm: Dict[str, int]):
+        self.scenario = scenario
+        self.usable   = usable
+        self.spm      = dict(spm)   # own copy — patched in place
+
+        rkeys = list(usable.keys())
+        self.rkeys = rkeys
+        n = len(rkeys)
+        self.ridx: Dict[str, int] = {k: i for i, k in enumerate(rkeys)}
+
+        # Current effective output rates (including sloop multiplier)
+        self.eff_out: Dict[str, Dict[str, float]] = {}
+        for k in rkeys:
+            r = usable[k]
+            self.eff_out[k] = {item: rate * _output_mult(r, spm.get(k, 0))
+                                for item, rate in r.outputs.items()}
+
+        item_set: Set[str] = set(scenario.available_resources.keys())
+        for k in rkeys:
+            item_set.update(usable[k].inputs.keys())
+            item_set.update(self.eff_out[k].keys())
+        self.items = list(item_set)
+
+        slvr = pywraplp.Solver.CreateSolver("GLOP")
+        slvr.SuppressOutput()
+        self.slvr = slvr
+        INF = slvr.infinity()
+        q = [slvr.NumVar(0, INF, f"q{i}") for i in range(n)]
+        self.q = q
+
+        # Pre-compute sparse net coefficients for every (recipe, item) pair.
+        # net_coeff[k][item] = eff_out rate - input rate  (non-zero only)
+        net_coeff: Dict[str, Dict[str, float]] = {}
+        for k in rkeys:
+            r  = usable[k]
+            nc: Dict[str, float] = {}
+            for item, rate in self.eff_out[k].items():
+                c = rate - r.inputs.get(item, 0.0)
+                if c:
+                    nc[item] = c
+            for item, rate in r.inputs.items():
+                if item not in nc:
+                    c = -rate   # pure consumer; eff_out is 0
+                    if c:
+                        nc[item] = c
+            net_coeff[k] = nc
+        self._net_coeff = net_coeff   # kept for patch_spm
+
+        # Pass 1: flow constraints (non-resource items): net(item) >= 0.
+        # All items — including unavoidable byproducts — are allowed to be surplus.
+        # Gratuitous resource use is suppressed by the epsilon penalty on the objective.
+        self.flow_ct: Dict[str, object] = {}
+        for item in self.items:
+            if item in scenario.available_resources:
+                continue
+            ct = slvr.Constraint(0.0, INF, f"flow_{item}")
+            for i, k in enumerate(rkeys):
+                c = net_coeff[k].get(item, 0.0)
+                if c:
+                    ct.SetCoefficient(q[i], c)
+            self.flow_ct[item] = ct
+
+        self.res_ct: Dict[str, object] = {}
+        for item, supply in scenario.available_resources.items():
+            ct = slvr.Constraint(-INF, supply, f"res_{item}")
+            for i, k in enumerate(rkeys):
+                # res_ct expresses cons - prod <= supply,
+                # i.e. -(eff_out - inputs) = inputs - eff_out per recipe
+                c = net_coeff[k].get(item, 0.0)
+                if c:
+                    ct.SetCoefficient(q[i], -c)
+            self.res_ct[item] = ct
+
+        # must/min/max produce — accept items present in either constraint dict
+        # (mirrors the `if item in net_expr` guard in _build_lp exactly).
+        def _add_produce_ct(item: str, lo: float, hi: float, name: str) -> Optional[object]:
+            if item not in self.flow_ct and item not in self.res_ct:
+                return None
+            supply = scenario.available_resources.get(item, 0.0)
+            ct = slvr.Constraint(
+                lo - supply if lo > -INF else -INF,
+                hi - supply if hi <  INF else  INF,
+                name,
+            )
+            for i, k in enumerate(rkeys):
+                c = net_coeff[k].get(item, 0.0)
+                if c:
+                    ct.SetCoefficient(q[i], c)
+            return ct
+
+        self.must_ct: Dict[str, object] = {}
+        for item, qty in scenario.must_produce.items():
+            ct = _add_produce_ct(item, qty, qty, f"must_{item}")
+            if ct:
+                self.must_ct[item] = ct
+
+        self.min_ct: Dict[str, object] = {}
+        for item, qty in scenario.min_produce.items():
+            ct = _add_produce_ct(item, qty, INF, f"min_{item}")
+            if ct:
+                self.min_ct[item] = ct
+
+        self.max_ct: Dict[str, object] = {}
+        for item, qty in scenario.max_produce.items():
+            ct = _add_produce_ct(item, -INF, qty, f"max_{item}")
+            if ct:
+                self.max_ct[item] = ct
+
+        if scenario.max_machines is not None:
+            ct = slvr.Constraint(-INF, float(scenario.max_machines), "max_machines")
+            for qi in q:
+                ct.SetCoefficient(qi, 1.0)
+
+        # Objective — mirrors _build_lp: accept items in either constraint dict.
+        # Supply is a constant and is omitted intentionally (see _build_lp note).
+        obj = slvr.Objective()
+        obj.SetMaximization()
+        self._obj_weights: Dict[str, float] = {}
+        for item, w in scenario.objective.items():
+            if item not in self.flow_ct and item not in self.res_ct:
+                continue
+            self._obj_weights[item] = w
+            for i, k in enumerate(rkeys):
+                c = net_coeff[k].get(item, 0.0)
+                if c:
+                    obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + w * c)
+
+        # Epsilon penalty on resource consumption — same logic as _build_lp.
+        # Rewards the solver for leaving slack resources idle rather than routing
+        # them through unneeded recipes when it makes no difference to the objective.
+        # ε is small enough to never alter which solution is truly optimal.
+        _EPS = 1e-7
+        for item in scenario.available_resources:
+            for i, k in enumerate(rkeys):
+                c = net_coeff[k].get(item, 0.0)
+                if c:
+                    # c = eff_out - inputs; resource penalty = +ε * c (reward not consuming)
+                    obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + _EPS * c)
+
+    def solve(self) -> Tuple[str, float, Dict[str, float]]:
+        status = self.slvr.Solve()
+        ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+        if not ok:
+            return "Infeasible", 0.0, {}
+        q_vals = {self.rkeys[i]: max(0.0, self.q[i].solution_value())
+                  for i in range(len(self.rkeys))}
+        return "Optimal", self.slvr.Objective().Value(), q_vals
+
+    def patch_spm(self, k: str, new_spm_val: int) -> None:
+        """
+        Update LP coefficients for recipe k to reflect new_spm_val sloops/machine.
+        Only touches rows/columns affected by k's output change.
+        O(outputs(k)) — independent of LP size.
+        """
+        r    = self.usable[k]
+        i    = self.ridx[k]
+        qi   = self.q[i]
+
+        old_mult = _output_mult(r, self.spm.get(k, 0))
+        new_mult = _output_mult(r, new_spm_val)
+
+        if old_mult == new_mult:
+            return   # no-op if sloop_slots == 0
+
+        obj = self.slvr.Objective()
+
+        for item, base_rate in r.outputs.items():
+            delta = base_rate * (new_mult - old_mult)
+
+            # flow constraint: net(item) >= 0  →  +delta on output term
+            if item in self.flow_ct:
+                ct = self.flow_ct[item]
+                ct.SetCoefficient(qi, ct.GetCoefficient(qi) + delta)
+
+            # resource capacity: cons - prod <= supply  →  -delta on output term
+            if item in self.res_ct:
+                ct = self.res_ct[item]
+                ct.SetCoefficient(qi, ct.GetCoefficient(qi) - delta)
+
+            # must/min/max produce express net(item)  →  +delta
+            for ct_dict in (self.must_ct, self.min_ct, self.max_ct):
+                if item in ct_dict:
+                    ct = ct_dict[item]
+                    ct.SetCoefficient(qi, ct.GetCoefficient(qi) + delta)
+
+            # objective
+            if item in self._obj_weights:
+                w = self._obj_weights[item]
+                obj.SetCoefficient(qi, obj.GetCoefficient(qi) + w * delta)
+
+            # epsilon penalty on resource consumption: reward = +ε × net_coeff.
+            # When eff_out changes, net_coeff for this (recipe, item) pair changes
+            # too, so the epsilon term must be refreshed here.
+            if item in self.scenario.available_resources:
+                _EPS = 1e-7
+                old_nc = self._net_coeff[k].get(item, 0.0)
+                new_nc = old_nc + delta   # eff_out increased by delta; inputs unchanged
+                obj.SetCoefficient(qi, obj.GetCoefficient(qi) + _EPS * (new_nc - old_nc))
+
+        # Update tracking state
+        self.spm[k] = new_spm_val
+        self.eff_out[k] = {item: rate * new_mult for item, rate in r.outputs.items()}
+        # Rebuild net_coeff for k so _add_produce_ct and future patches stay accurate
+        nc: Dict[str, float] = {}
+        for item, rate in self.eff_out[k].items():
+            c = rate - r.inputs.get(item, 0.0)
+            if c:
+                nc[item] = c
+        for item, rate in r.inputs.items():
+            if item not in nc and rate:
+                nc[item] = -rate
+        self._net_coeff[k] = nc
+
+
+# ── Saturation binary search ──────────────────────────────────────────────────
 def _sat_search(
     item: str,
-    scenario: 'Scenario',
-    usable: dict,
-    spm: dict,
+    scenario: Scenario,
+    usable: Dict[str, Recipe],
+    spm: Dict[str, int],
 ) -> Optional[float]:
     """
-    Binary search for the supply level of `item` where its shadow price drops
-    to zero (i.e. adding more stops helping the objective).
-    Runs as an independent task — safe to call from a thread pool.
-    Returns the saturation supply level, rounded to 1 decimal place.
+    Binary search for the supply level of `item` where its shadow price drops to
+    zero (adding more stops helping the objective).
+
+    Fast path: if the item's resource constraint doesn't appear in the LP (the
+    item is never consumed by any recipe), the shadow price is always 0 — return
+    None immediately rather than running 28 LP solves to learn nothing.
+
+    Uses one WarmLP for all iterations; only the constraint upper-bound changes.
+    Returns the saturation supply level rounded to 1 decimal place.
     """
     lo = scenario.available_resources[item]
-    hi = max(lo * 20 + 5000, lo + 50000)  # generous upper bound
-    for _ in range(28):  # up to 28 iterations; early-exit when converged
-        if hi - lo < 0.5:  # precision sufficient — stop early
+
+    # Build a private WarmLP with a mutable resource dict so we can adjust SetUb.
+    res2 = dict(scenario.available_resources)
+    sc2  = _dc_replace(scenario, available_resources=res2, description="", notes="")
+    warm = WarmLP(sc2, usable, spm)
+    res_ct = warm.res_ct.get(item)
+
+    # Fast path: item is not consumed by any recipe in the LP → always slack
+    if res_ct is None:
+        return None
+
+    # Adaptive upper-bound search: double hi until the dual at hi drops to zero.
+    # This avoids the pathological case where lo == 0, which made the old
+    # fixed bound (max(0*20+5000, 0+50000) = 50000) require 28 iterations to
+    # narrow all the way down to a true saturation point of, say, 300.
+    hi = max(lo * 2.0, lo + 100.0)
+    for _ in range(20):
+        res_ct.SetUb(hi)
+        st = warm.slvr.Solve()
+        if st not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
             break
-        mid = (lo + hi) / 2
-        res2 = dict(scenario.available_resources)
-        res2[item] = mid
-        sc2 = Scenario(
-            name=scenario.name, description='',
-            alternate_recipes_enabled=scenario.alternate_recipes_enabled,
-            enabled_machines=scenario.enabled_machines,
-            available_resources=res2,
-            must_produce=scenario.must_produce,
-            min_produce=scenario.min_produce,
-            max_produce=scenario.max_produce,
-            objective=scenario.objective,
-            power_shards_available=scenario.power_shards_available,
-            somersloops_available=scenario.somersloops_available,
-            max_power_mw=scenario.max_power_mw,
-            max_machines=scenario.max_machines,
-            notes='',
-        )
-        slvr2, _, _, _, res_ct2 = _build_lp(sc2, usable, spm)
-        slvr2.Solve()
         try:
-            dual_mid = res_ct2[item].dual_value()
+            d = res_ct.dual_value()
+        except Exception:
+            d = 0.0
+        if d < 0.001:
+            break
+        hi *= 2.0
+
+    for _ in range(28):        # ≤28 iterations; converges to 0.5-unit precision
+        if hi - lo < 0.5:
+            break
+        mid = (lo + hi) / 2.0
+        res_ct.SetUb(mid)
+        status = warm.slvr.Solve()
+        ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+        if not ok:
+            hi = mid
+            continue
+        try:
+            dual_mid = res_ct.dual_value()
         except Exception:
             dual_mid = 0.0
         if dual_mid < 0.001:
@@ -385,6 +767,7 @@ def _sat_search(
     return round(hi, 1)
 
 
+# ── LP with duals ─────────────────────────────────────────────────────────────
 def _solve_lp_with_duals(
     scenario: Scenario,
     usable: Dict[str,Recipe],
@@ -393,38 +776,38 @@ def _solve_lp_with_duals(
     """
     Solve LP and extract shadow prices + saturation points for resource constraints.
 
-    Shadow price of resource R = how much the objective improves per additional
-    unit/min of R, at the current supply level.  This is the LP dual value.
+    Shadow price of resource R = marginal improvement in objective per additional
+    unit/min of R at the current supply level.  This is the LP dual value.
 
     GLOP dual_value() for a <= constraint in a maximisation problem returns a
-    NON-NEGATIVE value when the constraint is binding (the shadow price IS the
-    raw dual — no negation needed).  A value of 0 means the resource has slack.
+    NON-NEGATIVE value when the constraint is binding.  Zero means resource has slack.
 
-    Saturation point: the supply level at which the shadow price drops to zero
-    (i.e. adding more of that resource stops helping).  Found by binary search.
+    Saturation point: supply level at which shadow price drops to zero.
+    Found by binary search per binding resource (parallelised).
 
     Returns (status, objective, q_vals, shadow_prices, saturation_points).
-    saturation_points[item] = None if shadow price is already 0 (not binding),
-                              or the supply level where it becomes 0.
+    saturation_points[item] = None  → resource already has slack (not worth searching).
     """
-    if not usable: return "No recipes", 0.0, {}, {}, {}
+    if not usable:
+        return "No recipes", 0.0, {}, {}, {}
     slvr, q, rkeys, _, res_constraints = _build_lp(scenario, usable, spm)
     status = slvr.Solve()
     ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-    if not ok: return "Infeasible", 0.0, {}, {}, {}
+    if not ok:
+        return "Infeasible", 0.0, {}, {}, {}
 
     q_vals = {rkeys[i]: max(0.0, q[i].solution_value()) for i in range(len(rkeys))}
 
-    # Extract duals — raw dual_value() IS the shadow price (no negation)
-    shadow: Dict[str,float] = {}
+    # Extract shadow prices (raw dual_value() — no negation required for GLOP max)
+    shadow: Dict[str, float] = {}
     for item, ct in res_constraints.items():
         try:
             shadow[item] = round(ct.dual_value(), 6)
         except Exception:
             shadow[item] = 0.0
 
-    # Compute saturation points in parallel — each binary search is independent
-    binding_items = {item: sp for item, sp in shadow.items() if sp >= 0.001}
+    # Saturation points: only search binding resources; others are immediately None
+    binding_items = [item for item, sp in shadow.items() if sp >= 0.001]
     saturation: Dict[str, Optional[float]] = {
         item: None for item in shadow if shadow[item] < 0.001
     }
@@ -449,57 +832,63 @@ def _solve_lp_with_duals(
 def _total_power(
     usable: Dict[str,Recipe],
     q_vals: Dict[str,float],
-    spm: Dict[str,int],           # sloops_per_machine
-    clock_fracs: Dict[str,float], # clock fraction per recipe (default 1.0)
+    spm: Dict[str,int],
+    clock_fracs: Dict[str,float],   # clock fraction per recipe (1.0 if absent)
 ) -> float:
-    """P = sum(base_mw × clock^1.6 × n_machines × (1 + spm/max_slots)^2)"""
+    """P = sum over active recipes of: base_mw × clock^1.6 × n_machines × sloop_power_mult"""
     total = 0.0
     for k, r in usable.items():
         qv = q_vals.get(k, 0.0)
-        if qv < 1e-5: continue
+        if qv < 1e-5:
+            continue
         clk = clock_fracs.get(k, 1.0)
         n   = max(1, math.ceil(qv / clk))
-        s   = spm.get(k, 0)
-        mult = 1.0 + (s / r.sloop_slots) if r.sloop_slots > 0 else 1.0
-        total += r.base_power_mw * (clk ** POWER_EXP) * n * (mult ** 2)
+        total += r.base_power_mw * (clk ** POWER_EXP) * n * _sloop_power_mult(r, spm.get(k, 0))
     return total
 
 
 # ── Iterative sloop allocation ────────────────────────────────────────────────
 def _trial_sloop(
     k: str,
-    scenario: Scenario,
-    usable: Dict[str,Recipe],
-    spm: Dict[str,int],
+    get_warm,
     best_q: Dict[str,float],
     best_obj: float,
     budget: int,
 ) -> Optional[Tuple[str, float, float, Dict[str,float], int]]:
     """
     Worker: evaluate adding one sloop slot to recipe k.
+    Calls get_warm() to obtain this thread's WarmLP (thread-safe: each thread
+    owns its own WarmLP instance, never shared across threads).
+    Patches the single recipe coefficient, solves, then un-patches so the
+    WarmLP can be reused for the next candidate in the same thread.
     Returns (k, gain, obj_val, q_vals, cost) if viable, else None.
-    Safe to call from a thread pool — builds and solves its own LP with no
-    shared mutable state (trial_spm is a local copy).
     """
-    r = usable[k]
-    if spm[k] >= r.sloop_slots:
-        return None  # already maxed
+    warm = get_warm()
+    r   = warm.usable[k]
+    cur = warm.spm.get(k, 0)
+    if cur >= r.sloop_slots:
+        return None
 
     n_machines = max(1, math.ceil(best_q.get(k, 0.0)))
     cost = n_machines
     if cost > budget:
         return None
 
-    trial_spm = dict(spm)
-    trial_spm[k] = spm[k] + 1
+    # Patch → solve → un-patch (keeps the WarmLP state clean for other workers)
+    warm.patch_spm(k, cur + 1)
+    status, obj_val, q_vals = warm.solve()
+    warm.patch_spm(k, cur)
 
-    status, obj_val, q_vals = _solve_lp(scenario, usable, trial_spm)
     if status != "Optimal":
         return None
 
-    pw = _total_power(usable, q_vals, trial_spm, {})
-    if scenario.max_power_mw is not None and pw > scenario.max_power_mw:
-        return None
+    # Power-cap check with trial spm
+    trial_spm = dict(warm.spm)
+    trial_spm[k] = cur + 1
+    if warm.scenario.max_power_mw is not None:
+        pw = _total_power(warm.usable, q_vals, trial_spm, {})
+        if pw > warm.scenario.max_power_mw:
+            return None
 
     gain = obj_val - best_obj
     return (k, gain, obj_val, q_vals, cost)
@@ -512,63 +901,99 @@ def _iterate_sloops(
     base_obj: float,
 ) -> Tuple[Dict[str,int], Dict[str,float], float]:
     """
-    spm[k] = sloops per machine (0..max_slots). Starts at 0.
-    Each round: all eligible candidates are evaluated in parallel via a
-    ThreadPoolExecutor; the one with the highest objective gain is committed.
-    Budget cost = ceil(q[k]) sloops (one per physical machine).
-    Accept if objective improves and power stays within cap.
-    Pruned recipe set is fixed — only LP inputs change.
+    Greedy iterative sloop assignment.
+
+    spm[k] = sloops per machine (0..max_slots). Starts at 0 for every recipe.
+    Each round: all eligible candidates evaluated in parallel; the winner
+    (highest objective gain that also satisfies the power cap) is committed.
+
+    Thread model: a single long-lived ThreadPoolExecutor is reused across all
+    rounds to avoid repeated thread-lifecycle overhead. Each thread owns one
+    WarmLP (created lazily via threading.local). The spm sync at the start of
+    _get_warm() keeps thread-local LPs aligned with the committed spm after
+    each round.
+
+    Budget cost = ceil(q[k]) sloops (one physical sloop per machine).
     """
     if scenario.somersloops_available == 0:
         return {}, base_q, base_obj
 
-    spm: Dict[str,int] = {k: 0 for k in usable}
+    spm: Dict[str,int]   = {k: 0 for k in usable}
     best_q   = dict(base_q)
-    best_obj = base_obj
     budget   = scenario.somersloops_available
-
     candidates = [k for k, r in usable.items() if r.sloop_slots > 0]
 
-    while budget > 0:
-        # Evaluate all candidates concurrently — each is an independent LP
-        eligible = [k for k in candidates if spm[k] < usable[k].sloop_slots
-                    and max(1, math.ceil(best_q.get(k, 0.0))) <= budget]
-        if not eligible:
-            break
+    # Thread-local WarmLP pool — concurrent patch/solve/un-patch never conflict.
+    _tl = threading.local()
 
-        workers = min(len(eligible), 8)
-        results = []
-        # spm and best_q are read-only in workers; pass directly (no copy needed).
-        # _trial_sloop creates its own trial_spm copy internally.
-        frozen_spm = spm        # workers must not mutate — they don't
-        frozen_q   = best_q
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {
-                ex.submit(
-                    _trial_sloop, k, scenario, usable,
-                    frozen_spm, frozen_q, best_obj, budget
-                ): k
-                for k in eligible
-            }
-            for fut in as_completed(futs):
-                res = fut.result()
-                if res is not None:
-                    results.append(res)
+    def _get_warm() -> WarmLP:
+        """Return (or lazily create) this thread's WarmLP, synced to current spm."""
+        warm = getattr(_tl, "warm", None)
+        if warm is None:
+            _tl.warm = WarmLP(scenario, usable, spm)
+        else:
+            for k2, v2 in spm.items():
+                if warm.spm.get(k2, 0) != v2:
+                    warm.patch_spm(k2, v2)
+        return _tl.warm
 
-        if not results:
-            break
+    # Seed best_obj from a WarmLP solve so all gain comparisons use the same
+    # objective scale (WarmLP omits the supply constant that _solve_lp includes).
+    _seed = WarmLP(scenario, usable, spm)
+    _, best_obj, _ = _seed.solve()
 
-        # Pick the candidate with the highest objective gain
-        best = max(results, key=lambda r: r[1])
-        best_k, best_gain, best_obj_val, best_new_q, best_cost = best
+    n_workers = min(len(candidates), 8)
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        while budget > 0:
+            eligible = [
+                k for k in candidates
+                if spm[k] < usable[k].sloop_slots
+                and best_q.get(k, 0.0) > 1e-3
+                and max(1, math.ceil(best_q.get(k, 0.0))) <= budget
+            ]
+            if not eligible:
+                break
 
-        if best_gain <= 0:
-            break  # no objective-improving assignment found this round
+            futs = {ex.submit(_trial_sloop, k, _get_warm, best_q, best_obj, budget): k
+                    for k in eligible}
+            results = [fut.result() for fut in as_completed(futs)
+                       if fut.result() is not None]
 
-        spm[best_k] += 1
-        best_q        = best_new_q
-        best_obj      = best_obj_val
-        budget       -= best_cost
+            if not results:
+                break
+
+            # Sort winners by gain descending, then greedily commit all whose
+            # resource footprints don't overlap with already-committed recipes
+            # in this round.  Recipes with disjoint resource footprints can be
+            # committed together without re-solving because their LP effects are
+            # independent — this can halve the number of outer rounds.
+            results.sort(key=lambda r: r[1], reverse=True)
+
+            committed_items: Set[str] = set()
+            committed_any = False
+            for cand_k, gain, obj_val, new_q, cost in results:
+                if gain <= 0:
+                    break
+                # A recipe conflicts if any of its inputs or outputs were
+                # touched by a recipe already committed this round.
+                footprint = (set(usable[cand_k].inputs.keys())
+                             | set(usable[cand_k].outputs.keys()))
+                if footprint & committed_items:
+                    continue  # skip — would need a re-solve to be safe
+                if cost > budget:
+                    continue
+                spm[cand_k] += 1
+                budget      -= cost
+                committed_items |= footprint
+                committed_any = True
+                # Use the q_vals and obj from the best winner only; the others
+                # are single-recipe trials so best_q/best_obj are re-synced at
+                # the top of _get_warm() each round regardless.
+                best_q   = new_q
+                best_obj = obj_val
+
+            if not committed_any:
+                break
 
     return spm, best_q, best_obj
 
@@ -582,40 +1007,63 @@ def _allocate_shards(
     max_power_mw: Optional[float],
 ) -> Dict[str, dict]:
     """
-    Greedy: prefer floor(machines) overclocked over ceil(machines) underclocked.
+    Greedy: prefer floor(machines) overclocked over ceil(machines) underclocked
+    when shards are available and the overclock stays within MAX_CLOCK.
+
+    Recipes are sorted by total shard cost of Option B ascending — a recipe
+    needing 1.05 machines (105% clock, 1 shard) is committed before one needing
+    1.95 machines (195% clock, 2 shards), so the budget saves the most machines
+    per shard spent.
+
     Returns {key: {machines, clock_pct, shards, power_mw}}.
-    Power uses correct per-machine sloop formula.
     """
-    result = {}
+    result: Dict[str, dict] = {}
     shards_left = shards_available
 
-    for k, r in usable.items():
-        qv = q_vals.get(k, 0.0)
-        if qv < 1e-5:
-            # Skip inactive recipes — callers only read active-recipe entries
-            continue
-
-        ceil_n  = math.ceil(qv)
+    def _shard_cost(k: str) -> int:
+        """Total shards consumed by Option B for recipe k (floor machines, overclocked).
+        Recipes where floor == ceil (integer q) get cost 0 but are ineligible for
+        Option B anyway — they sort last and fall through to Option A naturally.
+        Sorting ascending by this cost commits the cheapest machine-saves first so
+        the shard budget stretches as far as possible.
+        """
+        qv      = q_vals[k]
         floor_n = max(1, math.floor(qv))
-        s       = spm.get(k, 0)
-        sloop_pw = (1.0 + s / r.sloop_slots)**2 if r.sloop_slots > 0 else 1.0
+        ceil_n  = math.ceil(qv)
+        if floor_n == ceil_n:
+            return 0
+        clk_b     = qv / floor_n
+        shards_pm = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
+        return shards_pm * floor_n
 
-        # Option A: ceil machines underclocked
+    sorted_keys = sorted(
+        (k for k in usable if q_vals.get(k, 0.0) >= 1e-5),
+        key=_shard_cost,
+    )
+
+    for k in sorted_keys:
+        r  = usable[k]
+        qv = q_vals[k]
+
+        ceil_n   = math.ceil(qv)
+        floor_n  = max(1, math.floor(qv))
+        sloop_pw = _sloop_power_mult(r, spm.get(k, 0))
+
+        # Option A: ceil machines, underclocked
         clk_a = qv / ceil_n
-        pw_a  = r.base_power_mw * (clk_a**POWER_EXP) * ceil_n * sloop_pw
-        chosen = {"machines": ceil_n, "clock_pct": clk_a*100, "shards": 0, "power_mw": pw_a}
+        pw_a  = r.base_power_mw * (clk_a ** POWER_EXP) * ceil_n * sloop_pw
+        chosen = {"machines": ceil_n, "clock_pct": clk_a * 100, "shards": 0, "power_mw": pw_a}
 
+        # Option B: floor machines, overclocked (requires shards)
         if floor_n < ceil_n:
             clk_b = qv / floor_n
             if clk_b <= MAX_CLOCK:
                 shards_pm  = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
                 shards_tot = shards_pm * floor_n
-                pw_b = r.base_power_mw * (clk_b**POWER_EXP) * floor_n * sloop_pw
-
-                if shards_tot <= shards_left:
-                    if max_power_mw is None or pw_b <= max_power_mw:
-                        chosen = {"machines": floor_n, "clock_pct": clk_b*100,
-                                  "shards": shards_tot, "power_mw": pw_b}
+                pw_b = r.base_power_mw * (clk_b ** POWER_EXP) * floor_n * sloop_pw
+                if shards_tot <= shards_left and (max_power_mw is None or pw_b <= max_power_mw):
+                    chosen = {"machines": floor_n, "clock_pct": clk_b * 100,
+                              "shards": shards_tot, "power_mw": pw_b}
 
         result[k] = chosen
         shards_left = max(0, shards_left - chosen["shards"])
@@ -625,51 +1073,54 @@ def _allocate_shards(
 
 # ── Layout options ────────────────────────────────────────────────────────────
 def _layout_options(r: Recipe, qv: float, s: int) -> List[LayoutOption]:
-    sloop_pw = (1.0 + s / r.sloop_slots)**2 if r.sloop_slots > 0 else 1.0
-    opts = []
-    ceil_n  = math.ceil(qv)
-    floor_n = max(1, math.floor(qv))
+    """Return the 1–2 practical clock layouts for this recipe at throughput qv."""
+    sloop_pw = _sloop_power_mult(r, s)
+    ceil_n   = math.ceil(qv)
+    floor_n  = max(1, math.floor(qv))
 
     clk_a = qv / ceil_n
-    pw_a  = r.base_power_mw * (clk_a**POWER_EXP) * ceil_n * sloop_pw
-    opts.append(LayoutOption(ceil_n, round(clk_a*100,1), 0, round(pw_a,2),
-                             f"{ceil_n} × {clk_a*100:.1f}%"))
+    pw_a  = r.base_power_mw * (clk_a ** POWER_EXP) * ceil_n * sloop_pw
+    opts  = [LayoutOption(ceil_n, round(clk_a * 100, 1), 0, round(pw_a, 2),
+                          f"{ceil_n} × {clk_a*100:.1f}%")]
+
     if floor_n < ceil_n:
         clk_b = qv / floor_n
         if clk_b <= MAX_CLOCK:
-            shards_pm = min(3, max(0, math.ceil((clk_b-1.0)/SHARD_BOOST)))
-            pw_b = r.base_power_mw * (clk_b**POWER_EXP) * floor_n * sloop_pw
-            opts.append(LayoutOption(floor_n, round(clk_b*100,1), shards_pm*floor_n,
-                                     round(pw_b,2),
-                                     f"{floor_n} × {clk_b*100:.1f}%  ({shards_pm} shard/machine)"))
+            shards_pm = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
+            pw_b = r.base_power_mw * (clk_b ** POWER_EXP) * floor_n * sloop_pw
+            opts.append(LayoutOption(
+                floor_n, round(clk_b * 100, 1), shards_pm * floor_n, round(pw_b, 2),
+                f"{floor_n} × {clk_b*100:.1f}%  ({shards_pm} shard/machine)",
+            ))
     return opts
 
 
 # ── Main solve ────────────────────────────────────────────────────────────────
 def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
-          machine_meta: Dict = None) -> SolveResult:
+          machine_meta: Optional[Dict] = None) -> SolveResult:
     warnings:       List[str] = []
     conflict_hints: List[str] = []
     cap_overshoot:  Dict[str,float] = {}
 
-    # Prune once — reused for all LP solves
+    # Prune once — reused for all LP solves in this call
     usable, unsatisfiable = prune_recipes(scenario, all_recipes)
     pruned_count = len(usable)
 
     if not usable and not unsatisfiable:
         conflict_hints.append("No recipes reachable from your resources and objectives.")
         return SolveResult("No recipes", 0, [], {}, {}, {}, {}, {}, {}, {},
-                          0, 0, 0, 0, warnings, conflict_hints, 0, {})
+                           0, 0, 0, 0, warnings, conflict_hints, 0, {})
 
-    # Stage 1: base LP (no sloops) — cheap solve; duals are computed lazily on demand
+    # Stage 1: base LP (no sloops); duals computed lazily via compute_duals()
     if usable:
         status, base_obj, base_q = _solve_lp(scenario, usable, {})
     else:
         status, base_obj, base_q = "Infeasible", 0.0, {}
-    shadow_prices: Dict[str,float] = {}
+
+    shadow_prices:     Dict[str,float]  = {}
     saturation_points: Dict[str,object] = {}
 
-    # Stage 2: iterative sloop assignment (LP re-solved each step, same pruned set)
+    # Stage 2: iterative sloop assignment (re-solves LP each step, same pruned set)
     if status == "Optimal" and scenario.somersloops_available > 0:
         spm, q_vals, obj_val = _iterate_sloops(scenario, usable, base_q, base_obj)
     else:
@@ -678,12 +1129,12 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     # Stage 3: shard allocation
     shard_alloc = _allocate_shards(
         usable, q_vals, spm,
-        scenario.power_shards_available, scenario.max_power_mw
+        scenario.power_shards_available, scenario.max_power_mw,
     )
 
-    # Build flows
+    # Build flows — single pass over active recipes
     meta = machine_meta if machine_meta is not None else load_machine_meta()
-    flows: List[FlowResult] = []
+    flows:             List[FlowResult] = []
     total_power        = 0.0
     total_machines_int = 0
     total_shards       = 0
@@ -691,26 +1142,31 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
 
     for k, r in usable.items():
         qv = q_vals.get(k, 0.0)
-        if qv < 1e-5: continue
+        if qv < 1e-5:
+            continue
 
         sa             = shard_alloc.get(k, {})
         machines_final = sa.get("machines", math.ceil(qv))
         clock_pct      = sa.get("clock_pct", 100.0)
         shards_this    = sa.get("shards", 0)
 
-        spm_k     = spm.get(k, 0)   # sloops per machine
-        sloops_total = spm_k * machines_final  # total physical sloops
+        spm_k        = spm.get(k, 0)
+        sloops_total = spm_k * machines_final
 
-        mult = 1.0 + (spm_k / r.sloop_slots) if r.sloop_slots > 0 else 1.0
+        mult = _output_mult(r, spm_k)
         clk  = clock_pct / 100.0
-        pw   = r.base_power_mw * (clk**POWER_EXP) * machines_final * (mult**2)
+        pw   = r.base_power_mw * (clk ** POWER_EXP) * machines_final * _sloop_power_mult(r, spm_k)
 
         total_power        += pw
         total_machines_int += machines_final
         total_shards       += shards_this
         total_sloops       += sloops_total
 
-        eff_rate = qv * mult  # LP throughput × sloop multiplier
+        # qv is the LP's normalised throughput with sloop multiplier already
+        # baked into the constraint coefficients via eff_out.  The per-unit
+        # base rate × qv therefore gives the correct physical output; there
+        # is no need to multiply by mult again.
+        eff_rate = qv   # LP throughput; sloop boost already embedded
 
         flows.append(FlowResult(
             recipe_key=k, display=r.display, machine=r.machine,
@@ -723,52 +1179,60 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             sloop_slots=r.sloop_slots,
             output_multiplier=round(mult, 4),
             power_mw=round(pw, 2),
-            inputs={item: round(r.inputs[item]*qv, 4) for item in r.inputs},
-            outputs={item: round(r.outputs[item]*eff_rate, 4) for item in r.outputs},
+            inputs={item: round(r.inputs[item] * qv, 4) for item in r.inputs},
+            outputs={item: round(r.outputs[item] * eff_rate, 4) for item in r.outputs},
             layout_options=_layout_options(r, qv, spm_k),
             has_shard=shards_this > 0,
             has_sloop=spm_k > 0,
         ))
 
-    # Cap overshoot
+    # Cap overshoot warnings
     if scenario.max_machines is not None and total_machines_int > scenario.max_machines:
         cap_overshoot["machines_over"] = total_machines_int - scenario.max_machines
     if scenario.max_power_mw is not None and total_power > scenario.max_power_mw + 0.5:
         cap_overshoot["power_over"] = round(total_power - scenario.max_power_mw, 1)
 
-    # Net items
-    producible = set()
-    for r in usable.values(): producible.update(r.outputs.keys())
-    all_system = set(scenario.available_resources.keys()) | producible
+    # Net items — single pass accumulates produced, consumed, and supply together.
+    # Also tracks source_nodes (resources that are consumed by some recipe).
+    item_supply:   Dict[str, float] = dict(scenario.available_resources)
+    item_produced: Dict[str, float] = {}
+    item_consumed: Dict[str, float] = {}
+    for f in flows:
+        for item, qty in f.outputs.items():
+            item_produced[item] = item_produced.get(item, 0.0) + qty
+        for item, qty in f.inputs.items():
+            item_consumed[item] = item_consumed.get(item, 0.0) + qty
 
+    all_system = set(item_supply.keys()) | set(item_produced.keys())
     net_items: Dict[str,float] = {}
+    source_nodes: Dict[str,float] = {}
+
     for item in all_system:
-        supply   = scenario.available_resources.get(item, 0.0)
-        produced = sum(f.outputs.get(item, 0) for f in flows)
-        consumed = sum(f.inputs.get(item, 0) for f in flows)
+        supply   = item_supply.get(item, 0.0)
+        produced = item_produced.get(item, 0.0)
+        consumed = item_consumed.get(item, 0.0)
         net = supply + produced - consumed
         if abs(net) > 1e-4:
             net_items[item] = round(net, 4)
-
-    source_nodes: Dict[str,float] = {}
-    for item, supply in scenario.available_resources.items():
-        if sum(f.inputs.get(item, 0) for f in flows) > 1e-5:
+        if supply > 0 and consumed > 1e-5:
             source_nodes[item] = supply
 
-    sink_nodes: Dict[str,float] = {}
-    for item in (list(scenario.objective.keys()) + list(scenario.must_produce.keys())
-                 + list(scenario.min_produce.keys()) + list(scenario.max_produce.keys())):
-        val = net_items.get(item, 0)
-        if val > 1e-5:
-            sink_nodes[item] = round(val, 4)
+    # Sink nodes: goal items with positive net
+    sink_items = (set(scenario.objective.keys()) | set(scenario.must_produce.keys())
+                | set(scenario.min_produce.keys()) | set(scenario.max_produce.keys()))
+    sink_nodes: Dict[str,float] = {
+        item: round(net_items[item], 4)
+        for item in sink_items
+        if net_items.get(item, 0.0) > 1e-5
+    }
 
-    wanted = (set(scenario.objective.keys()) | set(scenario.must_produce.keys())
-            | set(scenario.min_produce.keys()) | set(scenario.max_produce.keys())
-            | set(scenario.available_resources.keys()))
-    has_consumer = set()
-    for r in usable.values(): has_consumer.update(r.inputs.keys())
+    # Classify unexpected surpluses
+    wanted = sink_items | set(scenario.available_resources.keys())
+    has_consumer: Set[str] = set()
+    for r in usable.values():
+        has_consumer.update(r.inputs.keys())
 
-    error_sinks:          Dict[str,float] = {}
+    error_sinks:           Dict[str,float] = {}
     surplus_intermediates: Dict[str,float] = {}
     for item, net in net_items.items():
         if net > 1e-4 and item not in wanted:
@@ -777,32 +1241,36 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             else:
                 error_sinks[item] = net
 
+    # Error sources: items that could not be produced at all
     error_sources: Dict[str,float] = {}
     for item, reasons in unsatisfiable.items():
-        qty = scenario.must_produce.get(item) or scenario.objective.get(item) or \
-              scenario.min_produce.get(item, 1.0)
+        qty = (scenario.must_produce.get(item)
+               or scenario.objective.get(item)
+               or scenario.min_produce.get(item, 1.0))
         error_sources[item] = float(qty)
         conflict_hints.append(f"'{item}' cannot be produced: {'; '.join(reasons)}")
 
     if status == "Optimal":
         for item, qty in scenario.must_produce.items():
             if item in net_items and item not in error_sources:
-                actual = net_items.get(item, 0)
-                if actual < qty - max(0.05, qty*0.01):
+                actual = net_items.get(item, 0.0)
+                if actual < qty - max(0.05, qty * 0.01):
                     conflict_hints.append(
                         f"'{item}': needed {qty:.1f}/min, achieved {actual:.2f}/min"
                     )
 
     flows.sort(key=lambda f: (f.machine, f.display))
 
-    final_status = ("Optimal" if status == "Optimal" and not error_sources
-                    else "Optimal (with errors)" if status == "Optimal"
-                    else "Infeasible")
+    final_status = (
+        "Optimal" if status == "Optimal" and not error_sources
+        else "Optimal (with errors)" if status == "Optimal"
+        else "Infeasible"
+    )
 
     result = SolveResult(
         status=final_status, objective_value=round(obj_val, 4),
         flows=flows, net_items=net_items,
-        objective_items={item: round(net_items.get(item,0),4) for item in scenario.objective},
+        objective_items={item: round(net_items.get(item, 0), 4) for item in scenario.objective},
         source_nodes=source_nodes, sink_nodes=sink_nodes,
         error_sources=error_sources, error_sinks=error_sinks,
         surplus_intermediates=surplus_intermediates,
@@ -813,23 +1281,24 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         pruned_recipe_count=pruned_count, cap_overshoot=cap_overshoot,
         shadow_prices=shadow_prices,
         saturation_points=saturation_points,
+        usable=usable,
     )
-    # Attach the pruned recipe set so callers can pass it to compute_duals,
-    # avoiding a redundant prune_recipes call when the Analysis modal opens.
-    result._usable = usable  # type: ignore[attr-defined]
     return result
 
 
-def compute_duals(scenario: Scenario, all_recipes: Dict[str,Recipe],
-                  spm: Optional[Dict[str,int]] = None,
-                  usable: Optional[Dict[str,Recipe]] = None,
-                 ) -> Tuple[Dict[str,float], Dict[str,object]]:
+# ── Public helpers ────────────────────────────────────────────────────────────
+def compute_duals(
+    scenario: Scenario,
+    all_recipes: Dict[str,Recipe],
+    spm: Optional[Dict[str,int]] = None,
+    usable: Optional[Dict[str,Recipe]] = None,
+) -> Tuple[Dict[str,float], Dict[str,object]]:
     """
-    Run the dual LP for shadow prices + saturation points.
-    Called lazily (only when Analysis modal is opened).
-    spm: sloops-per-machine mapping from the last solve (or {} / None for no sloops).
-    usable: pre-pruned recipe set from the last solve — skips re-pruning when provided.
-    Returns (shadow_prices, saturation_points).
+    Compute shadow prices and saturation points.
+    Called lazily (only when the Analysis modal is opened).
+
+    spm:    sloops-per-machine from the last solve, or {} for no sloops.
+    usable: pre-pruned recipe set from the last solve — pass result.usable to skip re-pruning.
     """
     if usable is None:
         usable, _ = prune_recipes(scenario, all_recipes)
@@ -840,21 +1309,24 @@ def compute_duals(scenario: Scenario, all_recipes: Dict[str,Recipe],
 
 
 def compute_build_cost(result: SolveResult, machine_meta: Dict) -> Dict[str,int]:
-    machine_totals: Dict[str,float] = {}
-    for f in result.flows:
-        machine_totals[f.machine] = machine_totals.get(f.machine, 0) + f.machines_final
+    """Single-pass accumulation of build materials across all flows."""
     total: Dict[str,int] = {}
-    for machine, count in machine_totals.items():
-        for item, qty in machine_meta.get(machine, {}).get("build_cost", {}).items():
-            total[item] = total.get(item, 0) + qty * count
+    for f in result.flows:
+        bc = machine_meta.get(f.machine, {}).get("build_cost", {})
+        if not bc:
+            continue
+        n = f.machines_final
+        for item, qty in bc.items():
+            total[item] = total.get(item, 0) + qty * n
     return dict(sorted(total.items()))
 
 
 def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) -> dict:
-    def lo(o):
-        if o is None: return None
-        return {"machines":o.machines,"clock_pct":o.clock_pct,
-                "shards_needed":o.shards_needed,"power_mw":o.power_mw,"label":o.label}
+    def lo(o: Optional[LayoutOption]) -> Optional[dict]:
+        if o is None:
+            return None
+        return {"machines": o.machines, "clock_pct": o.clock_pct,
+                "shards_needed": o.shards_needed, "power_mw": o.power_mw, "label": o.label}
     return {
         "scenario_name":         scenario.name,
         "status":                result.status,
@@ -903,11 +1375,11 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
 
 if __name__ == "__main__":
     import sys
-    recipes = load_recipes(); meta = load_machine_meta()
+    recipes, meta = load_recipes_and_meta()
     name = sys.argv[1] if len(sys.argv) > 1 else "iron_hub"
     path = SCENARIOS_DIR / f"{name}.yaml"
     if not path.exists():
-        print(f"Not found. Available: {list_scenarios()}"); exit(1)
+        print(f"Not found. Available: {list_scenarios()}"); sys.exit(1)
     s = load_scenario(path)
-    result = solve(s, recipes)
+    result = solve(s, recipes, machine_meta=meta)
     print(json.dumps(result_to_dict(result, s, meta), indent=2))

@@ -737,6 +737,34 @@ export function draw() {
   }
 }
 
+// ── Viewport culling helpers ──────────────────────────────
+// Returns the visible world-space bounding box given current PAN/ZOOM.
+// Used to skip draw calls for off-screen nodes and edges.
+function viewportBounds(W, H, margin = 40) {
+  return {
+    x1: (-PAN.x / ZOOM) - margin,
+    y1: (-PAN.y / ZOOM) - margin,
+    x2: (-PAN.x + W) / ZOOM + margin,
+    y2: (-PAN.y + H) / ZOOM + margin,
+  };
+}
+
+function nodeInView(n, vp) {
+  const h = nodeH(n);
+  return n.x + n.w >= vp.x1 && n.x <= vp.x2 &&
+         n.y + h   >= vp.y1 && n.y <= vp.y2;
+}
+
+function edgeInView(e, vp) {
+  if (e._x1 == null) return false;
+  const minX = Math.min(e._x1, e._x2, e._cx1, e._cx2);
+  const maxX = Math.max(e._x1, e._x2, e._cx1, e._cx2);
+  const minY = Math.min(e._y1, e._y2, e._cy1, e._cy2);
+  const maxY = Math.max(e._y1, e._y2, e._cy1, e._cy2);
+  return maxX >= vp.x1 && minX <= vp.x2 &&
+         maxY >= vp.y1 && minY <= vp.y2;
+}
+
 function _draw() {
   const W = CV.clientWidth, H = CV.clientHeight;
   C.setTransform(lastDpr, 0, 0, lastDpr, 0, 0);
@@ -759,20 +787,24 @@ function _draw() {
   C.translate(PAN.x, PAN.y);
   C.scale(ZOOM, ZOOM);
 
-  // Draw edges first (behind nodes)
-  EDGES.forEach(e => drawEdge(e));
+  // Compute visible world-space bounds once per frame for culling
+  const vp = viewportBounds(W, H);
 
-  // Draw nodes (sorted: special nodes first so recipe nodes render on top)
-  const specials = NODES.filter(n => n.type !== 'recipe');
-  const recipes  = NODES.filter(n => n.type === 'recipe');
+  // Draw edges first (behind nodes) — skip fully off-screen edges
+  EDGES.forEach(e => { if (edgeInView(e, vp)) drawEdge(e); });
+
+  // Draw nodes — skip fully off-screen nodes; specials drawn first
+  const specials = NODES.filter(n => n.type !== 'recipe' && nodeInView(n, vp));
+  const recipes  = NODES.filter(n => n.type === 'recipe' && nodeInView(n, vp));
   specials.forEach(drawNode);
   recipes.forEach(drawNode);
 
-  // Search highlight ring (world space, on top of everything)
+  // Search highlight ring — only for visible nodes
   if (searchResults.length) {
     const activeId = searchResults[searchIdx];
     NODES.forEach(n => {
       if (!searchResults.includes(n.id)) return;
+      if (!nodeInView(n, vp)) return;
       const isActive = n.id === activeId;
       C.strokeStyle = isActive ? '#f59e0b' : 'rgba(245,158,11,0.4)';
       C.lineWidth   = isActive ? 3 / ZOOM : 1.5 / ZOOM;

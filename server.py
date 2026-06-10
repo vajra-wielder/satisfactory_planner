@@ -11,8 +11,8 @@ Can also be run directly for browser-only use:
     python server.py 5001   # custom port
 """
 
-import json, os, sys, tempfile, threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import gzip, json, os, sys, tempfile, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import yaml
@@ -30,12 +30,64 @@ ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
 ALL_ITEMS    = get_all_items(ALL_RECIPES)   # computed once; never changes at runtime
 
+# Pre-serialise static responses to bytes at startup so the handlers can return
+# them directly without calling json.dumps on every request.
+_RECIPES_BYTES = json.dumps({
+    k: {"display": r.display, "machine": r.machine,
+        "alternate": r.alternate, "inputs": r.inputs, "outputs": r.outputs}
+    for k, r in ALL_RECIPES.items()
+}, default=str).encode()
+
+_ITEM_DISPLAY_BYTES = json.dumps(
+    dict(
+        sorted({
+            **{key: key.replace("_", " ")
+               for r in ALL_RECIPES.values()
+               for key in list(r.inputs) + list(r.outputs)},
+            "Circuit_Board_HS":  "AI Limiter",
+            "Lightweight_Frame": "Radio Control Unit",
+            "Screw":             "Screws",
+        }.items())
+    ),
+    default=str
+).encode()
+
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
 _dual_cache: dict = {}   # {'scenario': Scenario, 'spm': dict, 'usable': dict}
 _dual_lock = threading.Lock()
 
 # Scenario list cache — keyed by (name, mtime) pairs so stale entries auto-invalidate.
 _scenario_list_cache: dict = {}   # {frozenset of (name, mtime): list[dict]}
+
+# Per-scenario load cache — keyed by (name, mtime); invalidates on any file change.
+_scenario_load_cache: dict = {}   # {(name, mtime): dict}
+
+# ── Async solve job store ─────────────────────────────────────────────────────
+import uuid as _uuid
+_jobs: dict = {}   # {job_id: {"status": "pending"|"done"|"error", "result": dict|None}}
+_jobs_lock = threading.Lock()
+
+def _run_solve_job(job_id: str, s, all_recipes, machine_meta):
+    """Runs in a background thread; writes result into _jobs when done."""
+    try:
+        result = solve(s, all_recipes, machine_meta)
+        d      = result_to_dict(result, s, machine_meta)
+        new_cache = {
+            "scenario": s,
+            "spm": {f["recipe_key"]: f["sloops_per_machine"]
+                    for f in d.get("flows", [])
+                    if f.get("sloops_per_machine", 0) > 0},
+            "usable": getattr(result, "_usable", None),
+        }
+        with _dual_lock:
+            _dual_cache.clear()
+            _dual_cache.update(new_cache)
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "done", "result": d}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "error", "result": {"error": str(e)}}
 
 print(f"🏭 Satisfactory Planner — {len(ALL_RECIPES)} recipes "
       f"({sum(1 for r in ALL_RECIPES.values() if r.alternate)} alternates)")
@@ -83,12 +135,24 @@ class Handler(BaseHTTPRequestHandler):
     # ── Send helpers ──────────────────────────────────────────────────────────
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json"):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        accept_enc = self.headers.get("Accept-Encoding", "")
+        # Gzip when client supports it and payload is worth compressing (>512 bytes)
+        if "gzip" in accept_enc and len(body) > 512:
+            body = gzip.compress(body, compresslevel=1)  # level 1 = fast
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
 
     def _json(self, code: int, obj):
         self._send(code, json.dumps(obj, default=str).encode())
@@ -148,23 +212,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/recipes":
-            self._json(200, {
-                k: {"display": r.display, "machine": r.machine,
-                    "alternate": r.alternate, "inputs": r.inputs, "outputs": r.outputs}
-                for k, r in ALL_RECIPES.items()
-            })
+            self._send(200, _RECIPES_BYTES)
             return
 
         if path == "/api/item-display":
-            disp = {key: key.replace("_", " ")
-                    for r in ALL_RECIPES.values()
-                    for key in list(r.inputs) + list(r.outputs)}
-            disp.update({
-                "Circuit_Board_HS":  "AI Limiter",
-                "Lightweight_Frame": "Radio Control Unit",
-                "Screw":             "Screws",
-            })
-            self._json(200, disp)
+            self._send(200, _ITEM_DISPLAY_BYTES)
             return
 
         if path == "/api/scenarios":
@@ -200,8 +252,39 @@ class Handler(BaseHTTPRequestHandler):
             if not p.exists():
                 self._json(404, {"error": "Not found"})
                 return
+            mtime = p.stat().st_mtime
+            cache_key = (name, mtime)
+            if cache_key in _scenario_load_cache:
+                self._json(200, _scenario_load_cache[cache_key])
+                return
             with open(p) as f:
-                self._json(200, yaml.safe_load(f))
+                data = yaml.safe_load(f)
+            # Keep cache bounded: one entry per scenario name (drop stale mtime)
+            _scenario_load_cache.clear() if len(_scenario_load_cache) > 50 else None
+            _scenario_load_cache[cache_key] = data
+            self._json(200, data)
+            return
+
+        if path.startswith("/api/solve/"):
+            job_id = path[len("/api/solve/"):]
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+            if job is None:
+                self._json(404, {"error": "Unknown job"})
+                return
+            if job["status"] == "pending":
+                self._json(200, {"status": "pending"})
+                return
+            if job["status"] == "error":
+                with _jobs_lock:
+                    _jobs.pop(job_id, None)
+                self._json(500, job["result"])
+                return
+            # Done — return result and clean up
+            result = job["result"]
+            with _jobs_lock:
+                _jobs.pop(job_id, None)
+            self._json(200, {"status": "done", "result": result})
             return
 
         if path == "/api/duals":
@@ -232,6 +315,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/")
 
         if path == "/api/solve-inline":
+            # Legacy synchronous endpoint — kept for backwards compatibility
             b = self._read_json()
             if not b:
                 self._json(400, {"error": "No data"})
@@ -240,13 +324,11 @@ class Handler(BaseHTTPRequestHandler):
                 s      = _build_scenario(b)
                 result = solve(s, ALL_RECIPES, MACHINE_META)
                 d      = result_to_dict(result, s, MACHINE_META)
-                # Cache scenario + spm for lazy dual computation (thread-safe)
                 new_cache = {
                     "scenario": s,
                     "spm": {f["recipe_key"]: f["sloops_per_machine"]
                             for f in d.get("flows", [])
                             if f.get("sloops_per_machine", 0) > 0},
-                    # Pre-pruned recipe set: lets compute_duals skip re-pruning
                     "usable": getattr(result, "_usable", None),
                 }
                 with _dual_lock:
@@ -256,6 +338,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._json(500, {"error": str(e)})
+            return
+
+        if path == "/api/solve":
+            # Async endpoint: dispatches solve to a background thread immediately
+            # and returns a job ID. Client polls GET /api/solve/<id>.
+            b = self._read_json()
+            if not b:
+                self._json(400, {"error": "No data"})
+                return
+            try:
+                s = _build_scenario(b)
+            except Exception as e:
+                self._json(400, {"error": str(e)})
+                return
+            job_id = _uuid.uuid4().hex
+            with _jobs_lock:
+                _jobs[job_id] = {"status": "pending", "result": None}
+            t = threading.Thread(
+                target=_run_solve_job,
+                args=(job_id, s, ALL_RECIPES, MACHINE_META),
+                daemon=True,
+            )
+            t.start()
+            self._json(202, {"job_id": job_id})
             return
 
         if path.startswith("/api/scenarios/"):
@@ -277,6 +383,10 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 raise
+            # Invalidate per-scenario cache so next load re-reads the file
+            stale = [k for k in _scenario_load_cache if k[0] == name]
+            for k in stale:
+                del _scenario_load_cache[k]
             self._json(200, {"status": "saved", "key": name})
             return
 
@@ -291,6 +401,9 @@ class Handler(BaseHTTPRequestHandler):
             p    = self._scenario_path(name)
             if p.exists():
                 p.unlink()
+                stale = [k for k in _scenario_load_cache if k[0] == name]
+                for k in stale:
+                    del _scenario_load_cache[k]
                 self._json(200, {"status": "deleted"})
             else:
                 self._json(404, {"error": "Not found"})
@@ -301,7 +414,7 @@ class Handler(BaseHTTPRequestHandler):
 # ── Standalone entry point (browser-only mode) ────────────────────────────────
 
 def run(port: int = 5000):
-    httpd = HTTPServer(("127.0.0.1", port), Handler)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"   http://127.0.0.1:{port}/  —  Ctrl+C to stop\n")
     try:
         httpd.serve_forever()

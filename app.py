@@ -15,7 +15,7 @@ Dependencies (install once):
 import sys
 import threading
 import time
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 # Ensure we can import server/solver from the same directory regardless of
@@ -26,7 +26,7 @@ import server as srv
 
 
 def _start_server(port: int) -> None:
-    httpd = HTTPServer(("127.0.0.1", port), srv.Handler)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), srv.Handler)
     print(f"   Server ready on http://127.0.0.1:{port}/")
     httpd.serve_forever()
 

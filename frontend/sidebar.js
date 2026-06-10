@@ -86,9 +86,39 @@ export function makeAC(input, onPick, dropParent) {
   }
 
   function openDrop() {
-    closeDrop();
     const s = suggestions(input.value);
-    if (!s.length) return;
+    if (!s.length) { closeDrop(); return; }
+
+    if (drop) {
+      // Reuse existing dropdown: diff against current children to avoid
+      // rebuilding the DOM when only values change or list is identical.
+      const existing = drop.querySelectorAll('.aci');
+      const same = existing.length === s.length &&
+        [...existing].every((el, i) => el.dataset.key === s[i]);
+      if (same) return;  // nothing changed — skip all DOM work
+
+      // Update in-place: patch existing rows or add/remove as needed
+      s.forEach((key, i) => {
+        if (i < existing.length) {
+          if (existing[i].dataset.key !== key) {
+            existing[i].textContent = itemName(key);
+            existing[i].dataset.key = key;
+          }
+        } else {
+          const d = document.createElement('div');
+          d.className = 'aci';
+          d.textContent = itemName(key);
+          d.dataset.key = key;
+          d.addEventListener('mousedown', ev => { ev.preventDefault(); pick(key); });
+          drop.appendChild(d);
+        }
+      });
+      // Remove surplus rows
+      for (let i = existing.length - 1; i >= s.length; i--) existing[i].remove();
+      return;
+    }
+
+    // First open: create the dropdown fresh
     drop = document.createElement('div');
     drop.className = 'acd';
     s.forEach(key => {
@@ -449,23 +479,26 @@ export function closeWarn() { document.getElementById('wo').classList.remove('sh
 // ══════════════════════════════════════════════════════════
 // RESULTS BAR + BUILD COST
 // ══════════════════════════════════════════════════════════
+let _rbLastHTML = null;
 export function renderResultsBar() {
   const rb = document.getElementById('rb');
-  if (!RESULT?.status?.startsWith('Optimal')) { rb.style.display = 'none'; return; }
-  rb.style.display = 'flex'; rb.innerHTML = '';
+  if (!RESULT?.status?.startsWith('Optimal')) {
+    rb.style.display = 'none';
+    _rbLastHTML = null;
+    return;
+  }
   const st  = (label, val, color = 'var(--acc)') =>
     `<div class="rbs"><div class="rbv" style="color:${color}">${val}</div><div class="rbl">${label}</div></div>`;
   const sep = '<div class="rbsep"></div>';
 
-  // All net-positive items (sinks + any positive net), sorted: objectives first, then by rate desc
   const objKeys = new Set(Object.keys(RESULT.objective_items || {}));
   const allOutputs = Object.entries(RESULT.net_items || {})
     .filter(([, v]) => v > 0.01)
     .sort(([ka, va], [kb, vb]) => {
       const aObj = objKeys.has(ka) ? 1 : 0;
       const bObj = objKeys.has(kb) ? 1 : 0;
-      if (bObj !== aObj) return bObj - aObj;  // objectives first
-      return vb - va;                          // then by rate descending
+      if (bObj !== aObj) return bObj - aObj;
+      return vb - va;
     });
 
   let h = '';
@@ -479,10 +512,16 @@ export function renderResultsBar() {
   h += st('Power', `${RESULT.total_power_mw?.toFixed(0)} MW`, 'var(--warn)');
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');
+
+  // Only touch the DOM if content actually changed
+  if (h === _rbLastHTML) { rb.style.display = 'flex'; return; }
+  _rbLastHTML = h;
+  rb.style.display = 'flex';
   rb.innerHTML = h;
 }
 
 let bcOpen = false;
+let _bcLastKey = null;  // tracks last rendered (open-state + result) to skip no-op redraws
 export function toggleBC() { bcOpen = !bcOpen; renderBuildCost(); }
 export function renderBuildCost() {
   const panel  = document.getElementById('bc');
@@ -490,12 +529,22 @@ export function renderBuildCost() {
   const entries = Object.entries(cost);
   const shards = RESULT?.build_cost_shards ?? 0;
   const sloops = RESULT?.build_cost_sloops ?? 0;
-  if (!entries.length && !shards && !sloops) { panel.style.display = 'none'; return; }
+  if (!entries.length && !shards && !sloops) {
+    panel.style.display = 'none';
+    _bcLastKey = null;
+    return;
+  }
   panel.style.display = '';
   document.getElementById('bcc').textContent = `${entries.length} items ${bcOpen ? '▲' : '▼'}`;
   const body = document.getElementById('bcb');
   body.style.display = bcOpen ? '' : 'none';
   if (!bcOpen) return;
+
+  // Skip full body rebuild if nothing has changed
+  const cacheKey = JSON.stringify(cost) + shards + sloops;
+  if (cacheKey === _bcLastKey) return;
+  _bcLastKey = cacheKey;
+
   body.innerHTML = '';
   entries.forEach(([item, qty]) => {
     const r = document.createElement('div'); r.className = 'bcr';
