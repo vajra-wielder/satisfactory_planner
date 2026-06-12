@@ -944,12 +944,16 @@ function drawNode(n) {
   C.fillText(measureTrunc(cleanName, w - 22), x + 10, cy + 7);
   cy += 16;
 
-  // Machine count
+  // Machine count — show mixed layout split when some machines overclock and rest run at 100%
   C.font = '10px JetBrains Mono,monospace'; C.fillStyle = '#616880';
-  C.fillText(
-    `${f.machines_final} machine${f.machines_final !== 1 ? 's' : ''} (${f.machines_float.toFixed(2)} LP)`,
-    x + 10, cy + 7
-  );
+  {
+    const hi_n = f.hi_machines ?? 0;
+    const lo_n = f.machines_final - hi_n;
+    const machineLabel = (hi_n > 0 && lo_n > 0)
+      ? `${hi_n}×${(f.clock_pct ?? 100).toFixed(0)}% + ${lo_n}×100%  (${f.machines_float.toFixed(2)} LP)`
+      : `${f.machines_final} machine${f.machines_final !== 1 ? 's' : ''}  (${f.machines_float.toFixed(2)} LP)`;
+    C.fillText(measureTrunc(machineLabel, w - 22), x + 10, cy + 7);
+  }
   cy += 16;
 
   // Stats bar
@@ -957,14 +961,25 @@ function drawNode(n) {
   C.strokeStyle = '#272d3d'; C.lineWidth = 0.5;
   C.beginPath(); C.moveTo(x, cy); C.lineTo(x + w, cy); C.stroke();
 
-  const clk = f.clock_pct ?? 100;
+  // For mixed layouts: clock shown as "Hi%/100%" and shard count is just the hi-machine count
+  const clk    = f.clock_pct ?? 100;
+  const hi_n   = f.hi_machines ?? 0;
+  const isMixed = hi_n > 0 && hi_n < f.machines_final;
+  // Clock colour: orange if any machine is overclocked, blue if all underclocked, grey if 100%
   const clkCol = clk > 100.1 ? '#fb923c' : clk < 99.9 ? '#38bdf8' : '#616880';
+  const clkLabel = isMixed ? `⏱${clk.toFixed(0)}%/${(100).toFixed(0)}%` : `⏱${clk.toFixed(1)}%`;
   C.font = '10px JetBrains Mono,monospace'; C.textBaseline = 'middle';
   let sx = x + 7;
   const stat = (t, fill) => { C.fillStyle = fill; C.fillText(t, sx, cy + STATS_H / 2); sx += C.measureText(t).width + 7; };
-  stat(`⏱${clk.toFixed(1)}%`, clkCol);
+  stat(clkLabel, clkCol);
   stat(`⚡${f.power_mw.toFixed(0)}MW`, '#fb923c');
-  if (f.has_shard) stat(`💎${Math.round(f.shards_used / (f.machines_final || 1))}/m`, '#3b82f6');
+  if (f.has_shard) {
+    // For mixed layouts, shards_used is the count on hi_machines only; show "N shard" total
+    const shardLabel = isMixed
+      ? `💎${f.shards_used}`
+      : `💎${Math.round(f.shards_used / (f.machines_final || 1))}/m`;
+    stat(shardLabel, '#3b82f6');
+  }
   if (f.has_sloop) stat(`🔮×${(f.output_multiplier || 1).toFixed(2)}`, '#a855f7');
   C.fillStyle = '#616880'; C.textAlign = 'right'; C.textBaseline = 'middle';
   C.fillText(n.expanded ? '▲' : '▼', x + w - 7, cy + STATS_H / 2);
@@ -1004,7 +1019,9 @@ function drawNode(n) {
     C.fillText('INTEGER LAYOUT OPTIONS', x + 10, cy + 7);
     cy += 14; C.textBaseline = 'alphabetic';
     f.layout_options.forEach(opt => {
-      const chosen = f.has_shard ? opt.machines === f.machines_final : opt.shards_needed === 0;
+      // A layout option is "chosen" when its shard count and machine count match what the solver picked.
+      // Mixed layouts keep machines_final == ceil(LP) but use fewer shards than the all-or-nothing option.
+      const chosen = opt.shards_needed === f.shards_used && opt.machines === f.machines_final;
       C.fillStyle = chosen ? 'rgba(245,158,11,.1)' : '#1f2435'; roundRectFill(x + 6, cy, w - 12, 24, 4);
       C.strokeStyle = chosen ? '#f59e0b' : '#272d3d'; C.lineWidth = 0.5; roundRectStroke(x + 6, cy, w - 12, 24, 4);
       C.font = '11px JetBrains Mono,monospace'; C.fillStyle = chosen ? '#f59e0b' : '#9aa0b4'; C.textBaseline = 'middle';
@@ -1089,13 +1106,22 @@ function getPos(e) {
 export function initGraphEvents() {
   initCanvasRefs();
 
+  // When a node is focused, only nodes in its chain (self + upstream + downstream)
+  // are interactable. Clicks/hovers on faded nodes are silently ignored so they
+  // stay visible in the background without being accidentally dragged or selected.
+  function isFocusable(node) {
+    if (!FOCUSED) return true;
+    return node.id === FOCUSED || FOCUS_UP.has(node.id) || FOCUS_DN.has(node.id);
+  }
+
   CV.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
     const pos  = getPos(e);
     const node = hitNode(pos.x, pos.y);
-    if (node) {
+    if (node && isFocusable(node)) {
       DRAG = { node, sx: pos.x, sy: pos.y, ox: node.x, oy: node.y, moved: false };
     } else {
+      // Clicking on a faded node or empty canvas always pans (never focuses faded)
       PANSTART = { x: pos.x, y: pos.y, px: PAN.x, py: PAN.y };
       CV.style.cursor = 'grabbing';
     }
@@ -1122,7 +1148,7 @@ export function initGraphEvents() {
       return;
     }
     const node   = hitNode(pos.x, pos.y);
-    const newHit = node ? node.id : null;
+    const newHit = (node && isFocusable(node)) ? node.id : null;
     if (newHit !== HIT) {
       HIT = newHit;
       CV.style.cursor = HIT ? 'pointer' : 'default';
@@ -1145,7 +1171,7 @@ export function initGraphEvents() {
   CV.addEventListener('dblclick', e => {
     const pos  = getPos(e);
     const node = hitNode(pos.x, pos.y);
-    if (node) {
+    if (node && isFocusable(node)) {
       if (node.type === 'recipe') {
         node.expanded = !node.expanded;
         node._hcache_exp_dirty = true;
@@ -1155,6 +1181,7 @@ export function initGraphEvents() {
       }
       centreOnNode(node.id);
     } else {
+      // Double-clicking empty canvas or a faded node exits focus mode
       clearFocus();
     }
   });

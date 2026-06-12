@@ -491,25 +491,34 @@ export function renderResultsBar() {
     `<div class="rbs"><div class="rbv" style="color:${color}">${val}</div><div class="rbl">${label}</div></div>`;
   const sep = '<div class="rbsep"></div>';
 
-  const objKeys = new Set(Object.keys(RESULT.objective_items || {}));
-  const allOutputs = Object.entries(RESULT.net_items || {})
+  // Only show items the user is optimising for, sorted by rate desc.
+  const objItems = Object.entries(RESULT.objective_items || {})
     .filter(([, v]) => v > 0.01)
-    .sort(([ka, va], [kb, vb]) => {
-      const aObj = objKeys.has(ka) ? 1 : 0;
-      const bObj = objKeys.has(kb) ? 1 : 0;
-      if (bObj !== aObj) return bObj - aObj;
-      return vb - va;
-    });
+    .sort(([, a], [, b]) => b - a);
+
+  // Resource utilisation: compact "X/Y maxed" pill instead of listing every resource.
+  const consumed = {};
+  (RESULT.flows || []).forEach(f =>
+    Object.entries(f.inputs || {}).forEach(([item, rate]) => {
+      consumed[item] = (consumed[item] || 0) + rate;
+    })
+  );
+  const resEntries = Object.entries(RESULT.source_nodes || {});
+  const bindingCount = resEntries.filter(([item, avail]) => {
+    const used = consumed[item] || 0;
+    return avail > 0 && (used / avail) >= 0.99;
+  }).length;
+  const resLabel = resEntries.length ? `${bindingCount}/${resEntries.length} maxed` : null;
 
   let h = '';
-  allOutputs.forEach(([k, v], i) => {
-    const color = objKeys.has(k) ? 'var(--ok)' : 'var(--acc)';
-    h += st(itemName(k), `${v.toFixed(1)}/m`, color);
-    if (i < allOutputs.length - 1) h += sep;
+  objItems.forEach(([k, v], i) => {
+    h += st(itemName(k), `${v.toFixed(1)}/m`, 'var(--ok)');
+    if (i < objItems.length - 1) h += sep;
   });
-  if (allOutputs.length) h += sep;
+  if (objItems.length) h += sep;
   h += st('Machines', RESULT.total_machines) + sep;
   h += st('Power', `${RESULT.total_power_mw?.toFixed(0)} MW`, 'var(--warn)');
+  if (resLabel) h += sep + st('Resources', resLabel, bindingCount > 0 ? 'var(--err)' : 'var(--t3)');
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');
 

@@ -89,6 +89,7 @@ class FlowResult:
     layout_options: List[LayoutOption] = field(default_factory=list)
     has_shard: bool = False
     has_sloop: bool = False
+    hi_machines: int = 0  # machines running at clock_pct; rest run at 100% (mixed layout)
 
 @dataclass
 class SolveResult:
@@ -460,6 +461,40 @@ def _solve_lp(
     if not usable:
         return "No recipes", 0.0, {}
     slvr, q, rkeys, _, _ = _build_lp(scenario, usable, spm)
+    status = slvr.Solve()
+    ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    if not ok:
+        return "Infeasible", 0.0, {}
+    q_vals = {rkeys[i]: max(0.0, q[i].solution_value()) for i in range(len(rkeys))}
+    return "Optimal", slvr.Objective().Value(), q_vals
+
+
+def _solve_lp_min_machines(
+    scenario: Scenario,
+    usable: Dict[str,Recipe],
+    spm: Dict[str,int],
+) -> Tuple[str, float, Dict[str,float]]:
+    """
+    Solve with objective replaced by minimise sum(q).
+    All production/resource/must/min/max constraints are preserved via _build_lp;
+    only the objective is swapped.  max_machines is intentionally stripped so the
+    solver finds the unconstrained minimum — the caller uses the result to learn
+    what the true floor is, not to enforce the cap.
+
+    Returns (status, objective, q_values) where objective = sum(q) at optimum.
+    """
+    if not usable:
+        return "No recipes", 0.0, {}
+    sc_uncapped = _dc_replace(scenario, max_machines=None)
+    slvr, q, rkeys, _, _ = _build_lp(sc_uncapped, usable, spm)
+
+    # Replace objective: minimise sum(q)
+    obj = slvr.Objective()
+    obj.Clear()
+    obj.SetMinimization()
+    for qi in q:
+        obj.SetCoefficient(qi, 1.0)
+
     status = slvr.Solve()
     ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
     if not ok:
@@ -999,6 +1034,88 @@ def _iterate_sloops(
 
 
 # ── Shard allocation ──────────────────────────────────────────────────────────
+def _best_mixed_layout(
+    r: Recipe,
+    qv: float,
+    spm_val: int,
+    shards_budget: int,
+    max_power_mw: Optional[float],
+) -> Tuple[int, float, int, float]:
+    """
+    Find the minimum-shard layout for throughput qv that keeps total machines
+    at ceil(qv).  Uses a mixed layout: `hi` machines run overclocked at
+    clk_hi, the rest run at 100%.
+
+    For q = 3.11 with no power constraint this yields:
+      1 machine × 111%  (1 shard)  +  2 machines × 100%  (0 shards) → 1 shard total
+    rather than the all-or-nothing Option B:
+      3 machines × 103.7% (3 shards total).
+
+    When no_power_constraint (max_power_mw is None), prefers fewest shards.
+    When power-constrained, falls back to all-or-nothing Option B so the full
+    machine-save is realised (fewer machines = less power).
+
+    Returns (machines_total, clock_pct_of_overclocked, shards_total, power_mw).
+    The caller interprets clock_pct as the speed of the `hi` machines; the
+    remaining machines run at 100%.  When hi == 0 the layout is pure 100%.
+    """
+    sloop_pw = _sloop_power_mult(r, spm_val)
+    ceil_n   = math.ceil(qv)
+    floor_n  = max(1, math.floor(qv))
+
+    # Baseline: all ceil_n machines at fractional clock (no shards needed)
+    clk_a  = qv / ceil_n
+    pw_a   = r.base_power_mw * (clk_a ** POWER_EXP) * ceil_n * sloop_pw
+
+    # No fractional part → nothing to do
+    if floor_n == ceil_n:
+        return ceil_n, clk_a * 100.0, 0, pw_a
+
+    frac = qv - floor_n  # machines worth of extra throughput needed (0 < frac < 1)
+
+    # --- Power-unconstrained path: mixed layout (minimum shards) ---
+    # We keep ceil_n machines total.  One subset of `hi` machines runs at clk_hi
+    # so that  hi * clk_hi + (ceil_n - hi) * 1.0 == qv
+    #   →  hi = frac / (clk_hi - 1)
+    # We scan hi = 1, 2, … floor_n to find the smallest hi whose clk_hi is
+    # reachable (≤ MAX_CLOCK) and whose shard cost fits the budget.
+    if max_power_mw is None:
+        best: Optional[Tuple[int, float, int, float]] = None
+        for hi in range(1, floor_n + 1):
+            # hi overclocked machines must cover `frac` extra throughput each
+            clk_hi = 1.0 + frac / hi
+            if clk_hi > MAX_CLOCK:
+                continue
+            shards_pm  = min(3, max(0, math.ceil((clk_hi - 1.0) / SHARD_BOOST)))
+            shards_tot = shards_pm * hi
+            if shards_tot > shards_budget:
+                continue
+            # Power: hi machines at clk_hi + (ceil_n - hi) at 1.0
+            pw = (r.base_power_mw * sloop_pw * (
+                hi * (clk_hi ** POWER_EXP) + (ceil_n - hi) * 1.0
+            ))
+            if best is None or shards_tot < best[2]:
+                best = (ceil_n, clk_hi * 100.0, shards_tot, pw)
+            if shards_tot == 0:
+                break  # can't do better
+
+        if best is not None:
+            return best
+
+    # --- Power-constrained path (or mixed layout failed): all-or-nothing Option B ---
+    # Reduce total machines to floor_n so power drops; accept higher shard cost.
+    clk_b      = qv / floor_n
+    if clk_b <= MAX_CLOCK:
+        shards_pm  = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
+        shards_tot = shards_pm * floor_n
+        pw_b = r.base_power_mw * (clk_b ** POWER_EXP) * floor_n * sloop_pw
+        if shards_tot <= shards_budget and (max_power_mw is None or pw_b <= max_power_mw):
+            return floor_n, clk_b * 100.0, shards_tot, pw_b
+
+    # Fall back to no-shard baseline
+    return ceil_n, clk_a * 100.0, 0, pw_a
+
+
 def _allocate_shards(
     usable: Dict[str,Recipe],
     q_vals: Dict[str,float],
@@ -1007,63 +1124,64 @@ def _allocate_shards(
     max_power_mw: Optional[float],
 ) -> Dict[str, dict]:
     """
-    Greedy: prefer floor(machines) overclocked over ceil(machines) underclocked
-    when shards are available and the overclock stays within MAX_CLOCK.
+    Greedy shard allocation using mixed layouts.
 
-    Recipes are sorted by total shard cost of Option B ascending — a recipe
-    needing 1.05 machines (105% clock, 1 shard) is committed before one needing
-    1.95 machines (195% clock, 2 shards), so the budget saves the most machines
-    per shard spent.
+    For each recipe, the best layout is the one that uses the fewest shards
+    while keeping machines at ceil(q) when there is no power cap.  Under a
+    power cap the all-or-nothing floor(q) layout is preferred because fewer
+    machines = less power.
 
-    Returns {key: {machines, clock_pct, shards, power_mw}}.
+    Recipes are sorted by shard cost of their best layout ascending so the
+    budget is spent on the cheapest machine-equivalent savings first.
+
+    Returns {key: {machines, clock_pct, shards, power_mw, hi_machines}}.
+    `hi_machines` is the count of machines running at clock_pct; the rest run
+    at 100%.  When hi_machines == machines all run at clock_pct (uniform).
     """
     result: Dict[str, dict] = {}
     shards_left = shards_available
 
-    def _shard_cost(k: str) -> int:
-        """Total shards consumed by Option B for recipe k (floor machines, overclocked).
-        Recipes where floor == ceil (integer q) get cost 0 but are ineligible for
-        Option B anyway — they sort last and fall through to Option A naturally.
-        Sorting ascending by this cost commits the cheapest machine-saves first so
-        the shard budget stretches as far as possible.
-        """
-        qv      = q_vals[k]
-        floor_n = max(1, math.floor(qv))
-        ceil_n  = math.ceil(qv)
-        if floor_n == ceil_n:
+    def _best_cost(k: str) -> int:
+        """Shard cost of the best mixed layout for sorting."""
+        qv = q_vals[k]
+        if math.ceil(qv) == max(1, math.floor(qv)):
             return 0
-        clk_b     = qv / floor_n
-        shards_pm = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
-        return shards_pm * floor_n
+        _, _, cost, _ = _best_mixed_layout(
+            usable[k], qv, spm.get(k, 0), shards_left, max_power_mw
+        )
+        return cost
 
     sorted_keys = sorted(
         (k for k in usable if q_vals.get(k, 0.0) >= 1e-5),
-        key=_shard_cost,
+        key=_best_cost,
     )
 
     for k in sorted_keys:
         r  = usable[k]
         qv = q_vals[k]
-
-        ceil_n   = math.ceil(qv)
-        floor_n  = max(1, math.floor(qv))
         sloop_pw = _sloop_power_mult(r, spm.get(k, 0))
 
-        # Option A: ceil machines, underclocked
+        ceil_n  = math.ceil(qv)
+        floor_n = max(1, math.floor(qv))
+
+        # Baseline Option A (no shards)
         clk_a = qv / ceil_n
         pw_a  = r.base_power_mw * (clk_a ** POWER_EXP) * ceil_n * sloop_pw
-        chosen = {"machines": ceil_n, "clock_pct": clk_a * 100, "shards": 0, "power_mw": pw_a}
+        chosen = {"machines": ceil_n, "clock_pct": clk_a * 100,
+                  "shards": 0, "power_mw": pw_a, "hi_machines": 0}
 
-        # Option B: floor machines, overclocked (requires shards)
-        if floor_n < ceil_n:
-            clk_b = qv / floor_n
-            if clk_b <= MAX_CLOCK:
-                shards_pm  = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
-                shards_tot = shards_pm * floor_n
-                pw_b = r.base_power_mw * (clk_b ** POWER_EXP) * floor_n * sloop_pw
-                if shards_tot <= shards_left and (max_power_mw is None or pw_b <= max_power_mw):
-                    chosen = {"machines": floor_n, "clock_pct": clk_b * 100,
-                              "shards": shards_tot, "power_mw": pw_b}
+        if floor_n < ceil_n and shards_left > 0:
+            n, clk_pct, shards_tot, pw = _best_mixed_layout(
+                r, qv, spm.get(k, 0), shards_left, max_power_mw
+            )
+            if shards_tot > 0 and shards_tot <= shards_left:
+                # hi_machines = how many run at clk_pct; rest at 100%
+                frac   = qv - floor_n
+                clk_hi = clk_pct / 100.0
+                hi     = round(frac / (clk_hi - 1.0)) if clk_hi > 1.0 + 1e-9 else n
+                chosen = {"machines": n, "clock_pct": clk_pct,
+                          "shards": shards_tot, "power_mw": pw,
+                          "hi_machines": hi}
 
         result[k] = chosen
         shards_left = max(0, shards_left - chosen["shards"])
@@ -1073,7 +1191,14 @@ def _allocate_shards(
 
 # ── Layout options ────────────────────────────────────────────────────────────
 def _layout_options(r: Recipe, qv: float, s: int) -> List[LayoutOption]:
-    """Return the 1–2 practical clock layouts for this recipe at throughput qv."""
+    """
+    Return the 1–3 practical clock layouts for this recipe at throughput qv.
+
+    Option A  — ceil machines, all underclocked (no shards).
+    Option B  — mixed layout: minimum shards, ceil machines total (power-unconstrained).
+    Option C  — all-or-nothing: floor machines, all overclocked (fewer machines,
+                more shards, less power).  Shown only when it differs from Option B.
+    """
     sloop_pw = _sloop_power_mult(r, s)
     ceil_n   = math.ceil(qv)
     floor_n  = max(1, math.floor(qv))
@@ -1084,14 +1209,40 @@ def _layout_options(r: Recipe, qv: float, s: int) -> List[LayoutOption]:
                           f"{ceil_n} × {clk_a*100:.1f}%")]
 
     if floor_n < ceil_n:
-        clk_b = qv / floor_n
-        if clk_b <= MAX_CLOCK:
-            shards_pm = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
-            pw_b = r.base_power_mw * (clk_b ** POWER_EXP) * floor_n * sloop_pw
-            opts.append(LayoutOption(
-                floor_n, round(clk_b * 100, 1), shards_pm * floor_n, round(pw_b, 2),
-                f"{floor_n} × {clk_b*100:.1f}%  ({shards_pm} shard/machine)",
-            ))
+        # Option B: mixed layout (minimum shards, ceil_n machines)
+        frac = qv - floor_n
+        for hi in range(1, floor_n + 1):
+            clk_hi = 1.0 + frac / hi
+            if clk_hi > MAX_CLOCK:
+                continue
+            shards_pm  = min(3, max(0, math.ceil((clk_hi - 1.0) / SHARD_BOOST)))
+            shards_tot = shards_pm * hi
+            pw_b = r.base_power_mw * sloop_pw * (
+                hi * (clk_hi ** POWER_EXP) + (ceil_n - hi) * 1.0
+            )
+            rest = ceil_n - hi
+            if rest > 0:
+                label = (f"{hi} × {clk_hi*100:.1f}%  ({shards_pm} shard/machine)"
+                         f" + {rest} × 100%")
+            else:
+                label = f"{hi} × {clk_hi*100:.1f}%  ({shards_pm} shard/machine)"
+            opts.append(LayoutOption(ceil_n, round(clk_hi * 100, 1),
+                                     shards_tot, round(pw_b, 2), label))
+            break  # take smallest-hi (fewest shards)
+
+        # Option C: all-or-nothing floor_n machines (only if different from Option B)
+        clk_c = qv / floor_n
+        if clk_c <= MAX_CLOCK:
+            shards_pm_c = min(3, max(0, math.ceil((clk_c - 1.0) / SHARD_BOOST)))
+            pw_c = r.base_power_mw * (clk_c ** POWER_EXP) * floor_n * sloop_pw
+            shards_c = shards_pm_c * floor_n
+            # Only add if it actually differs from Option B already appended
+            if not any(abs(o.shards_needed - shards_c) < 1e-9
+                       and o.machines == floor_n for o in opts):
+                opts.append(LayoutOption(
+                    floor_n, round(clk_c * 100, 1), shards_c, round(pw_c, 2),
+                    f"{floor_n} × {clk_c*100:.1f}%  ({shards_pm_c} shard/machine) — fewer machines",
+                ))
     return opts
 
 
@@ -1112,8 +1263,50 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
                            0, 0, 0, 0, warnings, conflict_hints, 0, {})
 
     # Stage 1: base LP (no sloops); duals computed lazily via compute_duals()
+    #
+    # max_machines fix: the LP constraint bounds the *fractional* sum of q values,
+    # but the final machine count uses ceil(q) per recipe.  A solution with
+    # sum(q) <= max_machines can still produce sum(ceil(q)) > max_machines after
+    # rounding.  We tighten the effective LP bound iteratively until the ceiled
+    # total fits within the cap.
+    #
+    # If the cap is set below the true minimum, tightening makes the LP infeasible
+    # before the ceiled total ever fits.  In that case we fall back to
+    # _solve_lp_min_machines, which minimises sum(q) directly — giving the
+    # factory layout with the fewest possible machines regardless of the cap.
     if usable:
-        status, base_obj, base_q = _solve_lp(scenario, usable, {})
+        lp_machine_bound = scenario.max_machines  # None means unconstrained
+        fell_back = False
+        for _mm_attempt in range(10):             # at most 10 tightening steps
+            sc_lp = (_dc_replace(scenario, max_machines=lp_machine_bound)
+                     if lp_machine_bound is not None else scenario)
+            status, base_obj, base_q = _solve_lp(sc_lp, usable, {})
+            if scenario.max_machines is None:
+                break                             # no cap — single solve, done
+            if status != "Optimal":
+                # LP became infeasible: cap is below the true minimum.
+                # Find the minimum-machine solution instead.
+                status, base_obj, base_q = _solve_lp_min_machines(scenario, usable, {})
+                fell_back = True
+                break
+            ceiled_total = sum(math.ceil(v) for v in base_q.values() if v >= 1e-5)
+            if ceiled_total <= scenario.max_machines:
+                break
+            # Tighten: reduce bound by the overshoot so the next LP leaves
+            # enough headroom for ceiling rounding.
+            overshoot = ceiled_total - scenario.max_machines
+            lp_machine_bound -= overshoot
+            if lp_machine_bound < 1:
+                # Bound hit zero — cap is definitely below the true minimum.
+                status, base_obj, base_q = _solve_lp_min_machines(scenario, usable, {})
+                fell_back = True
+                break
+        if fell_back and scenario.max_machines is not None:
+            actual = sum(math.ceil(v) for v in base_q.values() if v >= 1e-5)
+            warnings.append(
+                f"max_machines cap ({scenario.max_machines}) is below the "
+                f"minimum required ({actual}); showing minimum machine layout."
+            )
     else:
         status, base_obj, base_q = "Infeasible", 0.0, {}
 
@@ -1153,9 +1346,19 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         spm_k        = spm.get(k, 0)
         sloops_total = spm_k * machines_final
 
-        mult = _output_mult(r, spm_k)
-        clk  = clock_pct / 100.0
-        pw   = r.base_power_mw * (clk ** POWER_EXP) * machines_final * _sloop_power_mult(r, spm_k)
+        mult      = _output_mult(r, spm_k)
+        clk       = clock_pct / 100.0
+        sloop_pw  = _sloop_power_mult(r, spm_k)
+        hi_n      = sa.get("hi_machines", 0)
+        # Mixed layout: hi_n machines at clk, (machines_final - hi_n) at 100%.
+        # When hi_n == 0 (no shards / uniform layout) all machines run at clk.
+        if hi_n > 0 and hi_n < machines_final:
+            lo_n = machines_final - hi_n
+            pw = r.base_power_mw * sloop_pw * (
+                hi_n * (clk ** POWER_EXP) + lo_n * 1.0
+            )
+        else:
+            pw = r.base_power_mw * (clk ** POWER_EXP) * machines_final * sloop_pw
 
         total_power        += pw
         total_machines_int += machines_final
@@ -1184,6 +1387,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             layout_options=_layout_options(r, qv, spm_k),
             has_shard=shards_this > 0,
             has_sloop=spm_k > 0,
+            hi_machines=hi_n,
         ))
 
     # Cap overshoot warnings
@@ -1369,6 +1573,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
             "layout_options":     [lo(o) for o in f.layout_options],
             "has_shard":          f.has_shard,
             "has_sloop":          f.has_sloop,
+            "hi_machines":        f.hi_machines,
         } for f in result.flows],
     }
 
