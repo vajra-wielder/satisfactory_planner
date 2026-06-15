@@ -69,8 +69,13 @@ export let ITEM_DISPLAY = {};
 
 export function buildItemDisplay(serverMap) {
   // serverMap comes directly from /api/item-display
-  // Merge with any client-side fallback (key → "Key With Spaces")
   ITEM_DISPLAY = { ...serverMap };
+
+  // ── Correct known game-data naming errors ────────────────
+  // "Gold Ingot" is the internal engine name; the in-game display name is "Caterium Ingot"
+  if (!ITEM_DISPLAY['Caterium_Ingot'] || ITEM_DISPLAY['Caterium_Ingot'] === 'Gold Ingot') {
+    ITEM_DISPLAY['Caterium_Ingot'] = 'Caterium Ingot';
+  }
 }
 
 export function itemName(key) {

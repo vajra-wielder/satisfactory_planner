@@ -397,38 +397,84 @@ export function initLayout() {
   });
 
   // ── RECIPE → RECIPE ───────────────────────────────────────────────────────
-  // Apportion each consumer's total demand across its upstream producers in
-  // proportion to their output rates, so split-supply edges carry the correct
-  // partial flow rather than the full demand on every edge.
-  flows.forEach(tgt => {
-    Object.entries(tgt.inputs || {}).forEach(([item, totalConsumed]) => {
-      const prodKeys = (producers[item] || [])
-        .filter(src => src !== tgt.recipe_key && posMap[src]);
-      if (!prodKeys.length) return;
-      const rates       = producerOutputRates(item, prodKeys);
-      const totalOut    = prodKeys.reduce((s, k) => s + (rates[k] || 0), 0);
-      prodKeys.forEach(src => {
-        const share = totalOut > 0
-          ? (rates[src] / totalOut) * totalConsumed
-          : totalConsumed / prodKeys.length;
-        addEdge(src, tgt.recipe_key, item, share, totalConsumed,
-                mCol(flowMap[src]?.machine));
+  // Greedy capacity-matching: assign producer supply to consumers one at a
+  // time, largest-producer first. This minimises split edges — a consumer
+  // whose full demand can be met by a single producer gets exactly one edge
+  // from that producer, rather than fractional edges from every producer.
+  //
+  // Algorithm (per item):
+  //   1. Sort producers descending by output rate.
+  //   2. Sort consumers descending by input demand.
+  //   3. Maintain a remaining-capacity bucket per producer.
+  //   4. For each consumer in order, drain from producers in order until
+  //      the consumer's demand is satisfied; emit one edge per producer
+  //      segment actually used.  If a producer fully covers a consumer,
+  //      only one edge appears; genuine splits only appear when no single
+  //      producer has enough remaining capacity.
+  {
+    // Collect all items that flow between recipe nodes
+    const recipeItems = new Set();
+    flows.forEach(f => {
+      Object.keys(f.inputs  || {}).forEach(i => recipeItems.add(i));
+      Object.keys(f.outputs || {}).forEach(i => recipeItems.add(i));
+    });
+
+    recipeItems.forEach(item => {
+      const prodKeys = (producers[item] || []).filter(k => posMap[k]);
+      const consKeys = (consumers[item] || []).filter(k => posMap[k]);
+      if (!prodKeys.length || !consKeys.length) return;
+
+      // Remaining supply per producer (mutable copy)
+      const supply = {};
+      prodKeys.forEach(k => { supply[k] = flowMap[k]?.outputs[item] ?? 0; });
+
+      // Sort producers largest-first so we drain the biggest pool first,
+      // which tends to satisfy whole consumers in one shot.
+      const sortedProds = [...prodKeys].sort((a, b) => supply[b] - supply[a]);
+
+      // For each consumer, greedily assign supply
+      consKeys.forEach(tgtKey => {
+        if (tgtKey === undefined) return;
+        const tgtFlow = flowMap[tgtKey];
+        if (!tgtFlow) return;
+        let remaining = tgtFlow.inputs[item] ?? 0;
+        if (remaining <= 0) return;
+        const totalConsumed = remaining;
+
+        for (const srcKey of sortedProds) {
+          if (remaining <= 1e-9) break;
+          const avail = supply[srcKey] ?? 0;
+          if (avail <= 1e-9) continue;
+
+          const drawn = Math.min(avail, remaining);
+          supply[srcKey] -= drawn;
+          remaining      -= drawn;
+
+          addEdge(srcKey, tgtKey, item, drawn, totalConsumed,
+                  mCol(flowMap[srcKey]?.machine));
+        }
       });
     });
-  });
+  }
 
   // ── RECIPE → SINK / SURPLUS / ERROR ──────────────────────────────────────
   function addSinkEdges(itemMap, idPrefix, color, dashed) {
     Object.entries(itemMap || {}).forEach(([item, qty]) => {
       const prodKeys = (producers[item] || []).filter(k => posMap[k]);
       if (!prodKeys.length) return;
-      const rates    = producerOutputRates(item, prodKeys);
-      const totalOut = prodKeys.reduce((s, k) => s + (rates[k] || 0), 0);
-      prodKeys.forEach(k => {
-        const share = totalOut > 0
-          ? (rates[k] / totalOut) * qty
-          : qty / prodKeys.length;
-        addEdge(k, idPrefix + item, item, share, qty, color, dashed);
+      // Greedy: drain from largest producer first so one producer
+      // covers the whole sink when it has enough output.
+      const supply = {};
+      prodKeys.forEach(k => { supply[k] = flowMap[k]?.outputs[item] ?? 0; });
+      const sorted = [...prodKeys].sort((a, b) => supply[b] - supply[a]);
+      let remaining = qty;
+      sorted.forEach(k => {
+        if (remaining <= 1e-9) return;
+        const avail = supply[k] ?? 0;
+        if (avail <= 1e-9) return;
+        const drawn = Math.min(avail, remaining);
+        remaining -= drawn;
+        addEdge(k, idPrefix + item, item, drawn, qty, color, dashed);
       });
     });
   }

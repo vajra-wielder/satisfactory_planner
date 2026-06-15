@@ -1082,8 +1082,13 @@ def _best_mixed_layout(
     if max_power_mw is None:
         best: Optional[Tuple[int, float, int, float]] = None
         for hi in range(1, floor_n + 1):
-            # hi overclocked machines must cover `frac` extra throughput each
-            clk_hi = 1.0 + frac / hi
+            # Mixed layout: hi machines at clk_hi + (ceil_n - hi) machines at 100%
+            # must together deliver exactly qv throughput.
+            # hi * clk_hi + (ceil_n - hi) * 1.0 = qv
+            # => clk_hi = (qv - (ceil_n - hi)) / hi
+            clk_hi = (qv - (ceil_n - hi)) / hi
+            if clk_hi <= 1.0 + 1e-9:
+                continue   # not actually overclocked — no shard benefit
             if clk_hi > MAX_CLOCK:
                 continue
             shards_pm  = min(3, max(0, math.ceil((clk_hi - 1.0) / SHARD_BOOST)))
@@ -1175,10 +1180,14 @@ def _allocate_shards(
                 r, qv, spm.get(k, 0), shards_left, max_power_mw
             )
             if shards_tot > 0 and shards_tot <= shards_left:
-                # hi_machines = how many run at clk_pct; rest at 100%
-                frac   = qv - floor_n
+                # hi_machines: solve hi*clk_hi + (n - hi)*1.0 = qv for hi
+                # => hi = (qv - n) / (clk_hi - 1)
                 clk_hi = clk_pct / 100.0
-                hi     = round(frac / (clk_hi - 1.0)) if clk_hi > 1.0 + 1e-9 else n
+                if clk_hi > 1.0 + 1e-9:
+                    hi = round((qv - n + n - floor_n) / (clk_hi - 1.0))
+                    hi = max(1, min(hi, n))
+                else:
+                    hi = n
                 chosen = {"machines": n, "clock_pct": clk_pct,
                           "shards": shards_tot, "power_mw": pw,
                           "hi_machines": hi}
@@ -1210,9 +1219,12 @@ def _layout_options(r: Recipe, qv: float, s: int) -> List[LayoutOption]:
 
     if floor_n < ceil_n:
         # Option B: mixed layout (minimum shards, ceil_n machines)
-        frac = qv - floor_n
+        # hi machines at clk_hi + (ceil_n - hi) at 100% = qv total throughput
+        # => clk_hi = (qv - (ceil_n - hi)) / hi
         for hi in range(1, floor_n + 1):
-            clk_hi = 1.0 + frac / hi
+            clk_hi = (qv - (ceil_n - hi)) / hi
+            if clk_hi <= 1.0 + 1e-9:
+                continue   # not overclocked — skip
             if clk_hi > MAX_CLOCK:
                 continue
             shards_pm  = min(3, max(0, math.ceil((clk_hi - 1.0) / SHARD_BOOST)))

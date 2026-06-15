@@ -26,10 +26,13 @@ import {
   addKv,
   fillUI, readUI,
   altsAll, altsNone,
+} from './sidebar.js';
+
+import {
   openWarn, closeWarn,
   renderResultsBar, renderBuildCost, toggleBC,
   renderSaved,
-} from './sidebar.js';
+} from './ui.js';
 
 import { initRecipeLookup } from './recipe-lookup.js';
 import { openAnalysis, closeAnalysis } from './analysis.js';
