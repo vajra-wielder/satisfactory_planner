@@ -476,6 +476,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
   display: flex; align-items: center; justify-content: center;
 }
 .gbt:hover { border-color: var(--acc); color: var(--acc); }
+.gbt.on { border-color: var(--acc); color: var(--acc); background: var(--acc-glow); }
 
 /* ══════════════════════════════════════════════════════════
    WARNINGS MODAL
@@ -802,6 +803,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
     <p>Configure your factory and hit Solve</p>
     <p style="font-size:11px">White = inputs &middot; Green = outputs &middot; Red = errors &middot; Amber = surplus</p>
     <p style="font-size:11px">Click = focus &middot; Double-click = expand/centre &middot; Scroll = zoom</p>
+    <p style="font-size:11px">Click a band title to collapse it into one node</p>
     <p style="font-size:11px">Ctrl+R = solve &middot; Ctrl+S = save &middot; Ctrl+Q = recipe lookup &middot; Ctrl+A = machines</p>
     <p style="font-size:11px">Ctrl+F = search graph &middot; Ctrl+P = pinboard &middot; [ ] = toggle sidebar</p>
   </div>
@@ -815,6 +817,8 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
     <button class="gbt" id="btn-zoom-out" title="Zoom out">&minus;</button>
     <button class="gbt" id="btn-fit"      title="Fit view">&#x229F;</button>
     <button class="gbt" id="btn-search"   title="Search graph  (Ctrl+F)" style="font-size:13px">&#x2315;</button>
+    <button class="gbt on" id="btn-hubs"  title="Splitter / merger nodes" style="font-size:13px">&#x2442;</button>
+    <button class="gbt" id="btn-minor"    title="Show small taps as full lines" style="font-size:13px">&#x22EF;</button>
   </div>
   <!-- Pinboard mode overlay bar (shown at top of canvas in pinboard mode) -->
   <div id="pinboard-overlay" style="display:none;position:absolute;top:0;left:0;right:0;pointer-events:none;z-index:25">

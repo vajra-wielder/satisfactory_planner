@@ -51,6 +51,7 @@ import {
 import {
   resize, initLayout, draw,
   fitAll, zoomBy, openSearch, initGraphEvents,
+  toggleHubs, toggleMinor,
 } from './graph.js';
 
 
@@ -583,6 +584,8 @@ document.getElementById('btn-zoom-in') .addEventListener('click', () => zoomBy(1
 document.getElementById('btn-zoom-out').addEventListener('click', () => zoomBy(0.8));
 document.getElementById('btn-fit')     .addEventListener('click', fitAll);
 document.getElementById('btn-search')  .addEventListener('click', openSearch);
+document.getElementById('btn-hubs')    .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleHubs()));
+document.getElementById('btn-minor')   .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleMinor()));
 
 // Modals
 document.getElementById('wo')                .addEventListener('click', closeWarn);
