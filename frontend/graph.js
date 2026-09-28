@@ -893,7 +893,7 @@ function drawEdge(e) {
 
   // Edge label — always "ItemName  rate/m", same format for split and non-split edges.
   if (ZOOM >= 0.35 && alpha > 0.3) {
-    const rateStr = `${Number(e.rate).toFixed(1)}/m`;
+    const rateStr = `${Number(e.rate).toFixed(2)}/m`;
     const lbl     = `${itemName(e.item)}  ${rateStr}`;
 
     const fs  = 10;
@@ -1044,7 +1044,7 @@ function drawNode(n) {
     C.font = '11px Inter,sans-serif'; C.fillStyle = lc; C.textBaseline = 'middle';
     C.fillText(measureTrunc(label, w - 85), x + 12, cy + IO_H / 2);
     C.font = '10px JetBrains Mono,monospace'; C.fillStyle = '#9aa0b4';
-    C.textAlign = 'right'; C.fillText(`${Number(rate).toFixed(1)}/m`, x + w - 8, cy + IO_H / 2);
+    C.textAlign = 'right'; C.fillText(`${Number(rate).toFixed(2)}/m`, x + w - 8, cy + IO_H / 2);
     C.textAlign = 'left'; C.textBaseline = 'alphabetic'; cy += IO_H;
   };
 
@@ -1104,7 +1104,7 @@ function drawSpecNode(n, bg, border, title, isSource) {
   C.font = '600 12px Inter,sans-serif'; C.fillStyle = '#f1f5f9';
   C.fillText(measureTrunc(itemName(data?.item || ''), w - 10), x + w / 2, y + 30);
   C.font = '11px JetBrains Mono,monospace'; C.fillStyle = border;
-  C.fillText(`${Number(data?.rate || 0).toFixed(1)}/min`, x + w / 2, y + 44);
+  C.fillText(`${Number(data?.rate || 0).toFixed(2)}/min`, x + w / 2, y + 44);
   C.textAlign = 'left'; C.textBaseline = 'alphabetic';
   C.restore();
   C.fillStyle = border; C.strokeStyle = bg; C.lineWidth = 2;
@@ -1206,7 +1206,7 @@ export function initGraphEvents() {
     if (DRAG) {
       if (!DRAG.moved) {
         const n = DRAG.node;
-        if (n.type === 'recipe') setFocus(n.id);
+        setFocus(n.id);
       }
       DRAG = null;
     }

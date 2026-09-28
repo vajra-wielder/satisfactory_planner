@@ -1,0 +1,154 @@
+name: Oil Turbo
+description: Mega requirements with complexity increasing as wants
+alternate_recipes_enabled:
+- Alt_Nitro_Rocket_Fuel
+- Alt_Dark_Ion_Fuel
+- Alt_Turbo_Diamonds
+- Alt_Compacted_Coal
+- Alt_Pink_Diamonds
+- Alt_Petroleum_Diamonds
+- Alt_Oil_Based_Diamonds
+- Alt_Cloudy_Diamonds
+- Alt_Dark_Matter_Trap
+- Alt_Dark_Matter_Crystallization
+- Alt_Wet_Concrete
+- Alt_Turbo_Heavy_Fuel
+- Alt_Steel_Rod
+- Alt_Steel_Canister
+- Alt_Steamed_Copper_Sheet
+- Alt_Rubber_Concrete
+- Alt_Recycled_Rubber
+- Alt_Pure_Quartz_Crystal
+- Alt_Pure_Iron_Ingot
+- Alt_Pure_Copper_Ingot
+- Alt_Pure_Caterium_Ingot
+- Alt_Pure_Aluminum_Ingot
+- Alt_Polymer_Resin
+- Alt_Plastic_Smart_Plating
+- Alt_Automated_Speed_Wiring
+- Alt_Heavy_Oil_Residue
+- Alt_Heavy_Flexible_Frame
+- Alt_Fused_Wire
+- Alt_Flexible_Framework
+- Alt_Electrode_Circuit_Board
+- Alt_Electrode_Aluminum_Scrap
+- Alt_Diluted_Packaged_Fuel
+- Alt_Copper_Rotor
+- Alt_Copper_Alloy_Ingot
+- Alt_Coke_Steel_Ingot
+- Alt_Coated_Iron_Plate
+- Alt_Coated_Iron_Canister
+- Alt_Coated_Cable
+- Alt_Bolted_Frame
+- Alt_Adhered_Iron_Plate
+- Alt_Turbo_Pressure_Motor
+- Alt_Turbo_Blend_Fuel
+- Alt_Super_State_Computer
+- Alt_Sloppy_Alumina
+- Alt_Radio_Control_System
+- Alt_Plutonium_Fuel_Unit
+- Alt_OC_Supercomputer
+- Alt_Instant_Scrap
+- Alt_Instant_Plutonium_Cell
+- Alt_Heat_Fused_Frame
+- Alt_Fertile_Uranium
+- Alt_Electric_Motor
+- Alt_Diluted_Fuel
+- Alt_Cooling_Device
+- Alt_Classic_Battery
+- Alt_Alclad_Casing
+- Alt_Molded_Steel_Pipe
+- Alt_Iron_Pipe
+- Alt_Steel_Cast_Plate
+- Alt_Molded_Beam
+- Alt_Aluminum_Beam
+- Alt_Aluminum_Rod
+- Alt_Plastic_AI_Limiter
+- Alt_Distilled_Silica
+- Alt_Quartz_Purification
+- Alt_Fused_Quartz_Crystal
+- Alt_Leached_Iron_Ingot
+- Alt_Basic_Iron_Ingot
+- Alt_Tempered_Copper_Ingot
+- Alt_Leached_Copper_Ingot
+- Alt_Tempered_Caterium_Ingot
+- Alt_Leached_Caterium_Ingot
+- Alt_Caterium_Wire
+- Alt_Iron_Wire
+- Alt_Infused_Uranium_Cell
+- Alt_Turbo_Electric_Motor
+- Alt_Quickwire_Stator
+- Alt_Cheap_Silica
+- Alt_Steel_Screws
+- Alt_Cast_Screws
+- Alt_Steel_Rotor
+- Alt_Encased_Industrial_Pipe
+- Alt_Stitched_Iron_Plate
+- Alt_Bolted_Iron_Plate
+- Alt_Radio_Connection_Unit
+- Alt_Fused_Quickwire
+- Alt_Recycled_Plastic
+- Alt_Uranium_Fuel_Unit
+- Alt_Rigor_Motor
+- Alt_Steeled_Frame
+- Alt_Compacted_Steel_Ingot
+- Alt_Solid_Steel_Ingot
+- Alt_Iron_Alloy_Ingot
+- Alt_Silicon_High_Speed_Connector
+- Alt_Heavy_Encased_Frame
+- Alt_Heat_Exchanger
+- Alt_Fine_Black_Powder
+- Alt_Electromagnetic_Connection_Rod
+- Alt_Insulated_Crystal_Oscillator
+- Alt_Fine_Concrete
+- Alt_Crystal_Computer
+- Alt_Caterium_Computer
+- Alt_Caterium_Circuit_Board
+- Alt_Silicon_Circuit_Board
+- Alt_Quickwire_Cable
+- Alt_Insulated_Cable
+- Alt_Polyester_Fabric
+enabled_machines:
+- Smelter
+- Constructor
+- Assembler
+- Foundry
+- Manufacturer
+- Refinery
+- Packager
+available_resources:
+  Sulfur: 420
+  Nitrogen_Gas: 600
+  Crude_Oil: 1020
+  Coal: 480
+  Limestone: 240
+  Iron_Ore: 720
+  Copper_Ore: 300
+  Caterium_Ore: 120
+  Water: 5000
+  Quartz_Crystal: 420
+must_produce:
+  Cluster_Nobelisk: 1
+  Circuit_Board: 10
+  High_Speed_Connector: 10
+  Cartridge_Smart_Projectile: 5
+  Gas_Filter: 1
+min_produce:
+  Rubber: 40
+  Plastic: 40
+max_produce:
+  Plastic: 60
+  Rubber: 60
+objective:
+  Turbofuel: 100
+power_shards_available: null
+somersloops_available: null
+max_power_mw: null
+max_machines: null
+notes: ''
+minimize_new_alts: true
+pinboard:
+  pinned_recipes: []
+  pin_groups: []
+  pin_arrows: []
+  node_positions: {}

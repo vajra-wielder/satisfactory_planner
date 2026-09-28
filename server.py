@@ -30,8 +30,40 @@ ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
 ALL_ITEMS    = get_all_items(ALL_RECIPES)   # computed once; never changes at runtime
 
+# ── Unlocked alternates persistence ───────────────────────────────────────────
+UNLOCKED_PATH = HERE / "data" / "unlocked_alts.yaml"
+
+def _load_unlocked_alts() -> list:
+    """Return the list of unlocked alt recipe keys, or [] if the file is absent/empty."""
+    try:
+        if not UNLOCKED_PATH.exists():
+            return []
+        raw = yaml.safe_load(UNLOCKED_PATH.read_text(encoding="utf-8"))
+        return list(raw.get("unlocked") or []) if isinstance(raw, dict) else []
+    except Exception:
+        return []
+
+def _save_unlocked_alts(keys: list) -> None:
+    UNLOCKED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Preserve the header comment by writing YAML manually for the simple list case
+    lines = [
+        "# unlocked_alts.yaml — Permanent alternate recipe unlocks\n",
+        "# Edit this file or use the in-app 'Manage Unlocked Alts' button.\n",
+        "unlocked:\n",
+    ]
+    if keys:
+        lines += [f"  - {k}\n" for k in sorted(set(keys))]
+    else:
+        lines.append("  []\n")
+    UNLOCKED_PATH.write_text("".join(lines), encoding="utf-8")
+
 # Pre-serialise static responses to bytes at startup so the handlers can return
 # them directly without calling json.dumps on every request.
+
+# /api/boot — single combined payload so the frontend makes one round-trip
+# instead of three (/api/items, /api/recipes, /api/item-display) on startup.
+_BOOT_BYTES = None   # filled in below after _RECIPES_BYTES / _ITEM_DISPLAY_BYTES are built
+
 _RECIPES_BYTES = json.dumps({
     k: {"display": r.display, "machine": r.machine,
         "alternate": r.alternate, "inputs": r.inputs, "outputs": r.outputs}
@@ -51,6 +83,18 @@ _ITEM_DISPLAY_BYTES = json.dumps(
     ),
     default=str
 ).encode()
+
+_BOOT_BYTES = None   # rebuilt after unlocked alts are loaded (done in Handler on first request)
+
+def _build_boot_bytes():
+    return json.dumps({
+        "items":        ALL_ITEMS,
+        "recipes":      {k: {"display": r.display, "machine": r.machine,
+                             "alternate": r.alternate, "inputs": r.inputs, "outputs": r.outputs}
+                         for k, r in ALL_RECIPES.items()},
+        "item_display": json.loads(_ITEM_DISPLAY_BYTES),
+        "unlocked_alts": _load_unlocked_alts(),
+    }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
 _dual_cache: dict = {}   # {'scenario': Scenario, 'spm': dict, 'usable': dict}
@@ -96,6 +140,9 @@ print(f"🏭 Satisfactory Planner — {len(ALL_RECIPES)} recipes "
 # ── Scenario builder ──────────────────────────────────────────────────────────
 
 def _build_scenario(b: dict) -> Scenario:
+    # Inject unlocked alts from disk so they're always available to the solver
+    # without the frontend needing to send them in every request.
+    unlocked = _load_unlocked_alts()
     return Scenario(
         name=b.get("name", "Scenario"),
         description=b.get("description", ""),
@@ -111,6 +158,8 @@ def _build_scenario(b: dict) -> Scenario:
         max_power_mw=float(b["max_power_mw"]) if b.get("max_power_mw") else None,
         max_machines=int(b["max_machines"]) if b.get("max_machines") else None,
         notes=b.get("notes", "") or "",
+        unlocked_alt_recipes=unlocked,
+        minimize_new_alts=bool(b.get("minimize_new_alts", False)),
     )
 
 
@@ -199,6 +248,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # ── API routes ────────────────────────────────────────────────────────
+
+        if path == "/api/boot":
+            self._send(200, _build_boot_bytes())
+            return
 
         if path == "/api/items":
             q     = qs.get("q", [""])[0].lower().replace(" ", "_")
@@ -316,6 +369,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        if path == "/api/unlocked-alts":
+            self._json(200, {"unlocked": _load_unlocked_alts()})
+            return
             return
 
         self._json(404, {"error": "Not found"})
@@ -327,6 +384,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_write(self):
         path = urlparse(self.path).path.rstrip("/")
+
+        if path == "/api/unlocked-alts":
+            data = self._read_json()
+            keys = list(data.get("unlocked") or []) if isinstance(data, dict) else []
+            try:
+                _save_unlocked_alts(keys)
+                self._json(200, {"unlocked": _load_unlocked_alts()})
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+            return
 
         if path == "/api/solve-inline":
             # Legacy synchronous endpoint — kept for backwards compatibility

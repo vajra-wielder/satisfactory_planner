@@ -10,14 +10,14 @@
  */
 
 import {
-  SC, RESULT,
+  SC, RESULT, RECIPES,
   setResult, resetSC, setAllItems, setRecipes, buildItemDisplay,
   nextSolveSeq, solveSeq,
   PINS, setPins,
 } from './state.js';
 
 import {
-  fetchAllItems, fetchRecipes, fetchItemDisplay,
+  fetchBoot,
   fetchScenarios, fetchScenario, saveScenario, deleteScenario, solveScenario,
 } from './api.js';
 
@@ -26,7 +26,12 @@ import {
   addKv,
   fillUI, readUI,
   altsAll, altsNone,
+  setUnlockedSaver, setUnlockedAlts,
+  renderMachines, updMachBadge, renderAlts, updAltBadge,
 } from './sidebar.js';
+
+// Panels are imported here only so their modules are loaded eagerly;
+// all interaction goes through sidebar.js re-exports above.
 
 import {
   openWarn, closeWarn,
@@ -47,6 +52,238 @@ import {
   resize, initLayout, draw,
   fitAll, zoomBy, openSearch, initGraphEvents,
 } from './graph.js';
+
+
+// ── Solve styles ──────────────────────────────────────────────────────────────
+// Transient modifiers applied to the solve payload only — never mutate SC.
+
+const SOLVE_STYLES = new Set();  // active style ids
+
+function initSolveStyles() {
+  document.querySelectorAll('.ssc').forEach(btn => {
+    if (btn.id === 'ssc-min-new-alts') return;  // wired separately below
+    btn.addEventListener('click', () => {
+      const s = btn.dataset.style;
+      if (SOLVE_STYLES.has(s)) SOLVE_STYLES.delete(s);
+      else SOLVE_STYLES.add(s);
+      btn.classList.toggle('on', SOLVE_STYLES.has(s));
+    });
+  });
+
+  const mnaBtn = document.getElementById('ssc-min-new-alts');
+  if (mnaBtn) {
+    mnaBtn.addEventListener('click', () => {
+      SC.minimize_new_alts = !SC.minimize_new_alts;
+      mnaBtn.classList.toggle('on', SC.minimize_new_alts);
+    });
+  }
+}
+
+// ── Shared byproduct item sets ────────────────────────────────────────────────
+// Returns { intermediates, consumedByEnabled } filtered to only recipes that
+// are enabled in this payload — mirrors the pruner's is_allowed logic exactly.
+//
+// IMPORTANT: we do a forward-reachability pass first (same logic as solver's
+// Phase 1 pruning) so that `intermediates` only contains items reachable from
+// the actual available resources.  Without this, items like Silica or Battery
+// appear in `intermediates` just because some enabled recipe produces them —
+// even though those recipes are completely unreachable in this scenario — and
+// hard-capping them at 0 either does nothing useful or triggers spurious errors.
+function _byproductSets(p) {
+  const enabledMachines = new Set(p.enabled_machines || []);
+  const enabledAlts     = new Set(p.alternate_recipes_enabled || []);
+
+  // Filter to allowed recipes only (same is_allowed as solver)
+  const allowedRecipes = {};
+  Object.entries(RECIPES).forEach(([key, r]) => {
+    if (enabledMachines.size > 0 && !enabledMachines.has(r.machine)) return;
+    if (r.alternate && !enabledAlts.has(key)) return;
+    allowedRecipes[key] = r;
+  });
+
+  // Forward reachability: which items can be produced starting from resources?
+  const resources = new Set(Object.keys(p.available_resources || {}));
+  const grounded  = new Set(resources);
+
+  // blocked[key] = set of inputs not yet grounded
+  const blocked    = {};
+  const waitingOn  = {};   // item -> [recipe keys]
+  Object.entries(allowedRecipes).forEach(([key, r]) => {
+    const missing = Object.keys(r.inputs).filter(inp => !grounded.has(inp));
+    blocked[key] = new Set(missing);
+    missing.forEach(inp => {
+      if (!waitingOn[inp]) waitingOn[inp] = [];
+      waitingOn[inp].push(key);
+    });
+  });
+
+  const reachableRecipes = new Set();
+  const worklist = Object.keys(blocked).filter(k => blocked[k].size === 0);
+  worklist.forEach(k => reachableRecipes.add(k));
+
+  let head = 0;
+  while (head < worklist.length) {
+    const k = worklist[head++];
+    Object.keys(allowedRecipes[k].outputs).forEach(item => {
+      if (grounded.has(item)) return;
+      grounded.add(item);
+      (waitingOn[item] || []).forEach(k2 => {
+        if (reachableRecipes.has(k2)) return;
+        blocked[k2].delete(item);
+        if (blocked[k2].size === 0) {
+          reachableRecipes.add(k2);
+          worklist.push(k2);
+        }
+      });
+    });
+  }
+
+  // Now collect produced/consumed sets from *reachable* recipes only
+  const consumedByEnabled = new Set();
+  const producedByEnabled = new Set();
+  reachableRecipes.forEach(key => {
+    const r = allowedRecipes[key];
+    Object.keys(r.inputs ).forEach(k => consumedByEnabled.add(k));
+    Object.keys(r.outputs).forEach(k => producedByEnabled.add(k));
+  });
+
+  const goals = new Set([
+    ...Object.keys(p.objective     || {}),
+    ...Object.keys(p.must_produce  || {}),
+    ...Object.keys(p.min_produce   || {}),
+    ...Object.keys(p.max_produce   || {}),
+  ]);
+
+  // Intermediates = items reachable from resources that are neither goals nor
+  // raw resources themselves.  These are the only items worth capping.
+  const intermediates = [...producedByEnabled].filter(
+    item => !goals.has(item) && !resources.has(item)
+  );
+
+  return { intermediates, consumedByEnabled };
+}
+
+// Hard mode: cap recyclable intermediates at max_produce = 0.
+// Only items that have a reachable consumer get capped — if there's no enabled
+// recipe that can absorb an item, capping it at 0 would make the LP infeasible
+// whenever a recipe is forced to produce it as a co-product (e.g. Heavy Oil
+// Residue alongside Rubber).  The fallback in handleSolve covers the edge case
+// where even a reachable consumer can't absorb the full surplus.
+function _applyHardCaps(p) {
+  const { intermediates, consumedByEnabled } = _byproductSets(p);
+  intermediates.forEach(item => {
+    if (!consumedByEnabled.has(item)) return;   // no reachable consumer — skip
+    const existing = p.max_produce[item];
+    if (existing === undefined || existing > 0) {
+      p.max_produce[item] = 0;
+    }
+  });
+  return p;
+}
+
+// Soft mode: add a small negative objective weight on surplus intermediates.
+// Never causes infeasibility — just biases the solver away from waste.
+function _applySoftPenalty(p) {
+  const { intermediates } = _byproductSets(p);
+  intermediates.forEach(item => {
+    if (!(item in (p.objective || {}))) {
+      p.objective = p.objective || {};
+      p.objective[item] = (p.objective[item] || 0) - 0.001;
+    }
+  });
+  return p;
+}
+
+function applyStylesFirstPass(payload, { hardByproducts = true } = {}) {
+  const p = JSON.parse(JSON.stringify(payload));  // deep copy — never mutate SC
+
+  if (SOLVE_STYLES.has('no-byproducts')) {
+    // no-byproducts: attempt hard caps first. If the solve comes back infeasible,
+    // handleSolve retries with hardByproducts=false (soft penalty fallback).
+    if (hardByproducts) {
+      _applyHardCaps(p);
+    } else {
+      _applySoftPenalty(p);
+    }
+  }
+
+  return p;
+}
+
+/**
+ * Binary search for the minimum integer cap (machines or power) that still
+ * yields an Optimal solve. lo=1, hi=firstSolveValue (the upper bound we know
+ * is feasible). Each step probes the midpoint; ~log2(hi) server round-trips.
+ *
+ * Returns the best feasible result found (lowest cap that is still optimal).
+ * Falls back to firstResult if nothing better is found.
+ */
+async function binarySearchMin(payload, firstResult, capField, firstValue, signal, onProgress) {
+  let lo = 1;
+  let hi = Math.floor(firstValue);
+  let bestResult = firstResult;  // hi is always feasible
+
+  // For power we work in integer MW steps; for machines integer count.
+  // Minimum meaningful search range — if range is tiny, skip.
+  if (hi - lo < 2) return bestResult;
+
+  let iter = 0;
+  const maxIter = Math.ceil(Math.log2(hi)) + 2;  // safety ceiling
+
+  while (lo < hi && iter < maxIter) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    iter++;
+    const mid = Math.floor((lo + hi) / 2);
+    onProgress(iter, maxIter, mid);
+
+    const p = JSON.parse(JSON.stringify(payload));
+    p[capField] = mid;
+
+    try {
+      const r = await solveScenario(p, signal);
+      if (r?.status?.startsWith('Optimal')) {
+        // mid is feasible — search lower
+        bestResult = r;
+        hi = mid;
+      } else {
+        // mid is infeasible — need more headroom
+        lo = mid + 1;
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') throw err;
+      // Treat unexpected errors as infeasible for this cap value
+      lo = mid + 1;
+    }
+  }
+
+  return bestResult;
+}
+
+/**
+ * Run binary searches for any active min-power / min-machines styles.
+ * Returns the best result, or firstResult if neither style is active.
+ */
+async function runMinSearches(payload, firstResult, signal, btn) {
+  if (!firstResult?.status?.startsWith('Optimal')) return firstResult;
+
+  let result = firstResult;
+
+  if (SOLVE_STYLES.has('min-machines') && firstResult.total_machines > 1) {
+    result = await binarySearchMin(
+      payload, result, 'max_machines', result.total_machines, signal,
+      (i, max, probe) => { btn.textContent = `Min machines ${i}/${max} (${probe}…)`; }
+    );
+  }
+
+  if (SOLVE_STYLES.has('min-power') && firstResult.total_power_mw > 1) {
+    result = await binarySearchMin(
+      payload, result, 'max_power_mw', result.total_power_mw, signal,
+      (i, max, probe) => { btn.textContent = `Min power ${i}/${max} (${probe} MW…)`; }
+    );
+  }
+
+  return result;
+}
 
 
 // ── Pinboard toggle ───────────────────────────────────────────────────────────
@@ -70,6 +307,20 @@ function togglePinboard() {
 
 // Store graph module ref for restoration
 let graphModule = null;
+
+// ── Lazy machines/alts render ─────────────────────────────────────────────────
+// renderMachines + renderAlts touch 107 alt chips — skipped at boot and only
+// run when the Machines & Alts tab is first opened, or marked dirty by a
+// scenario load/reset.
+
+let _machinesDirty = true;
+
+function renderMachinesIfNeeded() {
+  if (!_machinesDirty) return;
+  _machinesDirty = false;
+  renderMachines(); updMachBadge();
+  renderAlts();     updAltBadge();
+}
 
 
 // ── Sidebar open/close ────────────────────────────────────────────────────────
@@ -127,9 +378,12 @@ function handleSolve() {
   }
 
   readUI();
-  const payload = { ...SC };
-  if (payload.power_shards_available == null) payload.power_shards_available = 0;
-  if (payload.somersloops_available  == null) payload.somersloops_available  = 0;
+  const basePayload = { ...SC };
+  if (basePayload.power_shards_available == null) basePayload.power_shards_available = 0;
+  if (basePayload.somersloops_available  == null) basePayload.somersloops_available  = 0;
+
+  // Apply first-pass style transforms (no-byproducts tries hard caps first)
+  const payload = applyStylesFirstPass(basePayload, { hardByproducts: true });
 
   solving = true;
   solveAbort = new AbortController();
@@ -139,16 +393,54 @@ function handleSolve() {
   btn.disabled = true;
   btn.textContent = 'Solving…';
 
-  // Animated progress dots so the UI feels alive during long solves
+  // Animated progress dots
   const _dotFrames = ['Solving·', 'Solving··', 'Solving···', 'Solving…'];
   let _dotIdx = 0;
   const _dotTimer = setInterval(() => {
     if (btn.disabled) btn.textContent = _dotFrames[_dotIdx++ % _dotFrames.length];
   }, 400);
 
-  solveScenario(payload, myAbort.signal)
+  const needsMinSearch = SOLVE_STYLES.has('min-power') || SOLVE_STYLES.has('min-machines');
+
+  // Phase 1 solve — with fallback for no-byproducts hard cap infeasibility.
+  // If hard caps make the LP infeasible (e.g. a byproduct is unavoidable at
+  // the required scale), we retry transparently with the soft penalty instead.
+  const _runPhase1 = async () => {
+    let result = await solveScenario(payload, myAbort.signal);
+
+    if (
+      SOLVE_STYLES.has('no-byproducts') &&
+      !result?.status?.startsWith('Optimal')
+    ) {
+      btn.textContent = 'Relaxing…';
+      const softPayload = applyStylesFirstPass(basePayload, { hardByproducts: false });
+      result = await solveScenario(softPayload, myAbort.signal);
+      if (result?.status?.startsWith('Optimal')) {
+        result.warnings = result.warnings || [];
+        result.warnings.unshift(
+          'No Byproducts: hard caps caused infeasibility — fell back to soft penalty. ' +
+          'Some byproducts may remain; consider adding consumers or relaxing constraints.'
+        );
+      }
+    }
+
+    return result;
+  };
+
+  _runPhase1()
+    .then(async result => {
+      if (mySeq !== solveSeq) return result;
+
+      // Binary search for minimum machines / power if requested
+      if (needsMinSearch) {
+        clearInterval(_dotTimer);  // stop "Solving…" animation; progress updates take over
+        result = await runMinSearches(payload, result, myAbort.signal, btn);
+        if (mySeq !== solveSeq) return result;
+      }
+
+      return result;
+    })
     .then(result => {
-      // Discard stale results if a newer solve was fired
       if (mySeq !== solveSeq) return;
       setResult(result);
       updateIssuesBadge(result);
@@ -159,7 +451,7 @@ function handleSolve() {
       if (hasIssues) openWarn();
     })
     .catch(err => {
-      if (err.name === 'AbortError') return;  // intentionally cancelled
+      if (err.name === 'AbortError') return;
       if (mySeq !== solveSeq) return;
       setResult({
         status: 'Error: ' + err.message, flows: [], net_items: {},
@@ -207,7 +499,8 @@ function handleReset() {
   resetSC();
   setResult(null);
   setPins(null);
-  fillUI();
+  _machinesDirty = true;
+  fillUI({ skipMachines: true });
   renderResultsBar();
   renderBuildCost();
   updatePinBadge();
@@ -229,7 +522,8 @@ function loadSaved() {
           if (data.pinboard) setPins(data.pinboard);
           else setPins(null);
           setResult(null);
-          fillUI();
+          _machinesDirty = true;
+          fillUI({ skipMachines: true });
           updatePinBadge();
           if (pinboardMode) rebuildPinboard();
           else initLayout();
@@ -336,22 +630,39 @@ window.addEventListener('keydown', e => {
 const ge = document.getElementById('ge');
 ge.querySelector('p').textContent = 'Loading game data...';
 
-Promise.all([fetchAllItems(), fetchRecipes(), fetchItemDisplay()])
-  .then(([items, recipes, display]) => {
+Promise.all([fetchBoot()])
+  .then(([boot]) => {
+    const { items, recipes, item_display: display, unlocked_alts } = boot;
     setAllItems(items);
     setRecipes(recipes);
     buildItemDisplay(display);
+    setUnlockedAlts(unlocked_alts || []);
     ge.querySelector('p').textContent = 'Configure your factory and hit Solve';
 
-    initTabs(tab => { if (tab === 'saved') loadSaved(); });
+    initTabs(tab => {
+      if (tab === 'saved') loadSaved();
+      if (tab === 'machalt') renderMachinesIfNeeded();
+    });
     initRecipeLookup();
+    initSolveStyles();
     initGraphEvents();
     initPinboardEvents();
     graphModule = { initLayout, draw, resize };
     updatePinBadge();
-    fillUI();
+    fillUI({ skipMachines: true });   // skip machines/alts — rendered lazily on first tab open
     resize();
     draw();
+
+    setUnlockedSaver(keys =>
+      fetch('/api/unlocked-alts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unlocked: keys }),
+      }).then(r => {
+        if (!r.ok) throw new Error('Save failed: ' + r.status);
+        return r.json();
+      })
+    );
   })
   .catch(err => {
     ge.querySelector('p').textContent =

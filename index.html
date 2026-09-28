@@ -384,6 +384,31 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 }
 
 /* ══════════════════════════════════════════════════════════
+   SOLVE STYLE CHIPS
+══════════════════════════════════════════════════════════ */
+#solve-styles {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin-bottom: 7px;
+}
+.ssc {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 20px;
+  font-size: 10px; font-weight: 500; font-family: var(--font);
+  border: 1px solid var(--b2); background: var(--p3); color: var(--t3);
+  cursor: pointer; transition: all .12s; white-space: nowrap; user-select: none;
+}
+.ssc:hover { border-color: var(--t3); color: var(--t2); }
+.ssc.on {
+  border-color: var(--acc); color: var(--acc);
+  background: var(--acc-glow);
+  box-shadow: 0 0 0 1px var(--acc);
+}
+.ssc .ssc-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor; flex-shrink: 0;
+}
+
+/* ══════════════════════════════════════════════════════════
    RECIPE LOOKUP CARDS  (topbar panel + was sidebar)
 ══════════════════════════════════════════════════════════ */
 .rlcard {
@@ -481,6 +506,24 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 /* ══════════════════════════════════════════════════════════
    ANALYSIS MODAL
 ══════════════════════════════════════════════════════════ */
+.ra-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 7px 10px; border-radius: var(--rsm);
+  border: 1px solid var(--b); margin-bottom: 5px;
+  background: var(--p3);
+}
+.ra-rank {
+  font-family: var(--mono); font-size: 11px; color: var(--t3);
+  min-width: 18px; text-align: right; flex-shrink: 0;
+}
+.ra-name { font-size: 12px; color: var(--t); flex: 1; }
+.ra-machine { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-weight: 600; flex-shrink: 0; }
+.ra-badge {
+  font-size: 9px; font-weight: 700; padding: 2px 7px;
+  border-radius: 10px; flex-shrink: 0; font-family: var(--mono);
+  letter-spacing: .04em;
+}
+.ra-delta { font-family: var(--mono); font-size: 11px; flex-shrink: 0; min-width: 70px; text-align: right; }
 #analysis-modal {
   display: none; position: fixed; inset: 0; z-index: 1000;
   background: rgba(0,0,0,.65); backdrop-filter: blur(4px);
@@ -574,7 +617,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
     <div id="tb-rl-panel"><div id="tb-rl-results"></div></div>
   </div>
   <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-    <span style="font-size:10px;color:var(--t3);font-family:var(--mono)">v3 · OR-Tools</span>
     <button id="btn-pinboard" class="tb-action-btn" title="Pinboard — pin and arrange recipes  (Ctrl+P)" style="position:relative">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/>
@@ -681,7 +723,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
       <div class="pc" id="sec-oc">
         <div class="pt" id="tog-oc">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-          Overclocking <span class="chev" style="margin-left:auto">&#9660;</span>
+          Scenario Definition <span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
           <div class="bgrid">
@@ -692,6 +734,16 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
                 <div><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Power cap (MW)</div><input type="number" id="sc-mp" placeholder="No limit" min="0" step="50"/></div>
                 <div><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Machine cap</div><input type="number" id="sc-mm" placeholder="No limit" min="0" step="1"/></div>
               </div>
+            </div>
+          </div>
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--b)">
+            <div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solve Modifiers</div>
+            <div id="solve-styles">
+              <button class="ssc" data-style="no-byproducts" title="Forces the solver to recycle byproducts (e.g. Polymer Resin → Rubber/Plastic). Tries hard caps first; falls back to soft penalty if that causes infeasibility."><span class="ssc-dot"></span>No Byproducts</button>
+              <button class="ssc" data-style="min-power"     title="Binary search for the minimum power that still satisfies all objectives"><span class="ssc-dot"></span>Min Power</button>
+              <button class="ssc" data-style="min-machines"  title="Binary search for the minimum machine count that still satisfies all objectives"><span class="ssc-dot"></span>Min Machines</button>
+              <button class="ssc" id="ssc-min-new-alts" title="Prefer base recipes and already-unlocked alts. Soft-penalises alt recipes you haven't unlocked yet — only reaches for new alts when they meaningfully improve the result."><span class="ssc-dot"></span>Min New Alts</button>
+
             </div>
           </div>
         </div>

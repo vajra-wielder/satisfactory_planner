@@ -51,6 +51,17 @@ export function initRecipeLookup() {
       inp.blur();
     }
   });
+
+  // Close when clicking anywhere outside the recipe-lookup wrapper.
+  // This is the critical fix: without it the open panel (z-index 500, up to 70vh tall)
+  // silently swallows every click on the canvas/sidebar below it, making the whole
+  // app appear unresponsive after a lookup.
+  const wrap = document.getElementById('tb-rl-wrap');
+  document.addEventListener('mousedown', e => {
+    if (rlPanel.style.display !== 'none' && !wrap.contains(e.target)) {
+      rlPanel.style.display = 'none';
+    }
+  }, true);   // capture phase so it fires before any stopPropagation inside the app
 }
 
 function showRecipeLookup(item, container) {

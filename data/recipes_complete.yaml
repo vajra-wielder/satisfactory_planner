@@ -259,7 +259,7 @@ recipes:
     alternate: true
     inputs:
       Coal: 600.0
-      Turbo_Fuel: 40.0
+      Packaged_Turbofuel: 40.0
     outputs:
       Diamonds: 60.0
   SAM_Fluctuator:
@@ -338,7 +338,7 @@ recipes:
     alternate: false
     inputs:
       SAM_Ingot: 45.0
-      Gold_Ingot: 60.0
+      Caterium_Ingot: 60.0
     outputs:
       Ficsite_Ingot: 15.0
   Bauxite_Caterium:
@@ -511,13 +511,13 @@ recipes:
       Turbofuel: 20.0
       Empty_Canister: 20.0
     outputs:
-      Turbo_Fuel: 20.0
+      Packaged_Turbofuel: 20.0
   Unpackage_Turbofuel:
     display: Unpackage Turbofuel
     machine: Packager
     alternate: false
     inputs:
-      Turbo_Fuel: 20.0
+      Packaged_Turbofuel: 20.0
     outputs:
       Turbofuel: 20.0
       Empty_Canister: 20.0
@@ -735,7 +735,7 @@ recipes:
       Fuel: 40.0
       Empty_Canister: 40.0
     outputs:
-      Fuel: 40.0
+      Packaged_Fuel: 40.0
   Liquid_Biofuel:
     display: Liquid Biofuel
     machine: Refinery
@@ -795,7 +795,7 @@ recipes:
     machine: Packager
     alternate: false
     inputs:
-      Fuel: 60.0
+      Packaged_Fuel: 60.0
     outputs:
       Fuel: 60.0
       Empty_Canister: 60.0
@@ -896,7 +896,7 @@ recipes:
       Caterium_Ore: 24.0
       Water: 24.0
     outputs:
-      Gold_Ingot: 12.0
+      Caterium_Ingot: 12.0
   Alt_Pure_Aluminum_Ingot:
     display: 'Alternate: Pure Aluminum Ingot'
     machine: Smelter
@@ -1129,7 +1129,7 @@ recipes:
     alternate: true
     inputs:
       Copper_Ingot: 12.0
-      Gold_Ingot: 3.0
+      Caterium_Ingot: 3.0
     outputs:
       Wire: 90.0
   Alt_Flexible_Framework:
@@ -1169,7 +1169,7 @@ recipes:
       Heavy_Oil_Residue: 30.0
       Packaged_Water: 60.0
     outputs:
-      Fuel: 60.0
+      Packaged_Fuel: 60.0
   Alt_Copper_Rotor:
     display: 'Alternate: Copper Rotor'
     machine: Assembler
@@ -1842,7 +1842,7 @@ recipes:
       Caterium_Ore: 45.0
       Petroleum_Coke: 15.0
     outputs:
-      Gold_Ingot: 22.5
+      Caterium_Ingot: 22.5
   Alt_Leached_Caterium_Ingot:
     display: 'Alternate: Leached Caterium Ingot'
     machine: Refinery
@@ -1851,13 +1851,13 @@ recipes:
       Caterium_Ore: 54.0
       Sulfuric_Acid: 30.0
     outputs:
-      Gold_Ingot: 36.0
+      Caterium_Ingot: 36.0
   Alt_Caterium_Wire:
     display: 'Alternate: Caterium Wire'
     machine: Constructor
     alternate: true
     inputs:
-      Gold_Ingot: 15.0
+      Caterium_Ingot: 15.0
     outputs:
       Wire: 120.0
   Alt_Iron_Wire:
@@ -1886,7 +1886,7 @@ recipes:
     inputs:
       Caterium_Ore: 45.0
     outputs:
-      Gold_Ingot: 15.0
+      Caterium_Ingot: 15.0
   Alt_Turbo_Electric_Motor:
     display: 'Alternate: Turbo Electric Motor'
     machine: Manufacturer
@@ -2005,7 +2005,7 @@ recipes:
     machine: Assembler
     alternate: true
     inputs:
-      Gold_Ingot: 7.5
+      Caterium_Ingot: 7.5
       Copper_Ingot: 37.5
     outputs:
       Quickwire: 90.0
@@ -2256,7 +2256,7 @@ recipes:
     machine: Constructor
     alternate: false
     inputs:
-      Gold_Ingot: 12.0
+      Caterium_Ingot: 12.0
     outputs:
       Quickwire: 60.0
   Solid_Biofuel:
@@ -2428,7 +2428,7 @@ recipes:
     inputs:
       Cartridge_Standard: 125.0
       Aluminum_Casing: 15.0
-      Turbo_Fuel: 15.0
+      Packaged_Turbofuel: 15.0
     outputs:
       Cartridge_Chaos: 250.0
   Turbo_Rifle_Ammo_Blender:

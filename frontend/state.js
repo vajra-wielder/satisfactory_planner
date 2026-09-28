@@ -18,6 +18,7 @@ export const DEF_SC = () => ({
   max_power_mw: null,
   max_machines: null,
   notes: '',
+  minimize_new_alts: false,
 });
 
 // Active scenario (mutable)
@@ -122,6 +123,19 @@ export function isPinned(key) {
 
 export function pinCount() {
   return PINS.pinned_recipes.length;
+}
+
+// ── Unlocked alternate recipes ────────────────────────────
+// Permanent hard-drive unlocks — persisted server-side in unlocked_alts.yaml.
+// Populated from /api/unlocked-alts on boot and after any save.
+export let UNLOCKED_ALTS = new Set();
+export function setUnlockedAlts(keys) {
+  UNLOCKED_ALTS = new Set(keys || []);
+}
+export function isUnlocked(key)  { return UNLOCKED_ALTS.has(key); }
+export function toggleUnlocked(key) {
+  if (UNLOCKED_ALTS.has(key)) UNLOCKED_ALTS.delete(key);
+  else UNLOCKED_ALTS.add(key);
 }
 
 // Machine tier definitions (for machines panel)

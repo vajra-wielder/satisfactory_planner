@@ -1,0 +1,141 @@
+name: Iron intermediate
+description: ''
+alternate_recipes_enabled:
+- Alt_Plastic_AI_Limiter
+- Alt_Sloppy_Alumina
+- Alt_Alclad_Casing
+- Alt_Pure_Aluminum_Ingot
+- Alt_Electrode_Aluminum_Scrap
+- Alt_Instant_Scrap
+- Alt_Automated_Speed_Wiring
+- Alt_Classic_Battery
+- Alt_Fine_Black_Powder
+- Alt_Coated_Cable
+- Alt_Insulated_Cable
+- Alt_Quickwire_Cable
+- Alt_Caterium_Circuit_Board
+- Alt_Electrode_Circuit_Board
+- Alt_Silicon_Circuit_Board
+- Alt_Compacted_Coal
+- Alt_Caterium_Computer
+- Alt_Crystal_Computer
+- Alt_Fine_Concrete
+- Alt_Rubber_Concrete
+- Alt_Wet_Concrete
+- Alt_Cooling_Device
+- Alt_Copper_Alloy_Ingot
+- Alt_Leached_Copper_Ingot
+- Alt_Pure_Copper_Ingot
+- Alt_Tempered_Copper_Ingot
+- Alt_Steamed_Copper_Sheet
+- Alt_Insulated_Crystal_Oscillator
+- Alt_Dark_Matter_Crystallization
+- Alt_Dark_Matter_Trap
+- Alt_Cloudy_Diamonds
+- Alt_Oil_Based_Diamonds
+- Alt_Petroleum_Diamonds
+- Alt_Pink_Diamonds
+- Alt_Turbo_Diamonds
+- Alt_Electromagnetic_Connection_Rod
+- Alt_Coated_Iron_Canister
+- Alt_Steel_Canister
+- Alt_Encased_Industrial_Pipe
+- Alt_Instant_Plutonium_Cell
+- Alt_Infused_Uranium_Cell
+- Alt_Polyester_Fabric
+- Alt_Diluted_Fuel
+- Alt_Diluted_Packaged_Fuel
+- Alt_Heat_Fused_Frame
+- Alt_Leached_Caterium_Ingot
+- Alt_Pure_Caterium_Ingot
+- Alt_Tempered_Caterium_Ingot
+- Alt_Heat_Exchanger
+- Alt_Heavy_Encased_Frame
+- Alt_Heavy_Flexible_Frame
+- Alt_Heavy_Oil_Residue
+- Alt_Silicon_High_Speed_Connector
+- Alt_Dark_Ion_Fuel
+- Alt_Basic_Iron_Ingot
+- Alt_Iron_Alloy_Ingot
+- Alt_Leached_Iron_Ingot
+- Alt_Pure_Iron_Ingot
+- Alt_Coated_Iron_Plate
+- Alt_Steel_Cast_Plate
+- Alt_Aluminum_Rod
+- Alt_Steel_Rod
+- Alt_Bolted_Frame
+- Alt_Steeled_Frame
+- Alt_Electric_Motor
+- Alt_Rigor_Motor
+- Alt_Fertile_Uranium
+- Alt_Recycled_Plastic
+- Alt_Plutonium_Fuel_Unit
+- Alt_Polymer_Resin
+- Alt_Fused_Quartz_Crystal
+- Alt_Pure_Quartz_Crystal
+- Alt_Quartz_Purification
+- Alt_Fused_Quickwire
+- Alt_Radio_Connection_Unit
+- Alt_Radio_Control_System
+- Alt_Adhered_Iron_Plate
+- Alt_Bolted_Iron_Plate
+- Alt_Stitched_Iron_Plate
+- Alt_Nitro_Rocket_Fuel
+- Alt_Copper_Rotor
+- Alt_Steel_Rotor
+- Alt_Recycled_Rubber
+- Alt_Cast_Screws
+- Alt_Steel_Screws
+- Alt_Cheap_Silica
+- Alt_Distilled_Silica
+- Alt_Plastic_Smart_Plating
+- Alt_Quickwire_Stator
+- Alt_Aluminum_Beam
+- Alt_Molded_Beam
+- Alt_Coke_Steel_Ingot
+- Alt_Compacted_Steel_Ingot
+- Alt_Solid_Steel_Ingot
+- Alt_Iron_Pipe
+- Alt_Molded_Steel_Pipe
+- Alt_OC_Supercomputer
+- Alt_Super_State_Computer
+- Alt_Turbo_Electric_Motor
+- Alt_Turbo_Pressure_Motor
+- Alt_Turbo_Blend_Fuel
+- Alt_Turbo_Heavy_Fuel
+- Alt_Uranium_Fuel_Unit
+- Alt_Flexible_Framework
+- Alt_Caterium_Wire
+- Alt_Fused_Wire
+- Alt_Iron_Wire
+enabled_machines:
+- Smelter
+- Constructor
+- Assembler
+- Foundry
+- Manufacturer
+available_resources:
+  Iron_Ore: 360
+  Limestone: 120
+  Copper_Ore: 120
+must_produce:
+  Iron_Rod: 5
+  Iron_Plate: 5
+  Modular_Frame: 1.25
+  Stator: 2
+  Rotor: 2
+  Reinforced_Iron_Plate: 2.5
+min_produce: {}
+max_produce: {}
+objective:
+  Motor: 1
+power_shards_available: 3
+somersloops_available: null
+max_power_mw: null
+max_machines: 40
+notes: ''
+pinboard:
+  pinned_recipes: []
+  pin_groups: []
+  pin_arrows: []
+  node_positions: {}

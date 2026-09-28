@@ -66,6 +66,14 @@ class Scenario:
     max_power_mw:  Optional[float] = None
     max_machines:  Optional[int]   = None
     notes: str = ""
+    # Permanent unlock tracking — populated by the server from unlocked_alts.yaml.
+    # The solver treats these alts as always-available (no per-scenario enable needed)
+    # and does NOT penalise them when minimize_new_alts is True.
+    unlocked_alt_recipes: List[str] = field(default_factory=list)
+    # When True, add a soft penalty for using alternate recipes that are NOT in
+    # unlocked_alt_recipes. The planner will prefer base recipes and already-owned
+    # alts, only reaching for new alts when they meaningfully improve the solution.
+    minimize_new_alts: bool = False
 
 @dataclass
 class LayoutOption:
@@ -171,6 +179,7 @@ def load_scenario(path) -> Scenario:
         max_power_mw=_sf(raw.get("max_power_mw")) if raw.get("max_power_mw") else None,
         max_machines=_si(raw.get("max_machines")) if raw.get("max_machines") else None,
         notes=raw.get("notes", "") or "",
+        minimize_new_alts=bool(raw.get("minimize_new_alts", False)),
     )
 
 def list_scenarios():
@@ -214,11 +223,12 @@ def prune_recipes(
 
     enabled_machines_set = set(scenario.enabled_machines)
     alt_enabled_set      = set(scenario.alternate_recipes_enabled)
+    unlocked_set         = set(scenario.unlocked_alt_recipes)
 
     def is_allowed(key: str, r: Recipe) -> bool:
         if enabled_machines_set and r.machine not in enabled_machines_set:
             return False
-        if r.alternate and key not in alt_enabled_set:
+        if r.alternate and key not in alt_enabled_set and key not in unlocked_set:
             return False
         return True
 
@@ -448,6 +458,21 @@ def _build_lp(
         for i, c in sp.items():
             # c = eff_out - inputs  →  resource consumption contribution = -c
             obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + _EPS * c)
+
+    # Min New Alts penalty: when the modifier is on, subtract a moderate penalty
+    # for each unit of throughput on alt recipes the user hasn't unlocked yet.
+    # Penalty is large enough to prefer base/unlocked paths when they exist, but
+    # small enough that a genuinely needed new alt can still win.
+    # Scaled at 1e-3 × machines — much larger than _EPS but <<< typical objective
+    # weights (≥1), so it never overrules the actual production goal.
+    if scenario.minimize_new_alts:
+        _NEW_ALT_PEN = 1e-3
+        unlocked_set_lp = set(scenario.unlocked_alt_recipes)
+        # pre-fetch recipe metadata to check .alternate without re-importing
+        for i, k in enumerate(rkeys):
+            r = usable[k]
+            if r.alternate and k not in unlocked_set_lp:
+                obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) - _NEW_ALT_PEN)
 
     return slvr, q, rkeys, net_expr, res_constraints
 
