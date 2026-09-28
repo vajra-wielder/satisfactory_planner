@@ -225,17 +225,21 @@ function renderAnalysis() {
   const powByMach = {};
   flows.forEach(f => { powByMach[f.machine] = (powByMach[f.machine] || 0) + (f.power_mw || 0); });
 
+  const powUsed = Object.values(powByMach).filter(p => p > 0).reduce((a, b) => a + b, 0);
+  const powMade = Object.values(powByMach).filter(p => p < 0).reduce((a, b) => a + b, 0);
+
   if (!Object.keys(powByMach).length) {
     powBody.innerHTML = '<p style="font-size:11px;color:var(--t3)">No power data.</p>';
   } else {
     Object.entries(powByMach).sort(([, a], [, b]) => b - a).forEach(([m, pw]) => {
       const color = mCol(m);
-      const pct   = totalPow > 0 ? (pw / totalPow * 100).toFixed(1) : '0.0';
+      // Bars are shares of the power used, or of the power made for generators
+      const pct   = ((pw < 0 ? pw / powMade : pw / powUsed) * 100 || 0).toFixed(1);
       powBody.innerHTML += `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
           <div style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></div>
           <div style="flex:1;font-size:11px;color:var(--t2)">${m.replace(/_/g, ' ')}</div>
-          <div style="font-family:var(--mono);font-size:11px;color:var(--warn)">${pw.toFixed(0)} MW</div>
+          <div style="font-family:var(--mono);font-size:11px;color:${pw < 0 ? 'var(--ok)' : 'var(--warn)'}">${pw < 0 ? `+${(-pw).toFixed(0)}` : pw.toFixed(0)} MW</div>
           <div style="width:60px;height:4px;border-radius:2px;background:var(--b2);overflow:hidden">
             <div style="height:100%;width:${pct}%;background:${color};border-radius:2px"></div>
           </div>
@@ -245,7 +249,7 @@ function renderAnalysis() {
     powBody.innerHTML += `
       <div style="border-top:1px solid var(--b);padding-top:6px;margin-top:4px;
                   font-family:var(--mono);font-size:12px;color:var(--warn)">
-        Total: ${totalPow.toFixed(0)} MW
+        ${powMade < 0 ? `Used ${powUsed.toFixed(0)} · Made ${(-powMade).toFixed(0)} · Net ` : 'Total: '}${totalPow.toFixed(0)} MW
         ${RESULT.max_power_mw ? `<span style="color:var(--t3)"> / ${RESULT.max_power_mw} MW cap</span>` : ''}
       </div>
     `;

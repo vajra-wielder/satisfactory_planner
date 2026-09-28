@@ -18,8 +18,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Machine count limits (whole machines, enforced exactly)
 - Power Shard placement optimised across the whole factory
 - Somersloop placement optimised across the whole factory
+- Nuclear Power Plants: burning fuel rods yields Uranium/Plutonium waste, so full
+  Plutonium and Ficsonium chains can be planned; power generated shows as net power
+- Last solve of each scenario cached and restored when the scenario is reopened
 
 ### Recipe Management
+- Recipe data checked against the 1.0 game files (rates, machines, build costs,
+  per-recipe power for variable-power machines)
 - Enable/disable alternate recipes
 - Enable/disable machine tiers
 - Searchable recipe database

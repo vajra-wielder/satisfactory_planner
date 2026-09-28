@@ -21,7 +21,7 @@ machine_meta:
       Reinforced_Iron_Plate: 2
       Cable: 8
   Converter:
-    base_power_mw: 0.0
+    base_power_mw: 250.0   # variable 100-400 MW; average
     sloop_slots: 2
     build_cost:
       Fused_Modular_Frame: 10
@@ -42,11 +42,14 @@ machine_meta:
       Motor: 10
       Modular_Frame: 20
       Plastic: 50
-      Cable: 5
+      Cable: 50
   Oil_Extractor:
     base_power_mw: 40.0
     sloop_slots: 0
-    build_cost: {}
+    build_cost:
+      Motor: 15
+      Encased_Industrial_Beam: 20
+      Cable: 60
   Packager:
     base_power_mw: 10.0
     sloop_slots: 0
@@ -55,7 +58,7 @@ machine_meta:
       Rubber: 10
       Plastic: 10
   Particle_Accelerator:
-    base_power_mw: 500.0
+    base_power_mw: 500.0   # variable; each recipe sets its own power_mw
     sloop_slots: 4
     build_cost:
       Turbo_Motor: 10
@@ -64,7 +67,7 @@ machine_meta:
       Cooling_System: 50
       Quickwire: 500
   Quantum_Encoder:
-    base_power_mw: 0.0
+    base_power_mw: 1000.0  # variable 0-2000 MW; average
     sloop_slots: 4
     build_cost:
       Turbo_Motor: 20
@@ -77,7 +80,7 @@ machine_meta:
     sloop_slots: 2
     build_cost:
       Motor: 10
-      Steel_Plate_Reinforced: 10
+      Encased_Industrial_Beam: 10
       Steel_Pipe: 30
       Copper_Sheet: 20
   Smelter:
@@ -89,7 +92,20 @@ machine_meta:
   Water_Extractor:
     base_power_mw: 20.0
     sloop_slots: 0
-    build_cost: {}
+    build_cost:
+      Copper_Sheet: 20
+      Reinforced_Iron_Plate: 10
+      Rotor: 10
+  Nuclear_Power_Plant:
+    # A generator: negative power is electricity produced (2500 MW at 100%).
+    base_power_mw: -2500.0
+    sloop_slots: 0
+    build_cost:
+      Concrete: 250
+      Heavy_Modular_Frame: 25
+      Supercomputer: 10
+      Cable: 200
+      Alclad_Aluminum_Sheet: 100
 recipes:
   Iron_Plate:
     display: Iron Plate
@@ -158,6 +174,7 @@ recipes:
   Alt_Dark_Ion_Fuel:
     display: 'Alternate: Dark-Ion Fuel'
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: true
     inputs:
       Packaged_Rocket_Fuel: 240.0
@@ -168,6 +185,7 @@ recipes:
   Dark_Matter_Residue:
     display: Dark Matter Residue
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 50.0
@@ -176,6 +194,7 @@ recipes:
   Excited_Photonic_Matter:
     display: Excited Photonic Matter
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs: {}
     outputs:
@@ -183,6 +202,7 @@ recipes:
   Dark_Matter_Crystal:
     display: Dark Matter Crystal
     machine: Particle_Accelerator
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Diamonds: 30.0
@@ -192,6 +212,7 @@ recipes:
   Superposition_Oscillator:
     display: Superposition Oscillator
     machine: Quantum_Encoder
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Dark_Matter_Crystal: 30.0
@@ -204,6 +225,7 @@ recipes:
   Neural_Quantum_Processor:
     display: Neural-Quantum Processor
     machine: Quantum_Encoder
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Time_Crystal: 15.0
@@ -216,6 +238,7 @@ recipes:
   AI_Expansion_Server:
     display: AI Expansion Server
     machine: Quantum_Encoder
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Magnetic_Field_Generator: 4.0
@@ -256,6 +279,7 @@ recipes:
   Alt_Turbo_Diamonds:
     display: 'Alternate: Turbo Diamonds'
     machine: Particle_Accelerator
+    power_mw: 500.0   # variable power; game average
     alternate: true
     inputs:
       Coal: 600.0
@@ -283,6 +307,7 @@ recipes:
   Ficsite_Ingot_Iron:
     display: Ficsite Ingot (Iron)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 40.0
@@ -292,6 +317,7 @@ recipes:
   Time_Crystal:
     display: Time Crystal
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       Diamonds: 12.0
@@ -300,6 +326,7 @@ recipes:
   Diamonds:
     display: Diamonds
     machine: Particle_Accelerator
+    power_mw: 500.0   # variable power; game average
     alternate: false
     inputs:
       Coal: 600.0
@@ -316,6 +343,7 @@ recipes:
   Biochemical_Sculptor:
     display: Biochemical Sculptor
     machine: Blender
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Assembly_Director_System: 0.5
@@ -326,6 +354,7 @@ recipes:
   Ficsite_Ingot_Aluminum:
     display: Ficsite Ingot (Aluminum)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 60.0
@@ -335,6 +364,7 @@ recipes:
   Ficsite_Ingot_Caterium:
     display: Ficsite Ingot (Caterium)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 45.0
@@ -344,6 +374,7 @@ recipes:
   Bauxite_Caterium:
     display: Bauxite (Caterium)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -353,6 +384,7 @@ recipes:
   Bauxite_Copper:
     display: Bauxite (Copper)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -362,6 +394,7 @@ recipes:
   Caterium_Ore_Copper:
     display: Caterium Ore (Copper)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -371,6 +404,7 @@ recipes:
   Caterium_Ore_Quartz:
     display: Caterium Ore (Quartz)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -380,6 +414,7 @@ recipes:
   Coal_Iron:
     display: Coal (Iron)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -389,6 +424,7 @@ recipes:
   Coal_Limestone:
     display: Coal (Limestone)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -398,6 +434,7 @@ recipes:
   Copper_Ore_Quartz:
     display: Copper Ore (Quartz)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -407,6 +444,7 @@ recipes:
   Copper_Ore_Sulfur:
     display: Copper Ore (Sulfur)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -416,6 +454,7 @@ recipes:
   Iron_Ore_Limestone:
     display: Iron Ore (Limestone)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -425,6 +464,7 @@ recipes:
   Limestone_Sulfur:
     display: Limestone (Sulfur)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -434,6 +474,7 @@ recipes:
   Nitrogen_Gas_Bauxite:
     display: Nitrogen Gas (Bauxite)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -443,6 +484,7 @@ recipes:
   Nitrogen_Gas_Caterium:
     display: Nitrogen Gas (Caterium)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -452,6 +494,7 @@ recipes:
   Raw_Quartz_Bauxite:
     display: Raw Quartz (Bauxite)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -461,6 +504,7 @@ recipes:
   Raw_Quartz_Coal:
     display: Raw Quartz (Coal)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -470,6 +514,7 @@ recipes:
   Sulfur_Coal:
     display: Sulfur (Coal)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -479,6 +524,7 @@ recipes:
   Sulfur_Iron:
     display: Sulfur (Iron)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -488,6 +534,7 @@ recipes:
   Uranium_Ore_Bauxite:
     display: Uranium Ore (Bauxite)
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Ingot: 10.0
@@ -603,6 +650,7 @@ recipes:
   Alt_Pink_Diamonds:
     display: 'Alternate: Pink Diamonds'
     machine: Converter
+    power_mw: 250.0   # variable power; game average
     alternate: true
     inputs:
       Coal: 120.0
@@ -612,6 +660,7 @@ recipes:
   Alt_Petroleum_Diamonds:
     display: 'Alternate: Petroleum Diamonds'
     machine: Particle_Accelerator
+    power_mw: 500.0   # variable power; game average
     alternate: true
     inputs:
       Petroleum_Coke: 720.0
@@ -620,6 +669,7 @@ recipes:
   Alt_Oil_Based_Diamonds:
     display: 'Alternate: Oil-Based Diamonds'
     machine: Particle_Accelerator
+    power_mw: 500.0   # variable power; game average
     alternate: true
     inputs:
       Crude_Oil: 200.0
@@ -628,6 +678,7 @@ recipes:
   Alt_Cloudy_Diamonds:
     display: 'Alternate: Cloudy Diamonds'
     machine: Particle_Accelerator
+    power_mw: 500.0   # variable power; game average
     alternate: true
     inputs:
       Coal: 240.0
@@ -637,6 +688,7 @@ recipes:
   Alt_Dark_Matter_Trap:
     display: 'Alternate: Dark Matter Trap'
     machine: Particle_Accelerator
+    power_mw: 1000.0   # variable power; game average
     alternate: true
     inputs:
       Time_Crystal: 30.0
@@ -646,6 +698,7 @@ recipes:
   Alt_Dark_Matter_Crystallization:
     display: 'Alternate: Dark Matter Crystallization'
     machine: Particle_Accelerator
+    power_mw: 1000.0   # variable power; game average
     alternate: true
     inputs:
       Dark_Matter_Residue: 200.0
@@ -1339,6 +1392,7 @@ recipes:
   Plutonium_Pellet:
     display: Plutonium Pellet
     machine: Particle_Accelerator
+    power_mw: 500.0   # variable power; game average
     alternate: false
     inputs:
       Non_Fissible_Uranium: 100.0
@@ -1368,6 +1422,7 @@ recipes:
   Nuclear_Pasta:
     display: Nuclear Pasta
     machine: Particle_Accelerator
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Copper_Powder: 100.0
@@ -1631,6 +1686,7 @@ recipes:
   Alt_Instant_Plutonium_Cell:
     display: 'Alternate: Instant Plutonium Cell'
     machine: Particle_Accelerator
+    power_mw: 500.0   # variable power; game average
     alternate: true
     inputs:
       Non_Fissible_Uranium: 75.0
@@ -1939,7 +1995,7 @@ recipes:
     outputs:
       Silica: 52.5
   Alt_Steel_Screws:
-    display: 'Alternate: Steel Screws'
+    display: 'Alternate: Steel Screw'
     machine: Constructor
     alternate: true
     inputs:
@@ -1947,7 +2003,7 @@ recipes:
     outputs:
       Screw: 260.0
   Alt_Cast_Screws:
-    display: 'Alternate: Cast Screws'
+    display: 'Alternate: Cast Screw'
     machine: Constructor
     alternate: true
     inputs:
@@ -2200,6 +2256,7 @@ recipes:
   Ficsonium:
     display: Ficsonium
     machine: Particle_Accelerator
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Plutonium_Waste: 10.0
@@ -2210,6 +2267,7 @@ recipes:
   Ficsonium_Fuel_Rod:
     display: Ficsonium Fuel Rod
     machine: Quantum_Encoder
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Ficsonium: 5.0
@@ -2222,6 +2280,7 @@ recipes:
   Singularity_Cell:
     display: Singularity Cell
     machine: Manufacturer
+    power_mw: 0.0   # variable power; game average
     alternate: false
     inputs:
       Nuclear_Pasta: 1.0
@@ -2233,11 +2292,12 @@ recipes:
   Ballistic_Warp_Drive:
     display: Ballistic Warp Drive
     machine: Manufacturer
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Thermal_Propulsion_Rocket: 1.0
       Singularity_Cell: 5.0
-      Crystal_Oscillator: 2.0
+      Superposition_Oscillator: 2.0
       Dark_Matter_Crystal: 40.0
     outputs:
       Ballistic_Warp_Drive: 1.0
@@ -2327,11 +2387,12 @@ recipes:
   Alien_Power_Matrix:
     display: Alien Power Matrix
     machine: Quantum_Encoder
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       SAM_Fluctuator: 12.5
       Power_Shard: 7.5
-      Crystal_Oscillator: 7.5
+      Superposition_Oscillator: 7.5
       Excited_Photonic_Matter: 60.0
     outputs:
       Alien_Power_Matrix: 2.5
@@ -2394,6 +2455,7 @@ recipes:
   Synthetic_Power_Shard:
     display: Synthetic Power Shard
     machine: Quantum_Encoder
+    power_mw: 1000.0   # variable power; game average
     alternate: false
     inputs:
       Time_Crystal: 10.0
@@ -2617,7 +2679,7 @@ recipes:
     outputs:
       Concrete: 15.0
   Screws:
-    display: Screws
+    display: Screw
     machine: Constructor
     alternate: false
     inputs:
@@ -2675,3 +2737,110 @@ recipes:
       Snow: 5.0
     outputs:
       Fireworks_Projectile_03: 2.5
+  Uranium_Power:
+    display: Nuclear Power (Uranium)
+    machine: Nuclear_Power_Plant
+    alternate: false
+    inputs:
+      Uranium_Fuel_Rod: 0.2
+      Water: 240.0
+    outputs:
+      Nuclear_Waste: 10.0
+  Plutonium_Power:
+    display: Nuclear Power (Plutonium)
+    machine: Nuclear_Power_Plant
+    alternate: false
+    inputs:
+      Plutonium_Fuel_Rod: 0.1
+      Water: 240.0
+    outputs:
+      Plutonium_Waste: 1.0
+  Ficsonium_Power:
+    display: Nuclear Power (Ficsonium)
+    machine: Nuclear_Power_Plant
+    alternate: false
+    inputs:
+      Ficsonium_Fuel_Rod: 1.0
+      Water: 240.0
+    outputs: {}
+  Alt_Charcoal:
+    display: 'Alternate: Charcoal'
+    machine: Constructor
+    alternate: true
+    inputs:
+      Wood: 15.0
+    outputs:
+      Coal: 150.0
+  Alt_Biocoal:
+    display: 'Alternate: Biocoal'
+    machine: Constructor
+    alternate: true
+    inputs:
+      Biomass: 37.5
+    outputs:
+      Coal: 45.0
+  Biomass_Wood:
+    display: Biomass (Wood)
+    machine: Constructor
+    alternate: false
+    inputs:
+      Wood: 60.0
+    outputs:
+      Biomass: 300.0
+  Biomass_Leaves:
+    display: Biomass (Leaves)
+    machine: Constructor
+    alternate: false
+    inputs:
+      Leaves: 120.0
+    outputs:
+      Biomass: 60.0
+  Biomass_Mycelia:
+    display: Biomass (Mycelia)
+    machine: Constructor
+    alternate: false
+    inputs:
+      Mycelia: 15.0
+    outputs:
+      Biomass: 150.0
+  Biomass_Alien_Protein:
+    display: Biomass (Alien Protein)
+    machine: Constructor
+    alternate: false
+    inputs:
+      Alien_Protein: 15.0
+    outputs:
+      Biomass: 1500.0
+  Power_Shard_1:
+    display: Power Shard (1)
+    machine: Constructor
+    alternate: false
+    inputs:
+      Blue_Power_Slug: 7.5
+    outputs:
+      Power_Shard: 7.5
+  Power_Shard_2:
+    display: Power Shard (2)
+    machine: Constructor
+    alternate: false
+    inputs:
+      Yellow_Power_Slug: 5.0
+    outputs:
+      Power_Shard: 10.0
+  Power_Shard_5:
+    display: Power Shard (5)
+    machine: Constructor
+    alternate: false
+    inputs:
+      Purple_Power_Slug: 2.5
+    outputs:
+      Power_Shard: 12.5
+  Alt_Automated_Miner:
+    display: 'Alternate: Automated Miner'
+    machine: Assembler
+    alternate: true
+    inputs:
+      Steel_Pipe: 4.0
+      Iron_Plate: 4.0
+    outputs:
+      Portable_Miner: 1.0

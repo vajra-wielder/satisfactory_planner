@@ -72,7 +72,10 @@ export function renderResultsBar() {
   });
   if (objItems.length) h += sep;
   h += st('Machines', RESULT.total_machines) + sep;
-  h += st('Power', `${RESULT.total_power_mw?.toFixed(0)} MW`, 'var(--warn)');
+  // Net power: negative when generators (nuclear plants) make more than the factory uses
+  const pw = RESULT.total_power_mw ?? 0;
+  h += pw < 0 ? st('Power made', `${(-pw).toFixed(0)} MW`, 'var(--ok)')
+              : st('Power', `${pw.toFixed(0)} MW`, 'var(--warn)');
   if (resLabel) h += sep + st('Resources', resLabel, bindingCount > 0 ? 'var(--err)' : 'var(--t3)');
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');

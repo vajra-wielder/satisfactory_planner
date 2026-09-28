@@ -76,9 +76,29 @@ _ITEM_DISPLAY_BYTES = json.dumps(
             **{key: key.replace("_", " ")
                for r in ALL_RECIPES.values()
                for key in list(r.inputs) + list(r.outputs)},
-            "Circuit_Board_HS":  "AI Limiter",
-            "Lightweight_Frame": "Radio Control Unit",
-            "Screw":             "Screws",
+            # Internal names that differ from the in-game ones
+            "Circuit_Board_HS":           "AI Limiter",
+            "Lightweight_Frame":          "Radio Control Unit",
+            "Screw":                      "Screws",
+            "Uranium_Ore":                "Uranium",
+            "Nuclear_Waste":              "Uranium Waste",
+            "Non_Fissible_Uranium":       "Non-Fissile Uranium",
+            "SAM_Ingot":                  "Reanimated SAM",
+            "High_Speed_Connector":       "High-Speed Connector",
+            "Iodine_Infused_Filter":      "Iodine-Infused Filter",
+            "Neural_Quantum_Processor":   "Neural-Quantum Processor",
+            "Cartridge_Standard":         "Rifle Ammo",
+            "Cartridge_Chaos":            "Turbo Rifle Ammo",
+            "Cartridge_Smart_Projectile": "Homing Rifle Ammo",
+            "Nobelisk_Shockwave":         "Pulse Nobelisk",
+            "Spiked_Rebar":               "Iron Rebar",
+            "Rebar_Explosive":            "Explosive Rebar",
+            "Rebar_Spreadshot":           "Shatter Rebar",
+            "Rebar_Stunshot":             "Stun Rebar",
+            "Hog_Parts":                  "Hog Remains",
+            "Hatcher_Parts":              "Hatcher Remains",
+            "Spitter_Parts":              "Spitter Remains",
+            "Stinger_Parts":              "Stinger Remains",
         }.items())
     ),
     default=str

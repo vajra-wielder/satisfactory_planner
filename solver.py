@@ -48,7 +48,7 @@ SLOOP_SLOTS_BY_MACHINE = {
     "Foundry":2, "Assembler":2, "Refinery":2, "Converter":2,
     "Packager":0,   # the Packager can't take somersloops
     "Manufacturer":4, "Blender":4, "Particle_Accelerator":4, "Quantum_Encoder":4,
-    "Miner":0, "Water_Extractor":0, "Oil_Extractor":0,
+    "Miner":0, "Water_Extractor":0, "Oil_Extractor":0, "Nuclear_Power_Plant":0,
 }
 
 
@@ -159,7 +159,8 @@ def _build_recipes(raw: dict) -> Dict[str, "Recipe"]:
             alternate=d.get("alternate", False),
             inputs={k: float(v) for k, v in d.get("inputs", {}).items()},
             outputs={k: float(v) for k, v in d.get("outputs", {}).items()},
-            base_power_mw=float(m.get("base_power_mw", 10.0)),
+            # A recipe may set its own power (variable-power machines)
+            base_power_mw=float(d.get("power_mw", m.get("base_power_mw", 10.0))),
             sloop_slots=int(SLOOP_SLOTS_BY_MACHINE.get(machine, 0)),
         )
     return out
@@ -1275,8 +1276,10 @@ def _layout_label(groups: List[Tuple[int, float, int]]) -> str:
 
 
 def _layout_power(r: Recipe, level: int, groups: List[Tuple[int, float, int]]) -> float:
+    # Generators (negative power) produce in proportion to their clock
+    exp = 1.0 if r.base_power_mw < 0 else POWER_EXP
     return r.base_power_mw * _sloop_power_mult(r, level) * \
-        sum(c * clk ** POWER_EXP for c, clk, _ in groups)
+        sum(c * clk ** exp for c, clk, _ in groups)
 
 
 def _min_shards(q: float, n: int) -> Optional[int]:

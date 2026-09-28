@@ -124,8 +124,8 @@ const ALT_TREE = {
       { key: 'Alt_Steel_Rod',    display: 'Steel Rod',    machine: 'Constructor' },
     ],
     'Screw': [
-      { key: 'Alt_Cast_Screws',  display: 'Cast Screws',  machine: 'Constructor' },
-      { key: 'Alt_Steel_Screws', display: 'Steel Screws', machine: 'Constructor' },
+      { key: 'Alt_Cast_Screws',  display: 'Cast Screw',   machine: 'Constructor' },
+      { key: 'Alt_Steel_Screws', display: 'Steel Screw',  machine: 'Constructor' },
     ],
     'Reinforced Iron Plate': [
       { key: 'Alt_Adhered_Iron_Plate',  display: 'Adhered Iron Plate',  machine: 'Assembler' },
@@ -359,6 +359,15 @@ const ALT_TREE = {
       { key: 'Alt_Fine_Concrete',   display: 'Fine Concrete',   machine: 'Assembler' },
       { key: 'Alt_Rubber_Concrete', display: 'Rubber Concrete', machine: 'Assembler' },
       { key: 'Alt_Wet_Concrete',    display: 'Wet Concrete',    machine: 'Refinery'  },
+    ],
+  },
+  'Biomass': {
+    'Coal': [
+      { key: 'Alt_Biocoal',  display: 'Biocoal',  machine: 'Constructor' },
+      { key: 'Alt_Charcoal', display: 'Charcoal', machine: 'Constructor' },
+    ],
+    'Portable Miner': [
+      { key: 'Alt_Automated_Miner', display: 'Automated Miner', machine: 'Assembler' },
     ],
   },
 };

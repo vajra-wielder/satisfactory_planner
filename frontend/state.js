@@ -56,6 +56,7 @@ export const MCOL = {
   Assembler: '#7f6fdd', Manufacturer: '#c07d10', Refinery: '#5a9e22',
   Blender: '#2b8bd4', Particle_Accelerator: '#e040fb',
   Quantum_Encoder: '#f472b6', Converter: '#34d399', Packager: '#94a3b8',
+  Nuclear_Power_Plant: '#84cc16',
 };
 export const mCol = (m) => MCOL[m] || '#6b7280';
 
@@ -64,6 +65,7 @@ export const MABBR = {
   Manufacturer: 'MFR', Refinery: 'REF', Blender: 'BLD', Miner: 'MNR',
   Water_Extractor: 'H₂O', Oil_Extractor: 'OIL', Particle_Accelerator: 'PA',
   Quantum_Encoder: 'QE', Converter: 'CNV', Packager: 'PKG',
+  Nuclear_Power_Plant: 'NUC',
 };
 
 // Item display name helper — populated from /api/item-display on boot
@@ -145,5 +147,6 @@ export const MTIERS = [
   { label: 'Tier 3-4 · Mid',      ms: ['Foundry', 'Manufacturer', 'Refinery'] },
   { label: 'Tier 5-7 · Advanced', ms: ['Blender', 'Packager'] },
   { label: 'Phase 4-5 · Endgame', ms: ['Particle_Accelerator', 'Quantum_Encoder', 'Converter'] },
+  { label: 'Power',               ms: ['Nuclear_Power_Plant'] },
 ];
 export const ALL_MACHINES = MTIERS.flatMap(t => t.ms);
