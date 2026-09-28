@@ -1,27 +1,33 @@
 """
-Satisfactory Factory Planner v3 — Iterative Sloop/Shard Solver
+Satisfactory Factory Planner — exact solver
 
-SLOOP ACCOUNTING (critical):
-  sloop_assignment[k] = sloops_per_machine for recipe k (integer 0..max_slots)
-  LP output multiplier = 1 + sloops_per_machine / max_slots
-  Budget cost per iteration = ceil(q[k]) * sloops_per_machine_added
-  This ensures LP multipliers and physical sloop cost are consistent.
+PLAN (see _plan):
+  One mixed-integer model of the whole factory — integer machines per recipe,
+  a somersloop level per recipe, power shards per recipe, hard budgets for
+  sloops, shards and max_machines — solved in three lexicographic stages:
+    1. Goal   maximise the weighted goals
+    2. Lean   minimise machines + raw resources, each on its own scale
+    3. Clean  fewest recipes and duplicate producers
+  Each stage is solved to proven optimality (MIP gap 1e-9) with earlier
+  stages locked, so the result is the best plan, not a greedy approximation.
 
-ITERATIVE SLOOP ALLOCATION:
-  Starting from base LP (no sloops), greedily add one slot level to one recipe
-  per iteration. Each addition re-solves the full LP so the network rebalances
-  naturally — no surplus intermediates, no manual re-routing needed.
-  Accept if: objective improves AND total power stays within cap.
+SLOOP ACCOUNTING:
+  sloops per machine l ∈ 0..slots, output × (1 + l/slots), power × (1 + l/slots)²,
+  sloops used = l × machines.
 
-POWER FORMULA (sloops per physical machine):
-  P = base_mw × clock^1.6 × n_machines × (1 + sloops_per_machine / max_slots)^2
+POWER FORMULA:
+  P = base_mw × clock^1.6 × (1 + sloops_per_machine / max_slots)^2, per machine.
+  Power is reported, not optimised; max_power_mw is informational.
 
 PRUNING:
-  Recipe tree is computed once (forward grounding + backward demand) and
-  reused for every LP re-solve in the iterative loop. O(1) prune cost.
+  Recipe tree is computed once (forward grounding + backward demand).
+
+SHADOW PRICES:
+  compute_duals() uses the continuous LP (_build_lp / WarmLP) for resource
+  shadow prices and saturation points.
 """
 
-import math, yaml, json, threading
+import math, yaml, json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
@@ -98,7 +104,8 @@ class FlowResult:
     layout_options: List[LayoutOption] = field(default_factory=list)
     has_shard: bool = False
     has_sloop: bool = False
-    hi_machines: int = 0  # machines running at clock_pct; rest run at 100% (mixed layout)
+    hi_machines: int = 0  # machines carrying shards
+    layout: List[dict] = field(default_factory=list)  # [{count, clock_pct, shards}] groups
 
 @dataclass
 class SolveResult:
@@ -374,7 +381,6 @@ def _build_lp(
     # Non-resource flow-balance constraints: net(item) >= 0 for all items.
     # This permits unavoidable byproducts (e.g. Heavy Oil Residue alongside Rubber)
     # to be surplus without making the LP infeasible.
-    # Gratuitous resource use is removed afterwards by _refine.
     net_expr: Dict[str, object] = {}
     for item in item_set:
         sp = net_sparse[item]
@@ -433,7 +439,7 @@ def _build_lp(
 
     # Objective: maximise sum(weight * net(item)) over objective items.
     # Ties (same goal output, different machines/resources) are broken afterwards
-    # by _refine, not by epsilon terms here.
+    # by _plan, not by epsilon terms here.
     obj = slvr.Objective()
     obj.SetMaximization()
     for item, w in scenario.objective.items():
@@ -460,285 +466,12 @@ def _build_lp(
     return slvr, q, rkeys, net_expr, res_constraints
 
 
-def _solve_lp(
-    scenario: Scenario,
-    usable: Dict[str,Recipe],
-    spm: Dict[str,int],
-) -> Tuple[str, float, Dict[str,float]]:
-    """Standard solve — returns (status, objective, q_values)."""
-    if not usable:
-        return "No recipes", 0.0, {}
-    slvr, q, rkeys, _, _ = _build_lp(scenario, usable, spm)
-    status = slvr.Solve()
-    ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-    if not ok:
-        return "Infeasible", 0.0, {}
-    q_vals = {rkeys[i]: max(0.0, q[i].solution_value()) for i in range(len(rkeys))}
-    return "Optimal", slvr.Objective().Value(), q_vals
-
-
-def _solve_lp_min_machines(
-    scenario: Scenario,
-    usable: Dict[str,Recipe],
-    spm: Dict[str,int],
-) -> Tuple[str, float, Dict[str,float]]:
-    """
-    Solve with objective replaced by minimise sum(q).
-    All production/resource/must/min/max constraints are preserved via _build_lp;
-    only the objective is swapped.  max_machines is intentionally stripped so the
-    solver finds the unconstrained minimum — the caller uses the result to learn
-    what the true floor is, not to enforce the cap.
-
-    Returns (status, objective, q_values) where objective = sum(q) at optimum.
-    """
-    if not usable:
-        return "No recipes", 0.0, {}
-    sc_uncapped = _dc_replace(scenario, max_machines=None)
-    slvr, q, rkeys, _, _ = _build_lp(sc_uncapped, usable, spm)
-
-    # Replace objective: minimise sum(q)
-    obj = slvr.Objective()
-    obj.Clear()
-    obj.SetMinimization()
-    for qi in q:
-        obj.SetCoefficient(qi, 1.0)
-
-    status = slvr.Solve()
-    ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-    if not ok:
-        return "Infeasible", 0.0, {}
-    q_vals = {rkeys[i]: max(0.0, q[i].solution_value()) for i in range(len(rkeys))}
-    return "Optimal", slvr.Objective().Value(), q_vals
-
-
-# ── Tie-breaking: lexicographic refinement ────────────────────────────────────
-# The main LP only maximises the goal, and there are usually many solutions that
-# reach that optimum (e.g. when Turbofuel is capped by Coal, it doesn't care how
-# Quickwire is made). With the goal locked at its optimum, two more stages pick
-# between the tied solutions:
-#
-#   Stage 2 — minimise a balanced cost of machines and raw resources.
-#   Stage 3 — minimise the number of recipes and duplicate producers, allowing
-#             stage 2's cost to rise by at most _REFINE_COST_SLACK.
-#
-# Stage 2 can't simply add "1 per machine + 1 per resource unit": resource rates
-# run from single digits to thousands (Water), so they would drown out machines.
-# Instead every term is measured against its own natural scale:
-#   machines  → Σ machines / machines in the stage-1 solution
-#   resources → mean over resources of (net use / supply)
-# so "a whole factory's worth of machines" and "all of every resource" each
-# count as 1, and the weights below say how those two compare.
-_REFINE_W_MACHINES   = 1.0
-_REFINE_W_RESOURCES  = 1.0
-_REFINE_GOAL_TOL     = 1e-6   # relative slack on the locked goal
-_REFINE_COST_SLACK   = 0.01   # stage 3 may raise stage 2's cost by ≤1%
-_REFINE_PARALLEL_PEN = 0.5    # cost of a 2nd producer of one item, on top of its recipe
-_REFINE_TIME_MS      = 5000
-
-
-def _net_coeffs(usable: Dict[str,Recipe], spm: Dict[str,int]) -> Dict[str, Dict[str, float]]:
-    """item → {recipe: output×sloop_mult − input} (non-zero entries only)."""
-    net: Dict[str, Dict[str, float]] = {}
-    for k, r in usable.items():
-        mult = _output_mult(r, spm.get(k, 0))
-        for it in set(r.inputs) | set(r.outputs):
-            c = r.outputs.get(it, 0.0) * mult - r.inputs.get(it, 0.0)
-            if c:
-                net.setdefault(it, {})[k] = c
-    return net
-
-
-def _lin(coeffs: Dict[str, float], qv: Dict[str, float]) -> float:
-    return sum(c * qv.get(k, 0.0) for k, c in coeffs.items())
-
-
-class _RefineModel:
-    """
-    The main LP's feasible region (flow balance, resources, must/min/max, machine
-    cap) rebuilt in any OR-Tools backend over `keys`, with per-recipe upper
-    bounds `q_ub`. Callers add the locks and the objective.
-    """
-    def __init__(self, backend: str, scenario: Scenario, keys: List[str],
-                 net: Dict[str, Dict[str, float]], q_ub: Dict[str, float]):
-        self.s = pywraplp.Solver.CreateSolver(backend)
-        if self.s is None:
-            return
-        self.s.SuppressOutput()
-        INF = self.inf = self.s.infinity()
-        self.q = {k: self.s.NumVar(0, q_ub.get(k, INF), "") for k in keys}
-        res = scenario.available_resources
-        for it, sp in net.items():
-            if it in res:
-                self.ct(-INF, res[it], {k: -c for k, c in sp.items()})
-            else:
-                self.ct(0.0, INF, sp)
-        for it, qty in scenario.must_produce.items():
-            if it in net:
-                self.ct(qty - res.get(it, 0.0), qty - res.get(it, 0.0), net[it])
-        for it, qty in scenario.min_produce.items():
-            if it in net:
-                self.ct(qty - res.get(it, 0.0), INF, net[it])
-        for it, qty in scenario.max_produce.items():
-            if it in net:
-                self.ct(-INF, qty - res.get(it, 0.0), net[it])
-        if scenario.max_machines is not None:
-            self.ct(-INF, float(scenario.max_machines), {k: 1.0 for k in keys})
-
-    def ct(self, lo, hi, coeffs: Dict[str, float]):
-        c = self.s.Constraint(lo, hi)
-        for k, v in coeffs.items():
-            if k in self.q:
-                c.SetCoefficient(self.q[k], v)
-        return c
-
-    def values(self) -> Dict[str, float]:
-        return {k: max(0.0, v.solution_value()) for k, v in self.q.items()}
-
-    def solved(self) -> bool:
-        return self.s.Solve() in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-
-
-def _refine(
-    scenario: Scenario,
-    usable: Dict[str,Recipe],
-    spm: Dict[str,int],
-    q_vals: Dict[str,float],
-) -> Optional[Tuple[Dict[str,float], float]]:
-    """
-    Stages 2 and 3 above. Returns (q values, goal objective), or None to keep
-    q_vals unchanged.
-    """
-    if not any(v >= 1e-5 for v in q_vals.values()):
-        return None
-    keys = list(usable.keys())
-    net  = _net_coeffs(usable, spm)
-
-    # Sloops were budgeted per physical machine, so a sloop'd recipe may not
-    # grow past its current machine count.
-    q_ub = {k: float(math.ceil(q_vals.get(k, 0.0) - 1e-9)) for k in keys if spm.get(k, 0)}
-
-    goal: Dict[str, float] = {}
-    for it, w in scenario.objective.items():
-        for k, c in net.get(it, {}).items():
-            goal[k] = goal.get(k, 0.0) + w * c
-    g0 = _lin(goal, q_vals)
-    goal_floor = g0 - max(1e-6, abs(g0) * _REFINE_GOAL_TOL)
-
-    # Min New Alts: never use more not-yet-unlocked alts than stage 1 chose
-    new_alt: Dict[str, float] = {}
-    if scenario.minimize_new_alts:
-        unlocked = set(scenario.unlocked_alt_recipes)
-        new_alt = {k: 1.0 for k in keys if usable[k].alternate and k not in unlocked}
-    new_alt_cap = _lin(new_alt, q_vals) + 1e-6
-
-    # Balanced stage-2 cost (see header comment)
-    m0 = max(sum(q_vals.values()), 1.0)
-    supplied = [it for it, v in scenario.available_resources.items() if v > 0]
-    cost = {k: _REFINE_W_MACHINES / m0 for k in keys}
-    for it in supplied:
-        w = _REFINE_W_RESOURCES / len(supplied) / scenario.available_resources[it]
-        for k, c in net.get(it, {}).items():
-            cost[k] -= c * w           # −net = consumption
-
-    def locked(backend: str, allowed: Set[str]) -> Optional[_RefineModel]:
-        m = _RefineModel(backend, scenario, [k for k in keys if k in allowed], net, q_ub)
-        if m.s is None:
-            return None
-        if goal:
-            m.ct(goal_floor, m.inf, goal)
-        if new_alt:
-            m.ct(-m.inf, new_alt_cap, new_alt)
-        return m
-
-    def min_cost(allowed: Set[str]) -> Optional[Dict[str, float]]:
-        m = locked("GLOP", allowed)
-        obj = m.s.Objective()
-        obj.SetMinimization()
-        for k, v in m.q.items():
-            obj.SetCoefficient(v, cost[k])
-        return m.values() if m.solved() else None
-
-    # ── Stage 2 ──
-    q2 = min_cost(set(keys)) or dict(q_vals)
-    c2 = _lin(cost, q2)
-    cost_cap = c2 + abs(c2) * _REFINE_COST_SLACK + 1e-9
-
-    # ── Stage 3 ──
-    def messiness(ks) -> float:
-        mains = [next(iter(usable[k].outputs), None) for k in ks]
-        return len(ks) + _REFINE_PARALLEL_PEN * (len(mains) - len(set(mains)))
-
-    m = None
-    for backend in ("SCIP", "CBC"):
-        m = locked(backend, set(keys))
-        if m is not None:
-            break
-    if m is not None:
-        m.s.SetTimeLimit(_REFINE_TIME_MS)
-        m.ct(-m.inf, cost_cap, cost)
-        big_m = max(2.0 * sum(q2.values()), 1.0)      # generous machine bound → valid big-M
-        m.ct(-m.inf, big_m, {k: 1.0 for k in keys})
-        y = {k: m.s.BoolVar("") for k in keys}
-        obj = m.s.Objective()
-        obj.SetMinimization()
-        for k in keys:
-            ct = m.s.Constraint(-m.inf, 0.0)          # q_k ≤ big_m · y_k
-            ct.SetCoefficient(m.q[k], 1.0)
-            ct.SetCoefficient(y[k], -big_m)
-            obj.SetCoefficient(y[k], 1.0)
-            # stage-2 cost as a tie-break, worth < one recipe in total
-            obj.SetCoefficient(m.q[k], 0.5 * cost[k] / max(abs(cost_cap), 1e-9))
-        # Extra producers of the same main product (byproducts don't count —
-        # several recipes co-producing Heavy Oil Residue is normal).
-        by_main: Dict[str, List[str]] = {}
-        for k in keys:
-            if usable[k].outputs:
-                by_main.setdefault(next(iter(usable[k].outputs)), []).append(k)
-        for ks in by_main.values():
-            if len(ks) > 1:
-                extra = m.s.NumVar(0, m.inf, "")       # extra ≥ (#producers used) − 1
-                ct = m.s.Constraint(-1.0, m.inf)
-                ct.SetCoefficient(extra, 1.0)
-                for k in ks:
-                    ct.SetCoefficient(y[k], -1.0)
-                obj.SetCoefficient(extra, _REFINE_PARALLEL_PEN)
-
-        if m.solved():
-            chosen = {k for k in keys if y[k].solution_value() > 0.5
-                      and m.q[k].solution_value() >= 1e-5}
-            if messiness(chosen) < messiness({k for k, v in q2.items() if v >= 1e-5}):
-                # Polish: exact stage-2 optimum within the chosen recipes
-                q3 = min_cost(chosen)
-                if q3 is not None and _lin(cost, q3) <= cost_cap + 1e-6:
-                    q2 = q3
-
-    q2 = {k: q2.get(k, 0.0) for k in keys}
-    if goal and _lin(goal, q2) < g0 - max(1e-4, abs(g0) * 1e-5):
-        return None
-    if sum(spm.get(k, 0) * math.ceil(v) for k, v in q2.items() if v >= 1e-5) \
-            > scenario.somersloops_available:
-        return None
-    if scenario.max_machines is not None:
-        def ceil_total(qv):
-            return sum(math.ceil(v) for v in qv.values() if v >= 1e-5)
-        if ceil_total(q2) > max(scenario.max_machines, ceil_total(q_vals)):
-            return None
-    return q2, _lin(goal, q2)
-
-
 # ── Warm-start LP wrapper ─────────────────────────────────────────────────────
 class WarmLP:
     """
-    Wraps a GLOP solver instance and exposes patch_spm() to update output
-    multipliers for a single recipe without rebuilding the entire LP.
-
-    When sloops_per_machine changes for recipe k:
-      new_mult = 1 + new_spm / r.sloop_slots   (or 1.0 if no slots)
-      For every output item of k, the coefficient of q[k] changes in:
-        - each non-resource net constraint   (coeff = new_out - input)
-        - each resource capacity constraint  (coeff = input  - new_out)
-        - the objective expression           (coeff = obj_weight * new_out)
-      All other variables and constraints are untouched.
+    A GLOP model of the continuous LP with sloop multipliers baked in, kept
+    around so the saturation search can move one resource bound at a time and
+    re-solve from the previous basis.
     """
 
     def __init__(self, scenario: Scenario, usable: Dict[str, Recipe],
@@ -788,11 +521,9 @@ class WarmLP:
                     if c:
                         nc[item] = c
             net_coeff[k] = nc
-        self._net_coeff = net_coeff   # kept for patch_spm
 
         # Pass 1: flow constraints (non-resource items): net(item) >= 0.
         # All items — including unavoidable byproducts — are allowed to be surplus.
-        # Gratuitous resource use is removed afterwards by _refine.
         self.flow_ct: Dict[str, object] = {}
         for item in self.items:
             if item in scenario.available_resources:
@@ -869,8 +600,7 @@ class WarmLP:
                 if c:
                     obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + w * c)
 
-        # Min New Alts penalty — same as _build_lp (independent of sloops, so
-        # patch_spm never needs to touch it).
+        # Min New Alts penalty — same as _build_lp.
         if scenario.minimize_new_alts:
             unlocked = set(scenario.unlocked_alt_recipes)
             for i, k in enumerate(rkeys):
@@ -885,63 +615,6 @@ class WarmLP:
         q_vals = {self.rkeys[i]: max(0.0, self.q[i].solution_value())
                   for i in range(len(self.rkeys))}
         return "Optimal", self.slvr.Objective().Value(), q_vals
-
-    def patch_spm(self, k: str, new_spm_val: int) -> None:
-        """
-        Update LP coefficients for recipe k to reflect new_spm_val sloops/machine.
-        Only touches rows/columns affected by k's output change.
-        O(outputs(k)) — independent of LP size.
-        """
-        r    = self.usable[k]
-        i    = self.ridx[k]
-        qi   = self.q[i]
-
-        old_mult = _output_mult(r, self.spm.get(k, 0))
-        new_mult = _output_mult(r, new_spm_val)
-
-        if old_mult == new_mult:
-            return   # no-op if sloop_slots == 0
-
-        obj = self.slvr.Objective()
-
-        for item, base_rate in r.outputs.items():
-            delta = base_rate * (new_mult - old_mult)
-
-            # flow constraint: net(item) >= 0  →  +delta on output term
-            if item in self.flow_ct:
-                ct = self.flow_ct[item]
-                ct.SetCoefficient(qi, ct.GetCoefficient(qi) + delta)
-
-            # resource capacity: cons - prod <= supply  →  -delta on output term
-            if item in self.res_ct:
-                ct = self.res_ct[item]
-                ct.SetCoefficient(qi, ct.GetCoefficient(qi) - delta)
-
-            # must/min/max produce express net(item)  →  +delta
-            for ct_dict in (self.must_ct, self.min_ct, self.max_ct):
-                if item in ct_dict:
-                    ct = ct_dict[item]
-                    ct.SetCoefficient(qi, ct.GetCoefficient(qi) + delta)
-
-            # objective
-            if item in self._obj_weights:
-                w = self._obj_weights[item]
-                obj.SetCoefficient(qi, obj.GetCoefficient(qi) + w * delta)
-
-        # Update tracking state
-        self.spm[k] = new_spm_val
-        self.eff_out[k] = {item: rate * new_mult for item, rate in r.outputs.items()}
-        # Rebuild net_coeff for k so _add_produce_ct and future patches stay accurate
-        nc: Dict[str, float] = {}
-        for item, rate in self.eff_out[k].items():
-            c = rate - r.inputs.get(item, 0.0)
-            if c:
-                nc[item] = c
-        for item, rate in r.inputs.items():
-            if item not in nc and rate:
-                nc[item] = -rate
-        self._net_coeff[k] = nc
-
 
 # ── Saturation binary search ──────────────────────────────────────────────────
 def _sat_search(
@@ -1073,400 +746,427 @@ def _solve_lp_with_duals(
     return "Optimal", slvr.Objective().Value(), q_vals, shadow, saturation
 
 
-# ── Power computation ─────────────────────────────────────────────────────────
-def _total_power(
-    usable: Dict[str,Recipe],
-    q_vals: Dict[str,float],
-    spm: Dict[str,int],
-    clock_fracs: Dict[str,float],   # clock fraction per recipe (1.0 if absent)
-) -> float:
-    """P = sum over active recipes of: base_mw × clock^1.6 × n_machines × sloop_power_mult"""
-    total = 0.0
-    for k, r in usable.items():
-        qv = q_vals.get(k, 0.0)
-        if qv < 1e-5:
-            continue
-        clk = clock_fracs.get(k, 1.0)
-        n   = max(1, math.ceil(qv / clk))
-        total += r.base_power_mw * (clk ** POWER_EXP) * n * _sloop_power_mult(r, spm.get(k, 0))
-    return total
+# ── Exact planner (mixed-integer) ─────────────────────────────────────────────
+# One mixed-integer model of the whole factory, solved in three lexicographic
+# stages. Each stage keeps the previous stages' optimum locked in place:
+#
+#   1. Goal  — maximise the weighted goal items.
+#   2. Lean  — minimise a balanced cost of machines and raw resources.
+#   3. Clean — minimise recipes and duplicate producers of one product, letting
+#              the stage-2 cost rise by at most _COST_SLACK.
+#
+# Columns, per recipe k and (when somersloops are available) per sloop level l:
+#   q[k,l]  machine-equivalents at 100% clock (continuous) — the throughput
+#   n[k,l]  physical machines (integer)
+#   s[k,l]  power shards (integer, ≤ 3 per machine);  q ≤ n + 0.5·s
+#   z[k,l]  recipe k runs at level l (binary; one level per recipe)
+#   y[k]    recipe k is used at all (binary; stage 3 only)
+# Budgets: Σ l·n ≤ somersloops, Σ s ≤ shards, Σ n ≤ max_machines.
+#
+# Stage 2 can't add "1 per machine + 1 per resource unit": resource rates run
+# from single digits to thousands (Water) and would drown out machines. Each
+# term is measured against its own scale instead —
+#   machines  → Σ n / (machine-equivalents in the stage-1 solution)
+#   resources → mean over resources of (net use / supply)
+# — so "a whole factory's worth of machines" and "all of every resource" each
+# count as 1; the weights say how those two compare. Power is not optimised.
+_W_MACHINES    = 1.0
+_W_RESOURCES   = 1.0
+_GOAL_TOL      = 1e-7    # relative slack on the locked goal
+_COST_SLACK    = 0.01    # stage 3 may raise stage 2's cost by ≤1%
+_PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
+_STAGE_TIME_S  = (20, 20, 15)   # per stage; on timeout the best plan so far is kept
+_Q_EPS         = 1e-6    # throughput below this is treated as "not running"
+_MIP_BACKENDS  = ("SCIP", "CBC")
+_USE_HINTS     = True    # warm-start each stage from the previous stage's plan
+_MIP_GAP       = 1e-9    # prove optimality, not "within 0.01%"
+# These models are small but SCIP's defaults restart the root node repeatedly
+# and run long cut loops on them; both settings cut solve time ~3× with
+# identical results.
+_SCIP_PARAMS   = "presolving/maxrestarts = 0\nseparating/maxroundsroot = 5\n"
 
 
-# ── Iterative sloop allocation ────────────────────────────────────────────────
-def _trial_sloop(
-    k: str,
-    get_warm,
-    best_q: Dict[str,float],
-    best_obj: float,
-    budget: int,
-) -> Optional[Tuple[str, float, float, Dict[str,float], int]]:
+@dataclass
+class _Plan:
+    q:      Dict[str, float]   # machine-equivalents at 100% clock
+    n:      Dict[str, int]     # physical machines
+    shards: Dict[str, int]
+    level:  Dict[str, int]     # sloops per machine
+    goal:   float              # weighted goal value (supply constant omitted)
+    proven: bool               # goal and lean stages proven optimal
+    clean_proven: bool = True  # recipe cleanup proven optimal
+
+
+# Column keys: ("q"|"n"|"s", recipe, level). Expressions are {key: coeff} dicts
+# so the same lock can be applied to the integer model and its continuous twin.
+Key = Tuple[str, str, int]
+
+
+class _Model:
     """
-    Worker: evaluate adding one sloop slot to recipe k.
-    Calls get_warm() to obtain this thread's WarmLP (thread-safe: each thread
-    owns its own WarmLP instance, never shared across threads).
-    Patches the single recipe coefficient, solves, then un-patches so the
-    WarmLP can be reused for the next candidate in the same thread.
-    Returns (k, gain, obj_val, q_vals, sloops_used) if viable, else None.
+    The factory model in one OR-Tools solver. integer=True → SCIP (or CBC)
+    with integer machines/shards and one sloop level per recipe; integer=False
+    → GLOP relaxation where a recipe may mix levels, used to derive bounds.
     """
-    warm = get_warm()
-    r   = warm.usable[k]
-    cur = warm.spm.get(k, 0)
-    if cur >= r.sloop_slots:
-        return None
+    BIG = 1e5   # big-M before bounds are known; replaced by tighten()
 
-    # Patch → solve → un-patch (keeps the WarmLP state clean for other workers)
-    warm.patch_spm(k, cur + 1)
-    status, obj_val, q_vals = warm.solve()
-    warm.patch_spm(k, cur)
+    def __init__(self, scenario: Scenario, usable: Dict[str, Recipe], integer: bool):
+        s = None
+        if integer:
+            for backend in _MIP_BACKENDS:
+                s = pywraplp.Solver.CreateSolver(backend)
+                if s is not None:
+                    break
+        self.integer = s is not None
+        if s is None:
+            s = pywraplp.Solver.CreateSolver("GLOP")
+        s.SuppressOutput()
+        self.s, self.inf = s, s.infinity()
+        INF = self.inf
+        ivar = s.IntVar if self.integer else s.NumVar
 
-    if status != "Optimal":
-        return None
+        S, SH = scenario.somersloops_available, scenario.power_shards_available
+        # Without an integer solver, sloop levels can't be chosen per recipe.
+        use_sloops = S > 0 and (self.integer or not integer)
 
-    # Real sloop use of the trial solution — the LP may have grown any
-    # sloop'd recipe (not just k), and every physical machine needs its sloops.
-    trial_spm = dict(warm.spm)
-    trial_spm[k] = cur + 1
-    used = _sloops_used(trial_spm, q_vals)
-    if used > budget:
-        return None
+        self.var: Dict[Key, object] = {}
+        self.levels: Dict[str, List[int]] = {}
+        self.links: Dict[str, List[object]] = {}   # recipe → constraints "n ≤ M·binary"
+        self.y: Dict[str, object] = {}
+        self.net: Dict[str, Dict[Key, float]] = {}
+        for k, r in usable.items():
+            levels = [l for l in range(r.sloop_slots + 1) if l <= S] \
+                     if use_sloops and r.sloop_slots > 0 else [0]
+            self.levels[k] = levels
+            one_level = self.integer and len(levels) > 1
+            if self.integer:
+                self.y[k] = s.BoolVar("")
+            zs, links = [], []
+            for l in levels:
+                q = self.var[("q", k, l)] = s.NumVar(0, INF, "")
+                n = self.var[("n", k, l)] = ivar(0, INF, "")
+                cap = s.Constraint(-INF, 0.0)              # q ≤ n + 0.5·s
+                cap.SetCoefficient(q, 1.0); cap.SetCoefficient(n, -1.0)
+                if SH > 0:
+                    sh = self.var[("s", k, l)] = ivar(0, INF, "")
+                    cap.SetCoefficient(sh, -SHARD_BOOST)
+                    c3 = s.Constraint(-INF, 0.0)           # s ≤ 3·n
+                    c3.SetCoefficient(sh, 1.0); c3.SetCoefficient(n, -3.0)
+                if self.integer:
+                    binaries = [self.y[k]]
+                    if one_level:
+                        z = s.BoolVar(""); zs.append(z); binaries.append(z)
+                    for bv in binaries:                    # n ≤ M·y, n ≤ M·z
+                        c = s.Constraint(-INF, 0.0)
+                        c.SetCoefficient(n, 1.0); c.SetCoefficient(bv, -self.BIG)
+                        links.append((c, bv, "n"))
+                mult = _output_mult(r, l)
+                for it in set(r.inputs) | set(r.outputs):
+                    c = r.outputs.get(it, 0.0) * mult - r.inputs.get(it, 0.0)
+                    if c:
+                        self.net.setdefault(it, {})[("q", k, l)] = c
+            if zs:
+                c = s.Constraint(-INF, 1.0)
+                for z in zs:
+                    c.SetCoefficient(z, 1.0)
+            self.links[k] = links
 
-    if warm.scenario.max_power_mw is not None:
-        pw = _total_power(warm.usable, q_vals, trial_spm, {})
-        if pw > warm.scenario.max_power_mw:
-            return None
-
-    gain = obj_val - best_obj
-    return (k, gain, obj_val, q_vals, used)
-
-
-def _sloops_used(spm: Dict[str,int], q_vals: Dict[str,float]) -> int:
-    return sum(n * math.ceil(q_vals.get(k, 0.0) - 1e-9) for k, n in spm.items() if n)
-
-
-def _iterate_sloops(
-    scenario: Scenario,
-    usable: Dict[str,Recipe],
-    base_q: Dict[str,float],
-    base_obj: float,
-) -> Tuple[Dict[str,int], Dict[str,float], float]:
-    """
-    Greedy iterative sloop assignment.
-
-    spm[k] = sloops per machine (0..max_slots). Starts at 0 for every recipe.
-    Each round: all eligible candidates evaluated in parallel; the winner
-    (highest objective gain within the sloop budget and power cap) is committed.
-
-    Thread model: a single long-lived ThreadPoolExecutor is reused across all
-    rounds to avoid repeated thread-lifecycle overhead. Each thread owns one
-    WarmLP (created lazily via threading.local). The spm sync at the start of
-    _get_warm() keeps thread-local LPs aligned with the committed spm after
-    each round.
-
-    Budget: every accepted state is a real LP solution whose physical sloop
-    use Σ spm[k] × ceil(q[k]) fits within somersloops_available.
-    """
-    if scenario.somersloops_available == 0:
-        return {}, base_q, base_obj
-
-    spm: Dict[str,int]   = {k: 0 for k in usable}
-    best_q   = dict(base_q)
-    budget   = scenario.somersloops_available
-    candidates = [k for k, r in usable.items() if r.sloop_slots > 0]
-
-    # Thread-local WarmLP pool — concurrent patch/solve/un-patch never conflict.
-    _tl = threading.local()
-
-    def _get_warm() -> WarmLP:
-        """Return (or lazily create) this thread's WarmLP, synced to current spm."""
-        warm = getattr(_tl, "warm", None)
-        if warm is None:
-            _tl.warm = WarmLP(scenario, usable, spm)
-        else:
-            for k2, v2 in spm.items():
-                if warm.spm.get(k2, 0) != v2:
-                    warm.patch_spm(k2, v2)
-        return _tl.warm
-
-    # Seed best_obj from a WarmLP solve so all gain comparisons use the same
-    # objective scale (WarmLP omits the supply constant that _solve_lp includes).
-    _seed = WarmLP(scenario, usable, spm)
-    _, best_obj, _ = _seed.solve()
-
-    n_workers = min(len(candidates), 8)
-    with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        while True:
-            used_now = _sloops_used(spm, best_q)
-            eligible = [
-                k for k in candidates
-                if spm[k] < usable[k].sloop_slots
-                and best_q.get(k, 0.0) > 1e-3
-                and used_now + max(1, math.ceil(best_q.get(k, 0.0))) <= budget
-            ]
-            if not eligible:
-                break
-
-            futs = {ex.submit(_trial_sloop, k, _get_warm, best_q, best_obj, budget): k
-                    for k in eligible}
-            results = [fut.result() for fut in as_completed(futs)
-                       if fut.result() is not None]
-            results = [r for r in results if r[1] > 0]
-            if not results:
-                break
-
-            # Winners with disjoint item footprints barely interact, so try
-            # committing all of them at once (fewer rounds). The combined state
-            # is re-solved and kept only if it is at least as good as the top
-            # winner alone and still within budget; otherwise just the top.
-            results.sort(key=lambda r: r[1], reverse=True)
-            top_k, _, top_obj, top_q, _ = results[0]
-            batch, touched = [], set()
-            for cand_k, *_ in results:
-                footprint = set(usable[cand_k].inputs) | set(usable[cand_k].outputs)
-                if not footprint & touched:
-                    batch.append(cand_k)
-                    touched |= footprint
-
-            accepted = False
-            if len(batch) > 1:
-                trial = dict(spm)
-                for k2 in batch:
-                    trial[k2] += 1
-                st, obj_b, q_b = WarmLP(scenario, usable, trial).solve()
-                if (st == "Optimal" and obj_b >= top_obj - 1e-9
-                        and _sloops_used(trial, q_b) <= budget
-                        and (scenario.max_power_mw is None
-                             or _total_power(usable, q_b, trial, {}) <= scenario.max_power_mw)):
-                    spm, best_q, best_obj = trial, q_b, obj_b
-                    accepted = True
-            if not accepted:
-                spm[top_k] += 1
-                best_q, best_obj = top_q, top_obj
-
-    return spm, best_q, best_obj
-
-
-# ── Shard allocation ──────────────────────────────────────────────────────────
-def _best_mixed_layout(
-    r: Recipe,
-    qv: float,
-    spm_val: int,
-    shards_budget: int,
-    max_power_mw: Optional[float],
-) -> Tuple[int, float, int, float]:
-    """
-    Find the minimum-shard layout for throughput qv that keeps total machines
-    at ceil(qv).  Uses a mixed layout: `hi` machines run overclocked at
-    clk_hi, the rest run at 100%.
-
-    For q = 3.11 with no power constraint this yields:
-      1 machine × 111%  (1 shard)  +  2 machines × 100%  (0 shards) → 1 shard total
-    rather than the all-or-nothing Option B:
-      3 machines × 103.7% (3 shards total).
-
-    When no_power_constraint (max_power_mw is None), prefers fewest shards.
-    When power-constrained, falls back to all-or-nothing Option B so the full
-    machine-save is realised (fewer machines = less power).
-
-    Returns (machines_total, clock_pct_of_overclocked, shards_total, power_mw).
-    The caller interprets clock_pct as the speed of the `hi` machines; the
-    remaining machines run at 100%.  When hi == 0 the layout is pure 100%.
-    """
-    sloop_pw = _sloop_power_mult(r, spm_val)
-    ceil_n   = math.ceil(qv)
-    floor_n  = max(1, math.floor(qv))
-
-    # Baseline: all ceil_n machines at fractional clock (no shards needed)
-    clk_a  = qv / ceil_n
-    pw_a   = r.base_power_mw * (clk_a ** POWER_EXP) * ceil_n * sloop_pw
-
-    # No fractional part → nothing to do
-    if floor_n == ceil_n:
-        return ceil_n, clk_a * 100.0, 0, pw_a
-
-    frac = qv - floor_n  # machines worth of extra throughput needed (0 < frac < 1)
-
-    # --- Power-unconstrained path: mixed layout (minimum shards) ---
-    # We keep ceil_n machines total.  One subset of `hi` machines runs at clk_hi
-    # so that  hi * clk_hi + (ceil_n - hi) * 1.0 == qv
-    #   →  hi = frac / (clk_hi - 1)
-    # We scan hi = 1, 2, … floor_n to find the smallest hi whose clk_hi is
-    # reachable (≤ MAX_CLOCK) and whose shard cost fits the budget.
-    if max_power_mw is None:
-        best: Optional[Tuple[int, float, int, float]] = None
-        for hi in range(1, floor_n + 1):
-            # Mixed layout: hi machines at clk_hi + (ceil_n - hi) machines at 100%
-            # must together deliver exactly qv throughput.
-            # hi * clk_hi + (ceil_n - hi) * 1.0 = qv
-            # => clk_hi = (qv - (ceil_n - hi)) / hi
-            clk_hi = (qv - (ceil_n - hi)) / hi
-            if clk_hi <= 1.0 + 1e-9:
-                continue   # not actually overclocked — no shard benefit
-            if clk_hi > MAX_CLOCK:
-                continue
-            shards_pm  = min(3, max(0, math.ceil((clk_hi - 1.0) / SHARD_BOOST)))
-            shards_tot = shards_pm * hi
-            if shards_tot > shards_budget:
-                continue
-            # Power: hi machines at clk_hi + (ceil_n - hi) at 1.0
-            pw = (r.base_power_mw * sloop_pw * (
-                hi * (clk_hi ** POWER_EXP) + (ceil_n - hi) * 1.0
-            ))
-            if best is None or shards_tot < best[2]:
-                best = (ceil_n, clk_hi * 100.0, shards_tot, pw)
-            if shards_tot == 0:
-                break  # can't do better
-
-        if best is not None:
-            return best
-
-    # --- Power-constrained path (or mixed layout failed): all-or-nothing Option B ---
-    # Reduce total machines to floor_n so power drops; accept higher shard cost.
-    clk_b      = qv / floor_n
-    if clk_b <= MAX_CLOCK:
-        shards_pm  = min(3, max(0, math.ceil((clk_b - 1.0) / SHARD_BOOST)))
-        shards_tot = shards_pm * floor_n
-        pw_b = r.base_power_mw * (clk_b ** POWER_EXP) * floor_n * sloop_pw
-        if shards_tot <= shards_budget and (max_power_mw is None or pw_b <= max_power_mw):
-            return floor_n, clk_b * 100.0, shards_tot, pw_b
-
-    # Fall back to no-shard baseline
-    return ceil_n, clk_a * 100.0, 0, pw_a
-
-
-def _allocate_shards(
-    usable: Dict[str,Recipe],
-    q_vals: Dict[str,float],
-    spm: Dict[str,int],
-    shards_available: int,
-    max_power_mw: Optional[float],
-) -> Dict[str, dict]:
-    """
-    Greedy shard allocation using mixed layouts.
-
-    For each recipe, the best layout is the one that uses the fewest shards
-    while keeping machines at ceil(q) when there is no power cap.  Under a
-    power cap the all-or-nothing floor(q) layout is preferred because fewer
-    machines = less power.
-
-    Recipes are sorted by shard cost of their best layout ascending so the
-    budget is spent on the cheapest machine-equivalent savings first.
-
-    Returns {key: {machines, clock_pct, shards, power_mw, hi_machines}}.
-    `hi_machines` is the count of machines running at clock_pct; the rest run
-    at 100%.  When hi_machines == machines all run at clock_pct (uniform).
-    """
-    result: Dict[str, dict] = {}
-    shards_left = shards_available
-
-    def _best_cost(k: str) -> int:
-        """Shard cost of the best mixed layout for sorting."""
-        qv = q_vals[k]
-        if math.ceil(qv) == max(1, math.floor(qv)):
-            return 0
-        _, _, cost, _ = _best_mixed_layout(
-            usable[k], qv, spm.get(k, 0), shards_left, max_power_mw
-        )
-        return cost
-
-    sorted_keys = sorted(
-        (k for k in usable if q_vals.get(k, 0.0) >= 1e-5),
-        key=_best_cost,
-    )
-
-    for k in sorted_keys:
-        r  = usable[k]
-        qv = q_vals[k]
-        sloop_pw = _sloop_power_mult(r, spm.get(k, 0))
-
-        ceil_n  = math.ceil(qv)
-        floor_n = max(1, math.floor(qv))
-
-        # Baseline Option A (no shards)
-        clk_a = qv / ceil_n
-        pw_a  = r.base_power_mw * (clk_a ** POWER_EXP) * ceil_n * sloop_pw
-        chosen = {"machines": ceil_n, "clock_pct": clk_a * 100,
-                  "shards": 0, "power_mw": pw_a, "hi_machines": 0}
-
-        if floor_n < ceil_n and shards_left > 0:
-            n, clk_pct, shards_tot, pw = _best_mixed_layout(
-                r, qv, spm.get(k, 0), shards_left, max_power_mw
-            )
-            if shards_tot > 0 and shards_tot <= shards_left:
-                # hi_machines: solve hi*clk_hi + (n - hi)*1.0 = qv for hi
-                # => hi = (qv - n) / (clk_hi - 1)
-                clk_hi = clk_pct / 100.0
-                if clk_hi > 1.0 + 1e-9:
-                    hi = round((qv - n + n - floor_n) / (clk_hi - 1.0))
-                    hi = max(1, min(hi, n))
-                else:
-                    hi = n
-                chosen = {"machines": n, "clock_pct": clk_pct,
-                          "shards": shards_tot, "power_mw": pw,
-                          "hi_machines": hi}
-
-        result[k] = chosen
-        shards_left = max(0, shards_left - chosen["shards"])
-
-    return result
-
-
-# ── Layout options ────────────────────────────────────────────────────────────
-def _layout_options(r: Recipe, qv: float, s: int) -> List[LayoutOption]:
-    """
-    Return the 1–3 practical clock layouts for this recipe at throughput qv.
-
-    Option A  — ceil machines, all underclocked (no shards).
-    Option B  — mixed layout: minimum shards, ceil machines total (power-unconstrained).
-    Option C  — all-or-nothing: floor machines, all overclocked (fewer machines,
-                more shards, less power).  Shown only when it differs from Option B.
-    """
-    sloop_pw = _sloop_power_mult(r, s)
-    ceil_n   = math.ceil(qv)
-    floor_n  = max(1, math.floor(qv))
-
-    clk_a = qv / ceil_n
-    pw_a  = r.base_power_mw * (clk_a ** POWER_EXP) * ceil_n * sloop_pw
-    opts  = [LayoutOption(ceil_n, round(clk_a * 100, 1), 0, round(pw_a, 2),
-                          f"{ceil_n} × {clk_a*100:.1f}%")]
-
-    if floor_n < ceil_n:
-        # Option B: mixed layout (minimum shards, ceil_n machines)
-        # hi machines at clk_hi + (ceil_n - hi) at 100% = qv total throughput
-        # => clk_hi = (qv - (ceil_n - hi)) / hi
-        for hi in range(1, floor_n + 1):
-            clk_hi = (qv - (ceil_n - hi)) / hi
-            if clk_hi <= 1.0 + 1e-9:
-                continue   # not overclocked — skip
-            if clk_hi > MAX_CLOCK:
-                continue
-            shards_pm  = min(3, max(0, math.ceil((clk_hi - 1.0) / SHARD_BOOST)))
-            shards_tot = shards_pm * hi
-            pw_b = r.base_power_mw * sloop_pw * (
-                hi * (clk_hi ** POWER_EXP) + (ceil_n - hi) * 1.0
-            )
-            rest = ceil_n - hi
-            if rest > 0:
-                label = (f"{hi} × {clk_hi*100:.1f}%  ({shards_pm} shard/machine)"
-                         f" + {rest} × 100%")
+        res = scenario.available_resources
+        for it, sp in self.net.items():
+            if it in res:
+                self.ct(-INF, res[it], {v: -c for v, c in sp.items()})
             else:
-                label = f"{hi} × {clk_hi*100:.1f}%  ({shards_pm} shard/machine)"
-            opts.append(LayoutOption(ceil_n, round(clk_hi * 100, 1),
-                                     shards_tot, round(pw_b, 2), label))
-            break  # take smallest-hi (fewest shards)
+                self.ct(0.0, INF, sp)
+        for it, qty in scenario.must_produce.items():
+            if it in self.net:
+                self.ct(qty - res.get(it, 0.0), qty - res.get(it, 0.0), self.net[it])
+        for it, qty in scenario.min_produce.items():
+            if it in self.net:
+                self.ct(qty - res.get(it, 0.0), INF, self.net[it])
+        for it, qty in scenario.max_produce.items():
+            if it in self.net:
+                self.ct(-INF, qty - res.get(it, 0.0), self.net[it])
 
-        # Option C: all-or-nothing floor_n machines (only if different from Option B)
-        clk_c = qv / floor_n
-        if clk_c <= MAX_CLOCK:
-            shards_pm_c = min(3, max(0, math.ceil((clk_c - 1.0) / SHARD_BOOST)))
-            pw_c = r.base_power_mw * (clk_c ** POWER_EXP) * floor_n * sloop_pw
-            shards_c = shards_pm_c * floor_n
-            # Only add if it actually differs from Option B already appended
-            if not any(abs(o.shards_needed - shards_c) < 1e-9
-                       and o.machines == floor_n for o in opts):
-                opts.append(LayoutOption(
-                    floor_n, round(clk_c * 100, 1), shards_c, round(pw_c, 2),
-                    f"{floor_n} × {clk_c*100:.1f}%  ({shards_pm_c} shard/machine) — fewer machines",
-                ))
+        self.machines = {key: 1.0 for key in self.var if key[0] == "n"}
+        if use_sloops:
+            self.ct(-INF, float(S), {key: float(key[2]) for key in self.machines if key[2]})
+        if SH > 0:
+            self.ct(-INF, float(SH), {key: 1.0 for key in self.var if key[0] == "s"})
+        if scenario.max_machines is not None:
+            self.ct(-INF, float(scenario.max_machines), self.machines)
+
+        self.goal: Dict[Key, float] = {}
+        for it, w in scenario.objective.items():
+            for key, c in self.net.get(it, {}).items():
+                self.goal[key] = self.goal.get(key, 0.0) + w * c
+        self.new_alt: Dict[Key, float] = {}
+        if scenario.minimize_new_alts:
+            unlocked = set(scenario.unlocked_alt_recipes)
+            self.new_alt = {key: 1.0 for key in self.var if key[0] == "q"
+                            and usable[key[1]].alternate and key[1] not in unlocked}
+        self._hint: Optional[Tuple[list, list]] = None
+
+    # ── helpers ──
+    def ct(self, lo: float, hi: float, coeffs: Dict[Key, float]):
+        c = self.s.Constraint(lo, hi)
+        for key, a in coeffs.items():
+            v = self.var.get(key)
+            if v is not None and a:
+                c.SetCoefficient(v, a)
+        return c
+
+    def value(self, coeffs: Dict[Key, float]) -> float:
+        return sum(a * self.var[key].solution_value()
+                   for key, a in coeffs.items() if key in self.var)
+
+    def bound_recipe(self, k: str, ub: Optional[float]) -> None:
+        """Tighten recipe k's columns to at most ub machine-equivalents."""
+        if ub is None:
+            return
+        m_n = max(0, math.ceil(ub - 1e-9))
+        for l in self.levels[k]:
+            self.var[("q", k, l)].SetUb(max(ub, 0.0))
+            self.var[("n", k, l)].SetUb(m_n)
+            if ("s", k, l) in self.var:
+                self.var[("s", k, l)].SetUb(3 * m_n)
+        for c, bv, kind in self.links.get(k, []):
+            c.SetCoefficient(bv, -float(m_n) if kind == "n" else -max(ub, 0.0))
+
+    def run(self, coeffs: Dict[Key, float], maximize: bool, time_s: float) -> Optional[bool]:
+        """Solve with this objective. None = failed, else True if proven optimal."""
+        obj = self.s.Objective()
+        obj.Clear()
+        for key, a in coeffs.items():
+            v = self.var.get(key)
+            if v is not None:
+                obj.SetCoefficient(v, obj.GetCoefficient(v) + a)
+        obj.SetMaximization() if maximize else obj.SetMinimization()
+        self.s.SetTimeLimit(int(time_s * 1000))
+        if self.integer:
+            if self._hint and _USE_HINTS:
+                self.s.SetHint(*self._hint)
+            if _SCIP_PARAMS and self.s.SolverVersion().startswith("SCIP"):
+                self.s.SetSolverSpecificParametersAsString(_SCIP_PARAMS)
+            p = pywraplp.MPSolverParameters()
+            p.SetDoubleParam(p.RELATIVE_MIP_GAP, _MIP_GAP)
+            st = self.s.Solve(p)
+        else:
+            st = self.s.Solve()
+        if st not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+            return None
+        if self.integer:   # warm start for the next stage (read before any new constraint)
+            vs = [v for v in self.s.variables()]
+            self._hint = (vs, [v.solution_value() for v in vs])
+        return st == pywraplp.Solver.OPTIMAL
+
+    def snapshot(self, proven: bool) -> _Plan:
+        q, n, sh, lvl = {}, {}, {}, {}
+        for (kind, k, l), v in self.var.items():
+            if kind != "q":
+                continue
+            x = v.solution_value()
+            if x < _Q_EPS or x <= q.get(k, 0.0):
+                continue
+            q[k], lvl[k] = x, l
+            n[k] = max(1, int(round(self.var[("n", k, l)].solution_value()))) \
+                   if self.integer else math.ceil(x - 1e-9)
+            # Fewest shards that let n machines deliver q (+50% each, ≤3/machine)
+            need = math.ceil(2.0 * (x - n[k]) - 1e-6) if x > n[k] + 1e-9 else 0
+            sh[k] = min(max(0, need), 3 * n[k])
+        return _Plan(q, n, sh, lvl, self.value(self.goal), proven)
+
+
+def _plan(scenario: Scenario, usable: Dict[str, Recipe],
+          warnings: List[str]) -> Optional[_Plan]:
+    """Run the three stages. Returns None when the scenario is infeasible."""
+    mip = _Model(scenario, usable, integer=True)
+    lp  = _Model(scenario, usable, integer=False)    # relaxation: bounds + LP-only stages
+    if not mip.integer:
+        warnings.append("No integer solver available — machine counts are rounded, "
+                        "somersloops and shards are not optimised.")
+
+    def lock(lo: float, hi: float, expr_of) -> None:
+        mip.ct(lo, hi, expr_of(mip))
+        lp.ct(lo, hi, expr_of(lp))
+
+    def tighten() -> None:
+        """Per-recipe max throughput under the current locks → tight big-Ms.
+        Recipes that can't run at all under the locks are switched off."""
+        for k, levels in lp.levels.items():
+            cols = {("q", k, l): 1.0 for l in levels}
+            if lp.run(cols, True, 5) is not None:
+                mip.bound_recipe(k, lp.value(cols) * (1 + 1e-7) + 1e-6)
+
+    tighten()
+    proven = True
+    best: Optional[_Plan] = None
+
+    # ── Stage 1: goal ──
+    if mip.goal or mip.new_alt:
+        def stage1(m):
+            obj = dict(m.goal)
+            for key, a in m.new_alt.items():
+                obj[key] = obj.get(key, 0.0) - _NEW_ALT_PEN * a
+            return obj
+        # Integers only matter for the goal when sloops or a machine cap are in play
+        integer_goal = mip.integer and (scenario.somersloops_available > 0
+                                        or scenario.max_machines is not None)
+        m1 = mip if integer_goal or not mip.integer else lp
+        ok = m1.run(stage1(m1), True, _STAGE_TIME_S[0])
+        if ok is None:
+            return None
+        proven &= ok
+        g, a = m1.value(m1.goal), m1.value(m1.new_alt)
+        if m1 is mip:
+            best = mip.snapshot(proven)
+        m0 = max(sum(v.solution_value() for key, v in m1.var.items() if key[0] == "q"), 1.0)
+        if mip.goal:
+            lock(g - max(1e-6, abs(g) * _GOAL_TOL), mip.inf, lambda m: m.goal)
+        if mip.new_alt:
+            lock(-mip.inf, a + 1e-6, lambda m: m.new_alt)
+        tighten()
+    else:
+        # No goal to scale from: size the factory by its fewest machine-equivalents
+        qs = {key: 1.0 for key in lp.var if key[0] == "q"}
+        if lp.run(qs, False, _STAGE_TIME_S[0]) is None:
+            return None
+        m0 = max(lp.value(qs), 1.0)
+
+    # ── Stage 2: lean ──
+    supplied = [it for it, v in scenario.available_resources.items() if v > 0]
+    def cost_of(m) -> Dict[Key, float]:
+        cost = {key: _W_MACHINES / m0 for key in m.machines}
+        for it in supplied:
+            w = _W_RESOURCES / len(supplied) / scenario.available_resources[it]
+            for key, c in m.net.get(it, {}).items():
+                cost[key] = cost.get(key, 0.0) - c * w     # −net = consumption
+        return cost
+    cost = cost_of(mip)
+    ok = mip.run(cost, False, _STAGE_TIME_S[1])
+    if ok is None:
+        return best
+    proven &= ok
+    best = mip.snapshot(proven)
+    c2 = mip.value(cost)
+    lock(-mip.inf, c2 + abs(c2) * _COST_SLACK + 1e-9, cost_of)
+    if not mip.integer:
+        return best
+    tighten()
+
+    # ── Stage 3: clean ──
+    # 3a: fewest recipes + duplicate producers (a half-integer score, quick to
+    # prove); 3b: with that locked, the lowest stage-2 cost among such plans.
+    obj: Dict[Key, float] = {}
+    for k, yv in mip.y.items():
+        obj[("y", k, 0)] = 1.0
+        mip.var[("y", k, 0)] = yv
+    by_main: Dict[str, List[str]] = {}
+    for k, r in usable.items():
+        if r.outputs:
+            by_main.setdefault(next(iter(r.outputs)), []).append(k)
+    for i, ks in enumerate(by_main.values()):
+        if len(ks) > 1:
+            extra = mip.var[("x", f"dup{i}", 0)] = mip.s.NumVar(0, mip.inf, "")
+            c = mip.s.Constraint(-1.0, mip.inf)    # extra ≥ (#producers used) − 1
+            c.SetCoefficient(extra, 1.0)
+            for k in ks:
+                c.SetCoefficient(mip.y[k], -1.0)
+            obj[("x", f"dup{i}", 0)] = _PARALLEL_PEN
+    ok = mip.run(obj, False, _STAGE_TIME_S[2])
+    if ok is None:
+        return best
+    best = mip.snapshot(proven)
+    best.clean_proven = ok
+    mip.ct(-mip.inf, mip.value(obj) + 1e-6, obj)
+    ok_b = mip.run(cost, False, _STAGE_TIME_S[2])
+    if ok_b is not None:
+        best = mip.snapshot(proven)
+        best.clean_proven = ok and ok_b
+    return best
+
+
+# ── Machine layouts ───────────────────────────────────────────────────────────
+def _layout_groups(q: float, n: int, shards: int) -> List[Tuple[int, float, int]]:
+    """
+    Physical layout for n machines delivering q machine-equivalents with the
+    given shards: [(count, clock_fraction, shards_each)], at most three groups —
+    fully-sharded machines at 250%, one partly-sharded machine, and the rest.
+    Machines without shards run at 100% unless no shards are used at all, in
+    which case all n share the load evenly.
+    """
+    if n <= 0:
+        return []
+    if shards <= 0:
+        return [(n, q / n, 0)]
+    full, part = divmod(shards, 3)
+    groups = []
+    if full:
+        groups.append([full, MAX_CLOCK, 3])
+    if part:
+        groups.append([1, 1.0 + SHARD_BOOST * part, part])
+    rest = n - full - (1 if part else 0)
+    if rest:
+        groups.append([rest, 1.0, 0])
+    # Shed the spare capacity (< 0.5 machine when shards are minimal) from one
+    # overclocked machine, splitting it off into its own group if needed.
+    excess = sum(c * clk for c, clk, _ in groups) - q
+    if excess > 1e-9:
+        i = (1 if full else 0) if part else 0      # the partly-sharded machine, else a full one
+        if groups[i][0] > 1:
+            groups[i][0] -= 1
+            groups.insert(i + 1, [1, groups[i][1], groups[i][2]])
+            i += 1
+        groups[i][1] = max(groups[i][1] - excess, 0.01)
+        # anything still left (only when shards weren't minimal) comes off the rest
+        left = sum(c * clk for c, clk, _ in groups) - q
+        if left > 1e-9 and rest:
+            groups[-1][1] = max(1.0 - left / rest, 0.01)
+    return [(c, clk, s) for c, clk, s in groups if c > 0]
+
+
+def _layout_label(groups: List[Tuple[int, float, int]]) -> str:
+    parts = []
+    for c, clk, s in groups:
+        t = f"{c} × {clk * 100:.1f}%"
+        if s:
+            t += f" ({s} shard{'s' if s > 1 else ''})"
+        parts.append(t)
+    return " + ".join(parts)
+
+
+def _layout_power(r: Recipe, level: int, groups: List[Tuple[int, float, int]]) -> float:
+    return r.base_power_mw * _sloop_power_mult(r, level) * \
+        sum(c * clk ** POWER_EXP for c, clk, _ in groups)
+
+
+def _min_shards(q: float, n: int) -> Optional[int]:
+    """Fewest shards letting n machines deliver q, or None if impossible."""
+    if q > n * MAX_CLOCK + 1e-9:
+        return None
+    return max(0, math.ceil(2.0 * (q - n) - 1e-6)) if q > n + 1e-9 else 0
+
+
+def _layout_options(r: Recipe, qv: float, level: int, chosen_n: int) -> List[LayoutOption]:
+    """
+    Integer layouts for this recipe: every machine count from ceil(q) (no
+    shards) down to the fewest machines 250% clocks allow, with the fewest
+    shards each needs. Always includes the chosen layout.
+    """
+    hi = math.ceil(qv - 1e-9)
+    lo = max(1, math.ceil(qv / MAX_CLOCK - 1e-9))
+    counts = list(range(hi, lo - 1, -1))
+    if len(counts) > 4:
+        counts = counts[:3] + [lo]
+    if chosen_n not in counts:
+        counts.append(chosen_n)
+    opts = []
+    for n in sorted(set(counts), reverse=True):
+        sh = _min_shards(qv, n)
+        if sh is None:
+            continue
+        g = _layout_groups(qv, n, sh)
+        opts.append(LayoutOption(n, round(max(c[1] for c in g) * 100, 1), sh,
+                                 round(_layout_power(r, level, g), 2), _layout_label(g)))
     return opts
 
 
@@ -1486,74 +1186,28 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         return SolveResult("No recipes", 0, [], {}, {}, {}, {}, {}, {}, {},
                            0, 0, 0, 0, warnings, conflict_hints, 0, {})
 
-    # Stage 1: base LP (no sloops); duals computed lazily via compute_duals()
-    #
-    # max_machines fix: the LP constraint bounds the *fractional* sum of q values,
-    # but the final machine count uses ceil(q) per recipe.  A solution with
-    # sum(q) <= max_machines can still produce sum(ceil(q)) > max_machines after
-    # rounding.  We tighten the effective LP bound iteratively until the ceiled
-    # total fits within the cap.
-    #
-    # If the cap is set below the true minimum, tightening makes the LP infeasible
-    # before the ceiled total ever fits.  In that case we fall back to
-    # _solve_lp_min_machines, which minimises sum(q) directly — giving the
-    # factory layout with the fewest possible machines regardless of the cap.
-    if usable:
-        lp_machine_bound = scenario.max_machines  # None means unconstrained
-        fell_back = False
-        for _mm_attempt in range(10):             # at most 10 tightening steps
-            sc_lp = (_dc_replace(scenario, max_machines=lp_machine_bound)
-                     if lp_machine_bound is not None else scenario)
-            status, base_obj, base_q = _solve_lp(sc_lp, usable, {})
-            if scenario.max_machines is None:
-                break                             # no cap — single solve, done
-            if status != "Optimal":
-                # LP became infeasible: cap is below the true minimum.
-                # Find the minimum-machine solution instead.
-                status, base_obj, base_q = _solve_lp_min_machines(scenario, usable, {})
-                fell_back = True
-                break
-            ceiled_total = sum(math.ceil(v) for v in base_q.values() if v >= 1e-5)
-            if ceiled_total <= scenario.max_machines:
-                break
-            # Tighten: reduce bound by the overshoot so the next LP leaves
-            # enough headroom for ceiling rounding.
-            overshoot = ceiled_total - scenario.max_machines
-            lp_machine_bound -= overshoot
-            if lp_machine_bound < 1:
-                # Bound hit zero — cap is definitely below the true minimum.
-                status, base_obj, base_q = _solve_lp_min_machines(scenario, usable, {})
-                fell_back = True
-                break
-        if fell_back and scenario.max_machines is not None:
-            actual = sum(math.ceil(v) for v in base_q.values() if v >= 1e-5)
-            warnings.append(
-                f"max_machines cap ({scenario.max_machines}) is below the "
-                f"minimum required ({actual}); showing minimum machine layout."
-            )
-    else:
-        status, base_obj, base_q = "Infeasible", 0.0, {}
-
-    shadow_prices:     Dict[str,float]  = {}
+    shadow_prices:     Dict[str,float]  = {}   # computed lazily via compute_duals()
     saturation_points: Dict[str,object] = {}
 
-    # Stage 2: iterative sloop assignment (re-solves LP each step, same pruned set)
-    if status == "Optimal" and scenario.somersloops_available > 0:
-        spm, q_vals, obj_val = _iterate_sloops(scenario, usable, base_q, base_obj)
-    else:
-        spm, q_vals, obj_val = {}, base_q, base_obj
-
-    # Stages 2–3: among equally-good solutions, the leanest and simplest one
-    if status == "Optimal":
-        refined = _refine(scenario, usable, spm, q_vals)
-        if refined is not None:
-            q_vals, obj_val = refined
-
-    # Stage 3: shard allocation
-    shard_alloc = _allocate_shards(
-        usable, q_vals, spm,
-        scenario.power_shards_available, scenario.max_power_mw,
-    )
+    plan = _plan(scenario, usable, warnings) if usable else None
+    if plan is None and usable and scenario.max_machines is not None:
+        # The cap is below what the constraints need: show the fewest-machine
+        # factory that meets them instead.
+        plan = _plan(_dc_replace(scenario, max_machines=None, objective={},
+                                 minimize_new_alts=False), usable, warnings)
+        if plan is not None:
+            warnings.append(
+                f"max_machines cap ({scenario.max_machines}) is below the "
+                f"minimum required ({sum(plan.n.values())}); showing minimum machine layout."
+            )
+    status  = "Optimal" if plan is not None else "Infeasible"
+    obj_val = plan.goal if plan is not None else 0.0
+    if plan is not None and not plan.proven:
+        warnings.append("Solver time limit reached — this is the best plan found, "
+                        "but it is not proven optimal.")
+    elif plan is not None and not plan.clean_proven:
+        warnings.append("Recipe cleanup hit its time limit — output and machine counts "
+                        "are optimal, but a plan with fewer recipes may exist.")
 
     # Build flows — single pass over active recipes
     meta = machine_meta if machine_meta is not None else load_machine_meta()
@@ -1564,58 +1218,39 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     total_sloops       = 0
 
     for k, r in usable.items():
-        qv = q_vals.get(k, 0.0)
-        if qv < 1e-5:
+        qv = plan.q.get(k, 0.0) if plan is not None else 0.0
+        if qv < _Q_EPS:
             continue
-
-        sa             = shard_alloc.get(k, {})
-        machines_final = sa.get("machines", math.ceil(qv))
-        clock_pct      = sa.get("clock_pct", 100.0)
-        shards_this    = sa.get("shards", 0)
-
-        spm_k        = spm.get(k, 0)
-        sloops_total = spm_k * machines_final
-
-        mult      = _output_mult(r, spm_k)
-        clk       = clock_pct / 100.0
-        sloop_pw  = _sloop_power_mult(r, spm_k)
-        hi_n      = sa.get("hi_machines", 0)
-        # Mixed layout: hi_n machines at clk, (machines_final - hi_n) at 100%.
-        # When hi_n == 0 (no shards / uniform layout) all machines run at clk.
-        if hi_n > 0 and hi_n < machines_final:
-            lo_n = machines_final - hi_n
-            pw = r.base_power_mw * sloop_pw * (
-                hi_n * (clk ** POWER_EXP) + lo_n * 1.0
-            )
-        else:
-            pw = r.base_power_mw * (clk ** POWER_EXP) * machines_final * sloop_pw
+        n_k, sh_k, lvl = plan.n[k], plan.shards[k], plan.level[k]
+        groups = _layout_groups(qv, n_k, sh_k)
+        pw     = _layout_power(r, lvl, groups)
+        mult   = _output_mult(r, lvl)
 
         total_power        += pw
-        total_machines_int += machines_final
-        total_shards       += shards_this
-        total_sloops       += sloops_total
-
-        # qv counts machine-equivalents; the LP's output coefficients are
-        # rate × mult (eff_out), so physical output must include the sloop boost.
-        eff_rate = qv * mult
+        total_machines_int += n_k
+        total_shards       += sh_k
+        total_sloops       += lvl * n_k
 
         flows.append(FlowResult(
             recipe_key=k, display=r.display, machine=r.machine,
             machines_float=round(qv, 4),
-            machines_final=machines_final,
-            clock_pct=round(clock_pct, 1),
-            shards_used=shards_this,
-            sloops_per_machine=spm_k,
-            sloops_used=sloops_total,
+            machines_final=n_k,
+            clock_pct=round(max(g[1] for g in groups) * 100, 1),
+            shards_used=sh_k,
+            sloops_per_machine=lvl,
+            sloops_used=lvl * n_k,
             sloop_slots=r.sloop_slots,
             output_multiplier=round(mult, 4),
             power_mw=round(pw, 2),
             inputs={item: round(r.inputs[item] * qv, 4) for item in r.inputs},
-            outputs={item: round(r.outputs[item] * eff_rate, 4) for item in r.outputs},
-            layout_options=_layout_options(r, qv, spm_k),
-            has_shard=shards_this > 0,
-            has_sloop=spm_k > 0,
-            hi_machines=hi_n,
+            # qv counts machine-equivalents; outputs include the sloop boost
+            outputs={item: round(r.outputs[item] * qv * mult, 4) for item in r.outputs},
+            layout_options=_layout_options(r, qv, lvl, n_k),
+            has_shard=sh_k > 0,
+            has_sloop=lvl > 0,
+            hi_machines=sum(c for c, _, s in groups if s),
+            layout=[{"count": c, "clock_pct": round(clk * 100, 4), "shards": s}
+                    for c, clk, s in groups],
         ))
 
     # Cap overshoot warnings
@@ -1802,6 +1437,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
             "has_shard":          f.has_shard,
             "has_sloop":          f.has_sloop,
             "hi_machines":        f.hi_machines,
+            "layout":             f.layout,
         } for f in result.flows],
     }
 

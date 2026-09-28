@@ -9,14 +9,14 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 ## Features
 
 ### Factory Optimization
-- OR-Tools linear programming solver
+- Exact mixed-integer solver (OR-Tools + SCIP), proven optimal
 - Weighted multi-item objectives
 - Resource constraints
 - Production minimums, maximums, and exact requirements
-- Machine count limits
-- Power consumption limits
-- Power Shard support
-- Somersloop support
+- Fewest machines and resources by default, then fewest recipes
+- Machine count limits (whole machines, enforced exactly)
+- Power Shard placement optimised across the whole factory
+- Somersloop placement optimised across the whole factory
 
 ### Recipe Management
 - Enable/disable alternate recipes

@@ -1291,15 +1291,16 @@ function drawNode(n) {
   C.fillText(measureTrunc(cleanName, w - 22), x + 10, cy + 7);
   cy += 16;
 
-  // Machine count — show mixed layout split when some machines overclock and rest run at 100%
+  // Machine count — layouts can mix groups, e.g. "2×250% + 1×133.3% + 3×100%"
+  const layout  = f.layout || [];
+  const isMixed = layout.length > 1;
+  const pct = v => `${Number(v).toFixed(1).replace(/\.0$/, '')}%`;
   C.font = '10px JetBrains Mono,monospace'; C.fillStyle = '#616880';
   {
-    const hi_n = f.hi_machines ?? 0;
-    const lo_n = f.machines_final - hi_n;
     const machineLabel = f.isGroup
       ? `${f.memberCount} recipes  ·  ${f.machines_final} machines`
-      : (hi_n > 0 && lo_n > 0)
-      ? `${hi_n}×${(f.clock_pct ?? 100).toFixed(0)}% + ${lo_n}×100%  (${f.machines_float.toFixed(2)} LP)`
+      : isMixed
+      ? `${layout.map(g => `${g.count}×${pct(g.clock_pct)}`).join(' + ')}  (${f.machines_float.toFixed(2)} LP)`
       : `${f.machines_final} machine${f.machines_final !== 1 ? 's' : ''}  (${f.machines_float.toFixed(2)} LP)`;
     C.fillText(measureTrunc(machineLabel, w - 22), x + 10, cy + 7);
   }
@@ -1310,20 +1311,19 @@ function drawNode(n) {
   C.strokeStyle = '#272d3d'; C.lineWidth = 0.5;
   C.beginPath(); C.moveTo(x, cy); C.lineTo(x + w, cy); C.stroke();
 
-  // For mixed layouts: clock shown as "Hi%/100%" and shard count is just the hi-machine count
+  // Mixed layouts show every group's clock ("250/133/100%") and the total shard count
   const clk    = f.clock_pct ?? 100;
-  const hi_n   = f.hi_machines ?? 0;
-  const isMixed = hi_n > 0 && hi_n < f.machines_final;
   // Clock colour: orange if any machine is overclocked, blue if all underclocked, grey if 100%
   const clkCol = clk > 100.1 ? '#fb923c' : clk < 99.9 ? '#38bdf8' : '#616880';
-  const clkLabel = isMixed ? `⏱${clk.toFixed(0)}%/${(100).toFixed(0)}%` : `⏱${clk.toFixed(1)}%`;
+  const clkLabel = isMixed
+    ? `⏱${layout.map(g => Number(g.clock_pct).toFixed(0)).join('/')}%`
+    : `⏱${clk.toFixed(1)}%`;
   C.font = '10px JetBrains Mono,monospace'; C.textBaseline = 'middle';
   let sx = x + 7;
   const stat = (t, fill) => { C.fillStyle = fill; C.fillText(t, sx, cy + STATS_H / 2); sx += C.measureText(t).width + 7; };
   if (!f.isGroup) stat(clkLabel, clkCol);
   stat(`⚡${f.power_mw.toFixed(0)}MW`, '#fb923c');
   if (f.has_shard) {
-    // For mixed layouts, shards_used is the count on hi_machines only; show "N shard" total
     const shardLabel = isMixed
       ? `💎${f.shards_used}`
       : `💎${Math.round(f.shards_used / (f.machines_final || 1))}/m`;
