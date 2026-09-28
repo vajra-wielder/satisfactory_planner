@@ -130,6 +130,7 @@ class SolveResult:
     shadow_prices: Dict[str,float] = field(default_factory=dict)
     saturation_points: Dict[str,object] = field(default_factory=dict)
     usable: Optional[Dict[str,"Recipe"]] = field(default=None, repr=False)
+    certified: Optional[float] = None   # goal ≥ this fraction of the best possible (proven)
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -824,6 +825,7 @@ class _Plan:
     goal:   float              # weighted goal value (supply constant omitted)
     proven: bool               # goal and lean stages proven optimal
     clean_proven: bool = True  # recipe cleanup proven optimal
+    goal_bound: Optional[float] = None   # proven upper bound on the goal (stage 1)
 
     def machines(self) -> int:
         return sum(p.n for ps in self.parts.values() for p in ps)
@@ -956,8 +958,10 @@ class _Model:
         for c, bv, kind in self.links.get(k, []):
             c.SetCoefficient(bv, -float(m_n) if kind == "n" else -max(ub, 0.0))
 
-    def run(self, coeffs: Dict[Key, float], maximize: bool, time_s: float) -> Optional[bool]:
-        """Solve with this objective. None = failed, else True if proven optimal."""
+    def run(self, coeffs: Dict[Key, float], maximize: bool, time_s: float,
+            gap: Optional[float] = None) -> Optional[bool]:
+        """Solve with this objective. None = failed, else True if proven optimal
+        (within `gap`, relative, when given). self.bound holds the proven bound."""
         obj = self.s.Objective()
         obj.Clear()
         for key, a in coeffs.items():
@@ -972,12 +976,13 @@ class _Model:
             if _SCIP_PARAMS and self.s.SolverVersion().startswith("SCIP"):
                 self.s.SetSolverSpecificParametersAsString(_SCIP_PARAMS)
             p = pywraplp.MPSolverParameters()
-            p.SetDoubleParam(p.RELATIVE_MIP_GAP, _MIP_GAP)
+            p.SetDoubleParam(p.RELATIVE_MIP_GAP, _MIP_GAP if gap is None else gap)
             st = self.s.Solve(p)
         else:
             st = self.s.Solve()
         if st not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
             return None
+        self.bound = self.s.Objective().BestBound() if self.integer else self.s.Objective().Value()
         if self.integer:   # warm start for the next stage (read before any new constraint)
             vs = [v for v in self.s.variables()]
             self._hint = (vs, [v.solution_value() for v in vs])
@@ -996,14 +1001,34 @@ class _Model:
             parts.setdefault(k, []).append(_Part(l, x, n, _min_shards(x, n) or 0))
         for ps in parts.values():
             ps.sort(key=lambda p: -p.level)
-        return _Plan(parts, self.value(self.goal), proven)
+        return _Plan(parts, self.value(self.goal), proven,
+                     goal_bound=getattr(self, "goal_bound", None))
 
 
-def _plan(scenario: Scenario, usable: Dict[str, Recipe],
-          warnings: List[str]) -> Optional[_Plan]:
-    """Run the three stages. Returns None when the scenario is infeasible."""
+def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
+          sloop_caps: Optional[Dict[str, int]] = None,
+          goal_gap: Optional[float] = None,
+          goal_time: Optional[float] = None,
+          beat: Optional[float] = None,
+          info: Optional[dict] = None) -> Optional[_Plan]:
+    """
+    Run the stages. Returns None when the scenario is infeasible.
+    sloop_caps: at most this many sloops per recipe (from _dive_sloops).
+    goal_gap:   stop stage 1 once proven within this relative gap.
+    goal_time:  stage-1 time limit (default _STAGE_TIME_S[0]).
+    beat:       polish mode — stop right after stage 1 and return None; if its
+                goal beats this, info["alloc"] gets its sloops per recipe so the
+                caller can rebuild quickly with those fixed.
+    info:       receives {"goal_bound": …} after stage 1.
+    """
     mip = _Model(scenario, usable, integer=True)
     lp  = _Model(scenario, usable, integer=False)    # relaxation: bounds + LP-only stages
+    if sloop_caps is not None:
+        for m in (mip, lp):
+            for k, levels in m.levels.items():
+                expr = {("n", k, l): float(l) for l in levels if l}
+                if expr:
+                    m.ct(-m.inf, float(sloop_caps.get(k, 0)), expr)
     if not mip.integer:
         warnings.append("No integer solver available — machine counts are rounded, "
                         "somersloops and shards are not optimised.")
@@ -1035,18 +1060,34 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe],
         integer_goal = mip.integer and (scenario.somersloops_available > 0
                                         or scenario.max_machines is not None)
         m1 = mip if integer_goal or not mip.integer else lp
-        ok = m1.run(stage1(m1), True, _STAGE_TIME_S[0])
+        ok = m1.run(stage1(m1), True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
         if ok is None:
             return None
         proven &= ok
         g, a = m1.value(m1.goal), m1.value(m1.new_alt)
+        # Proven ceiling on the goal (the penalty term only lowers the objective)
+        goal_bound = m1.bound + _NEW_ALT_PEN * a if mip.goal else None
+        mip.goal_bound = goal_bound
+        if info is not None:
+            info["goal_bound"] = goal_bound
+        if beat is not None:
+            if g > beat + max(1e-9, abs(beat) * 1e-9) and info is not None:
+                alloc: Dict[str, float] = {}
+                for (kind, k, l), v in m1.var.items():
+                    if kind == "n" and l:
+                        alloc[k] = alloc.get(k, 0.0) + l * v.solution_value()
+                info["alloc"] = {k: int(round(x)) for k, x in alloc.items() if round(x) > 0}
+                info["goal"] = g
+            return None
         if m1 is mip:
             best = mip.snapshot(proven)
         if mip.goal:
             lock(g - max(1e-6, abs(g) * _GOAL_TOL), mip.inf, lambda m: m.goal)
         if mip.new_alt:
             lock(-mip.inf, a + 1e-6, lambda m: m.new_alt)
-        tighten()
+    else:
+        goal_bound = None
+        mip.goal_bound = None
 
     # ── Stage 2: lean ──
     # 2a: least raw resources — resources are the finite thing, so they are
@@ -1074,20 +1115,23 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe],
         proven &= ok
         r2 = m2.value(resources_of(m2))
         lock(-mip.inf, r2 + abs(r2) * _RES_TOL + 1e-9, resources_of)
-        tighten()
     # 2b: fewest whole machines. A whole-number score lets the solver round its
     #     bound up (77.2 → 78) and prune — what keeps shard-heavy plans fast.
-    ok = mip.run(mip.machines, False, _STAGE_TIME_S[1])
+    #     Stage 3 may add _MACHINE_SLACK anyway, so proving the minimum more
+    #     tightly than that is wasted search: stop within that gap, then allow
+    #     at most _MACHINE_SLACK over the proven minimum in total.
+    ok = mip.run(mip.machines, False, _STAGE_TIME_S[1], gap=_MACHINE_SLACK)
     if ok is None:
         return best
     proven &= ok
     best = mip.snapshot(proven)
     n2 = mip.value(mip.machines)
-    extra_machines = math.floor(n2 * _MACHINE_SLACK + 1e-9)
-    lock(-mip.inf, n2 + extra_machines + 0.5, lambda m: m.machines)
+    n_floor = math.ceil(mip.bound - 1e-6) if mip.integer else n2
+    cap = max(n2, math.floor(n_floor * (1 + _MACHINE_SLACK) + 1e-9))
+    lock(-mip.inf, cap + 0.5, lambda m: m.machines)
     if not mip.integer:
         return best
-    tighten()
+    tighten()     # tight big-Ms for the recipe-count stage
 
     # ── Stage 3: clean ──
     # 3a: fewest recipes + duplicate producers (a half-integer score, quick to
@@ -1128,6 +1172,57 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe],
             tidy.clean_proven = best.clean_proven
             best = tidy
     return best
+
+
+# ── Somersloop dive ───────────────────────────────────────────────────────────
+# Somersloops are what makes big plans slow for the exact search: whole sloops
+# in whole machines across hundreds of recipes. The dive decides them on the
+# continuous relaxation instead — the same matrix, where co-binding chains are
+# balanced jointly — and then only needs whole numbers for one recipe at a time:
+#   1. solve the relaxation (sloops, shards, machines fractional) → the ceiling
+#   2. fix the recipe whose sloop count is closest to whole to that whole number
+#   3. re-solve so every other chain re-balances around it; repeat until all whole
+# One warm LP per fixed recipe. The plan is then built with those counts as
+# per-recipe caps, and certified against the ceiling: goal ÷ ceiling is a
+# proven lower bound on how close the plan is to the best buildable one.
+_CERT_TARGET = 0.95   # below this, fall back to an exact goal search (to 1 − target)
+_POLISH_BELOW = 0.99  # below this, give the exact goal search a short try too
+_POLISH_TIME_S = 3.0
+
+
+def _dive_sloops(scenario: Scenario, usable: Dict[str, Recipe]
+                 ) -> Optional[Tuple[Dict[str, int], float]]:
+    """Returns (sloops per recipe, relaxation ceiling on the goal), or None."""
+    lp = _Model(scenario, usable, integer=False)
+    obj = dict(lp.goal)
+    for key, a in lp.new_alt.items():
+        obj[key] = obj.get(key, 0.0) - _NEW_ALT_PEN * a
+    if lp.run(obj, True, _STAGE_TIME_S[0]) is None:
+        return None
+    ceiling = lp.value(lp.goal) + 0.0
+    sloops: Dict[str, Dict[Key, float]] = {}
+    for (kind, k, l) in lp.var:
+        if kind == "n" and l:
+            sloops.setdefault(k, {})[("n", k, l)] = float(l)
+    fixed: Set[str] = set()
+    for _ in range(len(sloops) + 1):
+        vals = {k: lp.value(e) for k, e in sloops.items()}
+        frac = {k: x for k, x in vals.items() if k not in fixed and abs(x - round(x)) > 1e-6}
+        if not frac:
+            break
+        k = min(frac, key=lambda k: abs(frac[k] - round(frac[k])))   # least disruptive
+        x = frac[k]
+        for target in sorted({math.floor(x), math.ceil(x)}, key=lambda t: abs(t - x)):
+            c = lp.ct(target, target, sloops[k])
+            if lp.run(obj, True, _STAGE_TIME_S[0]) is not None:
+                break
+            c.SetBounds(-lp.inf, lp.inf)          # that side is infeasible — try the other
+        else:
+            lp.ct(math.floor(x), math.floor(x), sloops[k])   # rounding down is always feasible
+            lp.run(obj, True, _STAGE_TIME_S[0])
+        fixed.add(k)
+    alloc = {k: int(round(lp.value(e))) for k, e in sloops.items()}
+    return {k: v for k, v in alloc.items() if v > 0}, ceiling
 
 
 # ── Machine layouts ───────────────────────────────────────────────────────────
@@ -1235,12 +1330,46 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     saturation_points: Dict[str,object] = {}
 
     model_sc = _with_unlimited(scenario)
-    plan = _plan(model_sc, usable, warnings) if usable else None
+    plan, certified = None, None
+    if usable and model_sc.somersloops_available > 0 and model_sc.objective:
+        dive = _dive_sloops(model_sc, usable)
+        if dive is not None:
+            alloc, ceiling = dive
+            plan = _plan(model_sc, usable, warnings, sloop_caps=alloc)
+            if plan is not None and ceiling > 1e-9:
+                certified = min(1.0, plan.goal / ceiling)
+                if certified < _POLISH_BELOW:
+                    # Try the exact goal search, seeded from nothing but bounded:
+                    #  • below the target (usually a machine cap, which makes the
+                    #    fractional ceiling loose): run until proven within the
+                    #    target — its bound respects whole machines;
+                    #  • otherwise: a short polish, kept only if it beats the dive.
+                    # Either way a better plan replaces the dive's, and the
+                    # tighter of the two bounds certifies the result.
+                    info: dict = {}
+                    below = certified < _CERT_TARGET
+                    exact = _plan(model_sc, usable, [],
+                                  goal_gap=(1 - _CERT_TARGET) if below else None,
+                                  goal_time=None if below else _POLISH_TIME_S,
+                                  beat=plan.goal, info=info)
+                    if "alloc" in info:
+                        # Better sloop placement found: rebuild with it fixed
+                        better = _plan(model_sc, usable, [], sloop_caps=info["alloc"])
+                        if better is not None and better.goal > plan.goal + 1e-9:
+                            plan = better
+                    bound = info.get("goal_bound")
+                    if bound and bound > 1e-9:
+                        certified = min(1.0, plan.goal / min(ceiling, bound))
+    if plan is None:
+        plan = _plan(model_sc, usable, warnings) if usable else None
+        if plan is not None and plan.goal_bound:
+            certified = min(1.0, plan.goal / plan.goal_bound) if plan.goal_bound > 1e-9 else None
     if plan is None and usable and scenario.max_machines is not None:
         # The cap is below what the constraints need: show the fewest-machine
         # factory that meets them instead.
         plan = _plan(_dc_replace(model_sc, max_machines=None, objective={},
                                  minimize_new_alts=False), usable, warnings)
+        certified = None
         if plan is not None:
             warnings.append(
                 f"max_machines cap ({scenario.max_machines}) is below the "
@@ -1248,7 +1377,10 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             )
     status  = "Optimal" if plan is not None else "Infeasible"
     obj_val = plan.goal if plan is not None else 0.0
-    if plan is not None and not plan.proven:
+    if certified is not None and certified < _CERT_TARGET - 1e-9:
+        warnings.append(f"Plan is certified to reach at least {100 * certified:.1f}% of the "
+                        f"best possible — below the {100 * _CERT_TARGET:.0f}% target.")
+    elif certified is None and plan is not None and not plan.proven:
         warnings.append("Solver time limit reached — this is the best plan found, "
                         "but it is not proven optimal.")
     elif plan is not None and not plan.clean_proven:
@@ -1406,6 +1538,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         pruned_recipe_count=pruned_count, cap_overshoot=cap_overshoot,
         shadow_prices=shadow_prices,
         saturation_points=saturation_points,
+        certified=None if certified is None else round(certified, 6),
         usable=usable,
     )
     return result
@@ -1466,6 +1599,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "error_sinks":           result.error_sinks,
         "surplus_intermediates": result.surplus_intermediates,
         "cap_overshoot":         result.cap_overshoot,
+        "certified_pct":         None if result.certified is None else round(100 * result.certified, 2),
         "unlimited_resources":   list(scenario.unlimited_resources),
         "pruned_recipe_count":   result.pruned_recipe_count,
         "objective_items":       result.objective_items,

@@ -57,7 +57,8 @@ export function renderResultsBar() {
       consumed[item] = (consumed[item] || 0) + rate;
     })
   );
-  const resEntries = Object.entries(RESULT.source_nodes || {});
+  const unlimited  = new Set(RESULT.unlimited_resources || []);
+  const resEntries = Object.entries(RESULT.source_nodes || {}).filter(([item]) => !unlimited.has(item));
   const bindingCount = resEntries.filter(([item, avail]) => {
     const used = consumed[item] || 0;
     return avail > 0 && (used / avail) >= 0.99;
@@ -75,6 +76,10 @@ export function renderResultsBar() {
   if (resLabel) h += sep + st('Resources', resLabel, bindingCount > 0 ? 'var(--err)' : 'var(--t3)');
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');
+  // Proven: the goal is at least this share of the best possible plan
+  const cert = RESULT.certified_pct;
+  if (cert != null && cert < 99.95)
+    h += sep + st('Certified', `≥${cert.toFixed(1)}%`, cert >= 95 ? 'var(--ok)' : 'var(--warn)');
 
   if (h === _rbLastHTML) { rb.style.display = 'flex'; return; }
   _rbLastHTML = h;
