@@ -59,7 +59,6 @@ export async function solveScenario(payload, signal) {
 
 // ── Shadow prices (duals) ─────────────────────────────────
 export const fetchDuals = () => apiFetch('/api/duals');
-export const fetchSloopTargets = () => apiFetch('/api/sloop-targets');
 
 // ── Unlocked alternate recipes ────────────────────────────
 export const fetchUnlockedAlts = ()      => apiFetch('/api/unlocked-alts');

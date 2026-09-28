@@ -4,7 +4,7 @@
  */
 
 import { SC, RESULT, RECIPES, mCol, MABBR, itemName } from './state.js';
-import { fetchDuals, fetchSloopTargets, solveScenario } from './api.js';
+import { fetchDuals, solveScenario } from './api.js';
 
 // ── DOM helpers ───────────────────────────────────────────
 function section(parent, title, extraHTML = '') {
@@ -178,10 +178,6 @@ function renderAnalysis() {
     }
   }
 
-  // ── Somersloop targets ────────────────────────────────────────────────────
-  section(el, 'Somersloop Targets');
-  renderSloopTargets(el.querySelector('.an-section:last-child .an-body'));
-
   // ── Machine distribution ──────────────────────────────────────────────────
   section(el, 'Machine Distribution');
   const machBody  = el.querySelector('.an-section:last-child .an-body');
@@ -294,81 +290,6 @@ function renderAnalysis() {
     `;
     _runInlineRanking(activeAltKeys, rankBody);
   }
-}
-
-
-// ── Somersloop targets ────────────────────────────────────────────────────────
-// Ranks recipes by what one more somersloop there is worth (LP re-solve with
-// that recipe's output boosted by one slot) and names the binding resources
-// upstream of it — the chokepoints a sloop there stretches. Fetched once per
-// solve and cached on RESULT.
-
-function renderSloopTargets(body) {
-  if (RESULT.sloop_targets) { _drawSloopTargets(body, RESULT.sloop_targets); return; }
-  body.innerHTML = '<p style="font-size:11px;color:var(--t3)">Evaluating somersloop placements…</p>';
-  const forResult = RESULT;
-  fetchSloopTargets()
-    .then(data => {
-      if (RESULT !== forResult) return;          // a newer solve replaced this one
-      RESULT.sloop_targets = data;
-      if (body.isConnected) _drawSloopTargets(body, data);
-    })
-    .catch(() => { body.innerHTML = '<p style="font-size:11px;color:var(--t3)">Somersloop analysis unavailable.</p>'; });
-}
-
-function _drawSloopTargets(body, data) {
-  const targets = data.targets || [];
-  const binding = data.binding || {};
-  const goals   = Object.entries(SC.objective || {});
-  // Express value in the goal item's own units when there is a single goal
-  const fmtGain = g => {
-    if (data.metric === 'machines') return `−${g.toFixed(2)} machines`;
-    if (goals.length === 1) return `+${(g / (goals[0][1] || 1)).toFixed(2)} ${itemName(goals[0][0])}/min`;
-    return `+${g.toFixed(3)} obj`;
-  };
-  const chokes = Object.keys(binding);
-  const have   = SC.somersloops_available || 0;
-  const used   = RESULT.sloops_used || 0;
-
-  if (!targets.length) {
-    body.innerHTML = `<p style="font-size:11px;color:var(--t3);line-height:1.6">
-      No recipe gains from another somersloop — nothing that can take one is limited
-      by a binding resource${chokes.length ? '' : ' (no resource is binding)'}.</p>`;
-    return;
-  }
-
-  const chip = it => `<span style="display:inline-block;padding:1px 6px;margin:2px 3px 0 0;border-radius:8px;
-      font-size:9px;font-family:var(--mono);background:rgba(239,68,68,.12);color:#f87171;
-      border:1px solid rgba(239,68,68,.35)">${itemName(it)}</span>`;
-
-  let html = `
-    <p style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:10px">
-      Value of <b style="color:var(--t2)">one more somersloop</b> in each recipe, found by re-solving
-      with that recipe's output boosted by one slot. A somersloop multiplies output without extra
-      input, so it stretches every <b style="color:#f87171">chokepoint</b> upstream of it.
-      ${chokes.length > 1 ? `Co-binding chokepoints: ${chokes.map(chip).join('')}` : ''}
-      ${have ? `<br>This plan places <b style="color:#a855f7">${used}/${have}</b> somersloops optimally;
-               the list shows where the next ones would pay most.` : ''}
-    </p>`;
-  targets.slice(0, 10).forEach((t, i) => {
-    const color = mCol(t.machine);
-    const where = !t.in_plan
-      ? `<span style="color:var(--acc)">not in plan yet — a sloop makes it worth building</span>`
-      : t.free_slots > 0
-        ? `${t.free_slots} free slot${t.free_slots !== 1 ? 's' : ''} in ${t.machines} machine${t.machines !== 1 ? 's' : ''}`
-        : `<span style="color:var(--warn)">slots full — needs another machine</span>`;
-    html += `
-      <div class="ra-row" style="flex-wrap:wrap">
-        <span class="ra-rank">${i + 1}</span>
-        <span class="ra-machine" style="background:${color}22;color:${color}">${MABBR[t.machine] || t.machine}</span>
-        <span class="ra-name">${t.display.replace(/^Alternate:\s*/i, '')}</span>
-        <span class="ra-delta" style="color:#a855f7;min-width:110px">${fmtGain(t.gain)}</span>
-        <div style="flex-basis:100%;padding-left:26px;font-size:10px;color:var(--t3);margin-top:2px">
-          ${where}${t.relieves.length ? ` · relieves ${t.relieves.map(chip).join('')}` : ''}
-        </div>
-      </div>`;
-  });
-  body.innerHTML = html;
 }
 
 

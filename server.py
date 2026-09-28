@@ -23,7 +23,7 @@ sys.path.insert(0, str(HERE))
 from solver import (
     load_recipes, load_machine_meta, load_scenario, solve,
     result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR,
-    compute_duals, somersloop_targets,
+    compute_duals,
 )
 
 ALL_RECIPES  = load_recipes()
@@ -353,20 +353,6 @@ class Handler(BaseHTTPRequestHandler):
                     cache["scenario"], ALL_RECIPES,
                     cache.get("spm"), cache.get("usable"))
                 self._json(200, {"shadow_prices": shadow, "saturation_points": sat})
-            except Exception as e:
-                import traceback; traceback.print_exc()
-                self._json(500, {"error": str(e)})
-            return
-
-        if path == "/api/sloop-targets":
-            with _dual_lock:
-                cache = dict(_dual_cache)
-            if not cache:
-                self._json(200, {"targets": [], "binding": {}, "note": "No solve result cached yet."})
-                return
-            try:
-                self._json(200, somersloop_targets(
-                    cache["scenario"], ALL_RECIPES, cache.get("flows", []), cache.get("usable")))
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._json(500, {"error": str(e)})
