@@ -528,6 +528,177 @@ def _solve_lp_min_machines(
     return "Optimal", slvr.Objective().Value(), q_vals
 
 
+# ── Simplification pass ───────────────────────────────────────────────────────
+# The LP usually has many equally-good optima (e.g. when the objective is capped
+# by Coal, it doesn't care whether Quickwire comes from one recipe or two). GLOP
+# returns whichever vertex it lands on first, which often uses redundant parallel
+# producers and tiny side chains. This pass keeps the objective locked at its
+# optimum and picks, among all tied solutions, the one with the fewest recipes.
+_SIMPLIFY_OBJ_TOL     = 1e-6   # relative slack on the locked objective
+_SIMPLIFY_MACH_SLACK  = 0.01   # allow ≤1% more fractional machines…
+_SIMPLIFY_POWER_SLACK = 0.01   # …and ≤1% more power, in exchange for fewer recipes
+_SIMPLIFY_TIME_MS     = 5000
+_SIMPLIFY_PARALLEL_PEN = 0.5   # cost of a 2nd producer of one item, on top of its recipe
+
+def _simplify_recipes(
+    scenario: Scenario,
+    usable: Dict[str,Recipe],
+    spm: Dict[str,int],
+    q_vals: Dict[str,float],
+) -> Optional[Tuple[Dict[str,float], float]]:
+    """
+    Returns (q values, LP objective) using the minimum number of recipes while keeping the
+    goal objective, every constraint, machine count and power (within slack) of
+    the given solution — or None when no strictly simpler solution is found.
+    """
+    active = [k for k, v in q_vals.items() if v >= 1e-5]
+    if len(active) <= 1:
+        return None
+
+    mip = None
+    for backend in ("SCIP", "CBC"):
+        mip = pywraplp.Solver.CreateSolver(backend)
+        if mip is not None:
+            break
+    if mip is None:
+        return None
+    mip.SuppressOutput()
+    mip.SetTimeLimit(_SIMPLIFY_TIME_MS)
+
+    # Rebuild the LP constraints in the MIP solver — same feasible region as the
+    # main solve (sloop multipliers included via spm).
+    rkeys = list(usable.keys())
+    eff_out = {k: {it: rt * _output_mult(usable[k], spm.get(k, 0))
+                   for it, rt in usable[k].outputs.items()} for k in rkeys}
+    net: Dict[str, Dict[int, float]] = {}
+    for i, k in enumerate(rkeys):
+        r = usable[k]
+        for it in set(r.inputs) | set(eff_out[k]):
+            c = eff_out[k].get(it, 0.0) - r.inputs.get(it, 0.0)
+            if c:
+                net.setdefault(it, {})[i] = c
+
+    INF = mip.infinity()
+    # Sloops were budgeted per physical machine, so a sloop'd recipe may not
+    # grow past its current machine count.
+    q = [mip.NumVar(0, math.ceil(q_vals.get(k, 0.0) - 1e-9) if spm.get(k, 0) else INF, f"q{i}")
+         for i, k in enumerate(rkeys)]
+
+    def add_ct(lo, hi, coeffs):
+        ct = mip.Constraint(lo, hi)
+        for i, c in coeffs.items():
+            ct.SetCoefficient(q[i], c)
+
+    res = scenario.available_resources
+    for it, sp in net.items():
+        if it in res:
+            add_ct(-INF, res[it], {i: -c for i, c in sp.items()})
+        else:
+            add_ct(0.0, INF, sp)
+    for it, qty in scenario.must_produce.items():
+        if it in net:
+            add_ct(qty - res.get(it, 0.0), qty - res.get(it, 0.0), net[it])
+    for it, qty in scenario.min_produce.items():
+        if it in net:
+            add_ct(qty - res.get(it, 0.0), INF, net[it])
+    for it, qty in scenario.max_produce.items():
+        if it in net:
+            add_ct(-INF, qty - res.get(it, 0.0), net[it])
+
+    def value(coeffs, qv=q_vals):
+        return sum(c * qv.get(rkeys[i], 0.0) for i, c in coeffs.items())
+
+    # Lock the goal objective at the current value.
+    goal: Dict[int, float] = {}
+    for it, w in scenario.objective.items():
+        for i, c in net.get(it, {}).items():
+            goal[i] = goal.get(i, 0.0) + w * c
+    if goal:
+        g0 = value(goal)
+        add_ct(g0 - max(1e-6, abs(g0) * _SIMPLIFY_OBJ_TOL), INF, goal)
+
+    # Don't use more unlock-pending alts than the original solution did.
+    if scenario.minimize_new_alts:
+        unlocked = set(scenario.unlocked_alt_recipes)
+        new_alt = {i: 1.0 for i, k in enumerate(rkeys)
+                   if usable[k].alternate and k not in unlocked}
+        if new_alt:
+            add_ct(-INF, value(new_alt) + 1e-6, new_alt)
+
+    # Machines and power may not grow beyond a small slack.
+    all_ones = {i: 1.0 for i in range(len(rkeys))}
+    mach_cap = value(all_ones) * (1 + _SIMPLIFY_MACH_SLACK) + 1e-6
+    if scenario.max_machines is not None:
+        mach_cap = min(mach_cap, max(value(all_ones), float(scenario.max_machines)))
+    add_ct(-INF, mach_cap, all_ones)
+    power = {i: usable[k].base_power_mw * _sloop_power_mult(usable[k], spm.get(k, 0))
+             for i, k in enumerate(rkeys)}
+    p0 = value(power)
+    p_cap = p0 * (1 + _SIMPLIFY_POWER_SLACK) + 1e-6
+    if scenario.max_power_mw is not None:
+        p_cap = min(p_cap, max(p0, scenario.max_power_mw))
+    add_ct(-INF, p_cap, power)
+
+    # y_k = 1 when recipe k runs. q_k ≤ total machines, so mach_cap is a valid big-M.
+    y = [mip.BoolVar(f"y{i}") for i in range(len(rkeys))]
+    for i in range(len(rkeys)):
+        ct = mip.Constraint(-INF, 0.0)
+        ct.SetCoefficient(q[i], 1.0)
+        ct.SetCoefficient(y[i], -mach_cap)
+
+    # Minimise recipe count, plus a penalty for each extra recipe making the same
+    # main product (e.g. Quickwire from two recipes). Byproducts are ignored —
+    # several recipes co-producing Heavy Oil Residue is normal. Machines act as a
+    # tie-break worth less than one recipe in total.
+    obj = mip.Objective()
+    obj.SetMinimization()
+    for i in range(len(rkeys)):
+        obj.SetCoefficient(y[i], 1.0)
+        obj.SetCoefficient(q[i], 0.5 / max(mach_cap, 1.0))
+    by_main: Dict[str, List[int]] = {}
+    for i, k in enumerate(rkeys):
+        outs = usable[k].outputs
+        if outs:
+            by_main.setdefault(next(iter(outs)), []).append(i)
+    for idxs in by_main.values():
+        if len(idxs) < 2:
+            continue
+        extra = mip.NumVar(0, INF, "")   # extra ≥ (#producers used) − 1
+        ct = mip.Constraint(-1.0, INF)
+        ct.SetCoefficient(extra, 1.0)
+        for i in idxs:
+            ct.SetCoefficient(y[i], -1.0)
+        obj.SetCoefficient(extra, _SIMPLIFY_PARALLEL_PEN)
+
+    status = mip.Solve()
+    if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+        return None
+    chosen = {rkeys[i] for i in range(len(rkeys)) if y[i].solution_value() > 0.5
+              and q[i].solution_value() >= 1e-5}
+
+    def messiness(keys):
+        mains = [next(iter(usable[k].outputs), None) for k in keys]
+        return len(keys) + _SIMPLIFY_PARALLEL_PEN * (len(mains) - len(set(mains)))
+    if messiness(chosen) >= messiness(active):
+        return None
+
+    # Polish: re-solve the normal LP restricted to the chosen recipes so the
+    # rates are an exact optimum (including the usual epsilon tie-breaks).
+    st, sub_obj, sub_q = _solve_lp(scenario, {k: usable[k] for k in chosen}, spm)
+    if st != "Optimal":
+        return None
+    if goal and value(goal, sub_q) < value(goal) - max(1e-4, abs(value(goal)) * 1e-5):
+        return None
+    sloops = sum(spm.get(k, 0) * math.ceil(v) for k, v in sub_q.items() if v >= 1e-5)
+    if sloops > scenario.somersloops_available:
+        return None
+    if scenario.max_machines is not None:
+        if sum(math.ceil(v) for v in sub_q.values() if v >= 1e-5) > \
+           max(scenario.max_machines, sum(math.ceil(v) for v in q_vals.values() if v >= 1e-5)):
+            return None
+    return {k: sub_q.get(k, 0.0) for k in usable}, sub_obj
+
+
 # ── Warm-start LP wrapper ─────────────────────────────────────────────────────
 class WarmLP:
     """
@@ -1055,6 +1226,13 @@ def _iterate_sloops(
             if not committed_any:
                 break
 
+    # A round may commit several disjoint winners, but best_q/best_obj come from
+    # a single-recipe trial — re-solve once with the final spm so they match.
+    if any(spm.values()):
+        st, obj_final, q_final = WarmLP(scenario, usable, spm).solve()
+        if st == "Optimal":
+            best_q, best_obj = q_final, obj_final
+
     return spm, best_q, best_obj
 
 
@@ -1356,6 +1534,12 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     else:
         spm, q_vals, obj_val = {}, base_q, base_obj
 
+    # Stage 2b: among equally-good solutions, pick the one with the fewest recipes
+    if status == "Optimal":
+        simpler = _simplify_recipes(scenario, usable, spm, q_vals)
+        if simpler is not None:
+            q_vals, obj_val = simpler
+
     # Stage 3: shard allocation
     shard_alloc = _allocate_shards(
         usable, q_vals, spm,
@@ -1402,11 +1586,9 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         total_shards       += shards_this
         total_sloops       += sloops_total
 
-        # qv is the LP's normalised throughput with sloop multiplier already
-        # baked into the constraint coefficients via eff_out.  The per-unit
-        # base rate × qv therefore gives the correct physical output; there
-        # is no need to multiply by mult again.
-        eff_rate = qv   # LP throughput; sloop boost already embedded
+        # qv counts machine-equivalents; the LP's output coefficients are
+        # rate × mult (eff_out), so physical output must include the sloop boost.
+        eff_rate = qv * mult
 
         flows.append(FlowResult(
             recipe_key=k, display=r.display, machine=r.machine,
