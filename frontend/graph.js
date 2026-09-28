@@ -1291,7 +1291,7 @@ function drawNode(n) {
   C.fillText(measureTrunc(cleanName, w - 22), x + 10, cy + 7);
   cy += 16;
 
-  // Machine count — layouts can mix groups, e.g. "2×250% + 1×133.3% + 3×100%"
+  // Machine count — layouts can mix groups, e.g. "2×250% + 1×133.3% 🔮2 + 3×100%"
   const layout  = f.layout || [];
   const isMixed = layout.length > 1;
   const pct = v => `${Number(v).toFixed(1).replace(/\.0$/, '')}%`;
@@ -1300,7 +1300,7 @@ function drawNode(n) {
     const machineLabel = f.isGroup
       ? `${f.memberCount} recipes  ·  ${f.machines_final} machines`
       : isMixed
-      ? `${layout.map(g => `${g.count}×${pct(g.clock_pct)}`).join(' + ')}  (${f.machines_float.toFixed(2)} LP)`
+      ? `${layout.map(g => `${g.count}×${pct(g.clock_pct)}${g.sloops ? ` 🔮${g.sloops}` : ''}`).join(' + ')}  (${f.machines_float.toFixed(2)} LP)`
       : `${f.machines_final} machine${f.machines_final !== 1 ? 's' : ''}  (${f.machines_float.toFixed(2)} LP)`;
     C.fillText(measureTrunc(machineLabel, w - 22), x + 10, cy + 7);
   }
@@ -1329,7 +1329,7 @@ function drawNode(n) {
       : `💎${Math.round(f.shards_used / (f.machines_final || 1))}/m`;
     stat(shardLabel, '#3b82f6');
   }
-  if (f.has_sloop) stat(`🔮×${(f.output_multiplier || 1).toFixed(2)}`, '#a855f7');
+  if (f.has_sloop) stat(`🔮${f.sloops_used} ×${(f.output_multiplier || 1).toFixed(2)}`, '#a855f7');
   C.fillStyle = '#616880'; C.textAlign = 'right'; C.textBaseline = 'middle';
   C.fillText(n.expanded ? '▲' : '▼', x + w - 7, cy + STATS_H / 2);
   C.textAlign = 'left'; C.textBaseline = 'alphabetic';

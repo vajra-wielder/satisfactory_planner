@@ -94,7 +94,7 @@ class FlowResult:
     machines_final: int
     clock_pct: float
     shards_used: int
-    sloops_per_machine: int   # sloops on each physical machine (0..max_slots)
+    sloops_per_machine: float # effective sloops per machine (1 + spm/slots = output mult)
     sloops_used: int          # total sloops = sloops_per_machine * machines_final
     sloop_slots: int
     output_multiplier: float
@@ -105,7 +105,7 @@ class FlowResult:
     has_shard: bool = False
     has_sloop: bool = False
     hi_machines: int = 0  # machines carrying shards
-    layout: List[dict] = field(default_factory=list)  # [{count, clock_pct, shards}] groups
+    layout: List[dict] = field(default_factory=list)  # [{count, clock_pct, shards, sloops}] groups
 
 @dataclass
 class SolveResult:
@@ -754,13 +754,18 @@ def _solve_lp_with_duals(
 #   2. Lean  — minimise a balanced cost of machines and raw resources.
 #   3. Clean — minimise recipes and duplicate producers of one product, letting
 #              the stage-2 cost rise by at most _COST_SLACK.
+#   4. Tidy  — with everything above locked, the fewest somersloops (so none
+#              sits in a machine where it changes nothing). Shards are always
+#              the fewest the chosen machine counts need.
 #
 # Columns, per recipe k and (when somersloops are available) per sloop level l:
 #   q[k,l]  machine-equivalents at 100% clock (continuous) — the throughput
 #   n[k,l]  physical machines (integer)
 #   s[k,l]  power shards (integer, ≤ 3 per machine);  q ≤ n + 0.5·s
-#   z[k,l]  recipe k runs at level l (binary; one level per recipe)
 #   y[k]    recipe k is used at all (binary; stage 3 only)
+# A recipe may run machines at several sloop levels at once (e.g. one
+# Manufacturer with 4 sloops and two with none) — each machine is filled
+# individually in-game, and mixing is never worse than one level per recipe.
 # Budgets: Σ l·n ≤ somersloops, Σ s ≤ shards, Σ n ≤ max_machines.
 #
 # Stage 2 can't add "1 per machine + 1 per resource unit": resource rates run
@@ -787,14 +792,22 @@ _SCIP_PARAMS   = "presolving/maxrestarts = 0\nseparating/maxroundsroot = 5\n"
 
 
 @dataclass
+class _Part:
+    level:  int     # sloops in each of these machines
+    q:      float   # machine-equivalents at 100% clock
+    n:      int     # physical machines
+    shards: int
+
+
+@dataclass
 class _Plan:
-    q:      Dict[str, float]   # machine-equivalents at 100% clock
-    n:      Dict[str, int]     # physical machines
-    shards: Dict[str, int]
-    level:  Dict[str, int]     # sloops per machine
+    parts:  Dict[str, List[_Part]]   # recipe → machine groups by sloop level
     goal:   float              # weighted goal value (supply constant omitted)
     proven: bool               # goal and lean stages proven optimal
     clean_proven: bool = True  # recipe cleanup proven optimal
+
+    def machines(self) -> int:
+        return sum(p.n for ps in self.parts.values() for p in ps)
 
 
 # Column keys: ("q"|"n"|"s", recipe, level). Expressions are {key: coeff} dicts
@@ -805,8 +818,8 @@ Key = Tuple[str, str, int]
 class _Model:
     """
     The factory model in one OR-Tools solver. integer=True → SCIP (or CBC)
-    with integer machines/shards and one sloop level per recipe; integer=False
-    → GLOP relaxation where a recipe may mix levels, used to derive bounds.
+    with integer machines, shards and sloops; integer=False → the GLOP
+    relaxation, used to derive bounds and for LP-only stages.
     """
     BIG = 1e5   # big-M before bounds are known; replaced by tighten()
 
@@ -826,7 +839,7 @@ class _Model:
         ivar = s.IntVar if self.integer else s.NumVar
 
         S, SH = scenario.somersloops_available, scenario.power_shards_available
-        # Without an integer solver, sloop levels can't be chosen per recipe.
+        # Without an integer solver, sloops can't be placed per machine.
         use_sloops = S > 0 and (self.integer or not integer)
 
         self.var: Dict[Key, object] = {}
@@ -838,10 +851,9 @@ class _Model:
             levels = [l for l in range(r.sloop_slots + 1) if l <= S] \
                      if use_sloops and r.sloop_slots > 0 else [0]
             self.levels[k] = levels
-            one_level = self.integer and len(levels) > 1
             if self.integer:
                 self.y[k] = s.BoolVar("")
-            zs, links = [], []
+            links = []
             for l in levels:
                 q = self.var[("q", k, l)] = s.NumVar(0, INF, "")
                 n = self.var[("n", k, l)] = ivar(0, INF, "")
@@ -852,23 +864,15 @@ class _Model:
                     cap.SetCoefficient(sh, -SHARD_BOOST)
                     c3 = s.Constraint(-INF, 0.0)           # s ≤ 3·n
                     c3.SetCoefficient(sh, 1.0); c3.SetCoefficient(n, -3.0)
-                if self.integer:
-                    binaries = [self.y[k]]
-                    if one_level:
-                        z = s.BoolVar(""); zs.append(z); binaries.append(z)
-                    for bv in binaries:                    # n ≤ M·y, n ≤ M·z
-                        c = s.Constraint(-INF, 0.0)
-                        c.SetCoefficient(n, 1.0); c.SetCoefficient(bv, -self.BIG)
-                        links.append((c, bv, "n"))
+                if self.integer:                           # n ≤ M·y
+                    c = s.Constraint(-INF, 0.0)
+                    c.SetCoefficient(n, 1.0); c.SetCoefficient(self.y[k], -self.BIG)
+                    links.append((c, self.y[k], "n"))
                 mult = _output_mult(r, l)
                 for it in set(r.inputs) | set(r.outputs):
                     c = r.outputs.get(it, 0.0) * mult - r.inputs.get(it, 0.0)
                     if c:
                         self.net.setdefault(it, {})[("q", k, l)] = c
-            if zs:
-                c = s.Constraint(-INF, 1.0)
-                for z in zs:
-                    c.SetCoefficient(z, 1.0)
             self.links[k] = links
 
         res = scenario.available_resources
@@ -888,8 +892,9 @@ class _Model:
                 self.ct(-INF, qty - res.get(it, 0.0), self.net[it])
 
         self.machines = {key: 1.0 for key in self.var if key[0] == "n"}
+        self.sloops = {key: float(key[2]) for key in self.machines if key[2]}
         if use_sloops:
-            self.ct(-INF, float(S), {key: float(key[2]) for key in self.machines if key[2]})
+            self.ct(-INF, float(S), self.sloops)
         if SH > 0:
             self.ct(-INF, float(SH), {key: 1.0 for key in self.var if key[0] == "s"})
         if scenario.max_machines is not None:
@@ -960,20 +965,19 @@ class _Model:
         return st == pywraplp.Solver.OPTIMAL
 
     def snapshot(self, proven: bool) -> _Plan:
-        q, n, sh, lvl = {}, {}, {}, {}
+        parts: Dict[str, List[_Part]] = {}
         for (kind, k, l), v in self.var.items():
             if kind != "q":
                 continue
             x = v.solution_value()
-            if x < _Q_EPS or x <= q.get(k, 0.0):
+            if x < _Q_EPS:
                 continue
-            q[k], lvl[k] = x, l
-            n[k] = max(1, int(round(self.var[("n", k, l)].solution_value()))) \
-                   if self.integer else math.ceil(x - 1e-9)
-            # Fewest shards that let n machines deliver q (+50% each, ≤3/machine)
-            need = math.ceil(2.0 * (x - n[k]) - 1e-6) if x > n[k] + 1e-9 else 0
-            sh[k] = min(max(0, need), 3 * n[k])
-        return _Plan(q, n, sh, lvl, self.value(self.goal), proven)
+            n = max(1, int(round(self.var[("n", k, l)].solution_value()))) \
+                if self.integer else math.ceil(x - 1e-9)
+            parts.setdefault(k, []).append(_Part(l, x, n, _min_shards(x, n) or 0))
+        for ps in parts.values():
+            ps.sort(key=lambda p: -p.level)
+        return _Plan(parts, self.value(self.goal), proven)
 
 
 def _plan(scenario: Scenario, usable: Dict[str, Recipe],
@@ -1079,9 +1083,19 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe],
     best.clean_proven = ok
     mip.ct(-mip.inf, mip.value(obj) + 1e-6, obj)
     ok_b = mip.run(cost, False, _STAGE_TIME_S[2])
-    if ok_b is not None:
-        best = mip.snapshot(proven)
-        best.clean_proven = ok and ok_b
+    if ok_b is None:
+        return best
+    best = mip.snapshot(proven)
+    best.clean_proven = ok and ok_b
+
+    # ── Stage 4: tidy ──
+    if mip.sloops and scenario.somersloops_available > 0:
+        c3 = mip.value(cost)
+        mip.ct(-mip.inf, c3 + abs(c3) * 1e-9 + 1e-9, cost)
+        if mip.run(mip.sloops, False, _STAGE_TIME_S[2]) is not None:
+            tidy = mip.snapshot(proven)
+            tidy.clean_proven = best.clean_proven
+            best = tidy
     return best
 
 
@@ -1198,7 +1212,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         if plan is not None:
             warnings.append(
                 f"max_machines cap ({scenario.max_machines}) is below the "
-                f"minimum required ({sum(plan.n.values())}); showing minimum machine layout."
+                f"minimum required ({plan.machines()}); showing minimum machine layout."
             )
     status  = "Optimal" if plan is not None else "Infeasible"
     obj_val = plan.goal if plan is not None else 0.0
@@ -1218,39 +1232,48 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     total_sloops       = 0
 
     for k, r in usable.items():
-        qv = plan.q.get(k, 0.0) if plan is not None else 0.0
-        if qv < _Q_EPS:
+        parts = plan.parts.get(k, []) if plan is not None else []
+        if not parts:
             continue
-        n_k, sh_k, lvl = plan.n[k], plan.shards[k], plan.level[k]
-        groups = _layout_groups(qv, n_k, sh_k)
-        pw     = _layout_power(r, lvl, groups)
-        mult   = _output_mult(r, lvl)
+        qv   = sum(p.q for p in parts)
+        n_k  = sum(p.n for p in parts)
+        sh_k = sum(p.shards for p in parts)
+        sl_k = sum(p.level * p.n for p in parts)
+        # Effective output multiplier over all machines (throughput-weighted)
+        mult = sum(p.q * _output_mult(r, p.level) for p in parts) / qv
+        layout, pw = [], 0.0
+        for p in parts:
+            groups = _layout_groups(p.q, p.n, p.shards)
+            pw += _layout_power(r, p.level, groups)
+            layout += [{"count": c, "clock_pct": round(clk * 100, 4), "shards": s,
+                        "sloops": p.level} for c, clk, s in groups]
 
         total_power        += pw
         total_machines_int += n_k
         total_shards       += sh_k
-        total_sloops       += lvl * n_k
+        total_sloops       += sl_k
 
         flows.append(FlowResult(
             recipe_key=k, display=r.display, machine=r.machine,
             machines_float=round(qv, 4),
             machines_final=n_k,
-            clock_pct=round(max(g[1] for g in groups) * 100, 1),
+            clock_pct=round(max(g["clock_pct"] for g in layout), 1),
             shards_used=sh_k,
-            sloops_per_machine=lvl,
-            sloops_used=lvl * n_k,
+            # effective sloops per machine-equivalent: 1 + spm/slots == mult
+            sloops_per_machine=round((mult - 1.0) * r.sloop_slots, 4) if r.sloop_slots else 0,
+            sloops_used=sl_k,
             sloop_slots=r.sloop_slots,
             output_multiplier=round(mult, 4),
             power_mw=round(pw, 2),
             inputs={item: round(r.inputs[item] * qv, 4) for item in r.inputs},
-            # qv counts machine-equivalents; outputs include the sloop boost
             outputs={item: round(r.outputs[item] * qv * mult, 4) for item in r.outputs},
-            layout_options=_layout_options(r, qv, lvl, n_k),
+            # Integer layout alternatives only make sense for a single sloop group
+            layout_options=(_layout_options(r, qv, parts[0].level, n_k)
+                            if len(parts) == 1 else []),
             has_shard=sh_k > 0,
-            has_sloop=lvl > 0,
-            hi_machines=sum(c for c, _, s in groups if s),
-            layout=[{"count": c, "clock_pct": round(clk * 100, 4), "shards": s}
-                    for c, clk, s in groups],
+            has_sloop=sl_k > 0,
+            hi_machines=sum(g["count"] for g in layout if g["shards"]),
+            layout=layout,
         ))
 
     # Cap overshoot warnings
