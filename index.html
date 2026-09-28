@@ -741,8 +741,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
             <div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solve Modifiers</div>
             <div id="solve-styles">
               <button class="ssc" data-style="no-byproducts" title="Forces the solver to recycle byproducts (e.g. Polymer Resin → Rubber/Plastic). Tries hard caps first; falls back to soft penalty if that causes infeasibility."><span class="ssc-dot"></span>No Byproducts</button>
-              <button class="ssc" data-style="min-power"     title="Binary search for the minimum power that still satisfies all objectives"><span class="ssc-dot"></span>Min Power</button>
-              <button class="ssc" data-style="min-machines"  title="Binary search for the minimum machine count that still satisfies all objectives"><span class="ssc-dot"></span>Min Machines</button>
               <button class="ssc" id="ssc-min-new-alts" title="Prefer base recipes and already-unlocked alts. Soft-penalises alt recipes you haven't unlocked yet — only reaches for new alts when they meaningfully improve the result."><span class="ssc-dot"></span>Min New Alts</button>
 
             </div>

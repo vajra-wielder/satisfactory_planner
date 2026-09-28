@@ -211,82 +211,6 @@ function applyStylesFirstPass(payload, { hardByproducts = true } = {}) {
   return p;
 }
 
-/**
- * Binary search for the minimum integer cap (machines or power) that still
- * yields an Optimal solve. lo=1, hi=firstSolveValue (the upper bound we know
- * is feasible). Each step probes the midpoint; ~log2(hi) server round-trips.
- *
- * Returns the best feasible result found (lowest cap that is still optimal).
- * Falls back to firstResult if nothing better is found.
- */
-async function binarySearchMin(payload, firstResult, capField, firstValue, signal, onProgress) {
-  let lo = 1;
-  let hi = Math.floor(firstValue);
-  let bestResult = firstResult;  // hi is always feasible
-
-  // For power we work in integer MW steps; for machines integer count.
-  // Minimum meaningful search range — if range is tiny, skip.
-  if (hi - lo < 2) return bestResult;
-
-  let iter = 0;
-  const maxIter = Math.ceil(Math.log2(hi)) + 2;  // safety ceiling
-
-  while (lo < hi && iter < maxIter) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    iter++;
-    const mid = Math.floor((lo + hi) / 2);
-    onProgress(iter, maxIter, mid);
-
-    const p = JSON.parse(JSON.stringify(payload));
-    p[capField] = mid;
-
-    try {
-      const r = await solveScenario(p, signal);
-      if (r?.status?.startsWith('Optimal')) {
-        // mid is feasible — search lower
-        bestResult = r;
-        hi = mid;
-      } else {
-        // mid is infeasible — need more headroom
-        lo = mid + 1;
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') throw err;
-      // Treat unexpected errors as infeasible for this cap value
-      lo = mid + 1;
-    }
-  }
-
-  return bestResult;
-}
-
-/**
- * Run binary searches for any active min-power / min-machines styles.
- * Returns the best result, or firstResult if neither style is active.
- */
-async function runMinSearches(payload, firstResult, signal, btn) {
-  if (!firstResult?.status?.startsWith('Optimal')) return firstResult;
-
-  let result = firstResult;
-
-  if (SOLVE_STYLES.has('min-machines') && firstResult.total_machines > 1) {
-    result = await binarySearchMin(
-      payload, result, 'max_machines', result.total_machines, signal,
-      (i, max, probe) => { btn.textContent = `Min machines ${i}/${max} (${probe}…)`; }
-    );
-  }
-
-  if (SOLVE_STYLES.has('min-power') && firstResult.total_power_mw > 1) {
-    result = await binarySearchMin(
-      payload, result, 'max_power_mw', result.total_power_mw, signal,
-      (i, max, probe) => { btn.textContent = `Min power ${i}/${max} (${probe} MW…)`; }
-    );
-  }
-
-  return result;
-}
-
-
 // ── Pinboard toggle ───────────────────────────────────────────────────────────
 
 let pinboardMode = false;
@@ -401,8 +325,6 @@ function handleSolve() {
     if (btn.disabled) btn.textContent = _dotFrames[_dotIdx++ % _dotFrames.length];
   }, 400);
 
-  const needsMinSearch = SOLVE_STYLES.has('min-power') || SOLVE_STYLES.has('min-machines');
-
   // Phase 1 solve — with fallback for no-byproducts hard cap infeasibility.
   // If hard caps make the LP infeasible (e.g. a byproduct is unavoidable at
   // the required scale), we retry transparently with the soft penalty instead.
@@ -429,18 +351,6 @@ function handleSolve() {
   };
 
   _runPhase1()
-    .then(async result => {
-      if (mySeq !== solveSeq) return result;
-
-      // Binary search for minimum machines / power if requested
-      if (needsMinSearch) {
-        clearInterval(_dotTimer);  // stop "Solving…" animation; progress updates take over
-        result = await runMinSearches(payload, result, myAbort.signal, btn);
-        if (mySeq !== solveSeq) return result;
-      }
-
-      return result;
-    })
     .then(result => {
       if (mySeq !== solveSeq) return;
       setResult(result);

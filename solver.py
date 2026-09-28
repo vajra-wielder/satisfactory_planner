@@ -33,6 +33,7 @@ RECIPES_PATH  = ROOT / "data" / "recipes_complete.yaml"
 SCENARIOS_DIR = ROOT / "scenarios"
 
 POWER_EXP   = 1.6
+_NEW_ALT_PEN = 1e-3   # Min New Alts: goal-weight cost per machine on a not-yet-unlocked alt
 SHARD_BOOST = 0.5
 MAX_CLOCK   = 2.5
 
@@ -373,7 +374,7 @@ def _build_lp(
     # Non-resource flow-balance constraints: net(item) >= 0 for all items.
     # This permits unavoidable byproducts (e.g. Heavy Oil Residue alongside Rubber)
     # to be surplus without making the LP infeasible.
-    # Gratuitous resource use is suppressed via the epsilon penalty below instead.
+    # Gratuitous resource use is removed afterwards by _refine.
     net_expr: Dict[str, object] = {}
     for item in item_set:
         sp = net_sparse[item]
@@ -431,16 +432,8 @@ def _build_lp(
             ct.SetCoefficient(qi, 1.0)
 
     # Objective: maximise sum(weight * net(item)) over objective items.
-    # Plus a tiny epsilon penalty on resource consumption to break ties in favour
-    # of using fewer resources when it doesn't affect the real objective.
-    #
-    # The penalty is applied as -ε × consumption per recipe per resource.
-    # ε must satisfy: ε × max_total_consumption << min_nonzero_objective_weight.
-    # With objective weights typically >= 1 and total consumption << 1e6,
-    # ε = 1e-7 is safe — it never changes which solution is optimal, only
-    # which tie is broken (e.g. 200 idle Limestone stays idle instead of
-    # being routed through Concrete with no benefit to the real objective).
-    _EPS = 1e-7
+    # Ties (same goal output, different machines/resources) are broken afterwards
+    # by _refine, not by epsilon terms here.
     obj = slvr.Objective()
     obj.SetMaximization()
     for item, w in scenario.objective.items():
@@ -450,23 +443,13 @@ def _build_lp(
             obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + w * c)
         # supply * w is a constant and does not affect q — omitted intentionally
 
-    # Epsilon penalty: subtract ε × (consumption - production) for each resource.
-    # consumption - production = -(net_coeff) = the res_ct coefficient per recipe.
-    # This rewards recipes that consume less of each raw resource.
-    for item in scenario.available_resources:
-        sp = net_sparse.get(item, {})
-        for i, c in sp.items():
-            # c = eff_out - inputs  →  resource consumption contribution = -c
-            obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + _EPS * c)
-
     # Min New Alts penalty: when the modifier is on, subtract a moderate penalty
     # for each unit of throughput on alt recipes the user hasn't unlocked yet.
     # Penalty is large enough to prefer base/unlocked paths when they exist, but
     # small enough that a genuinely needed new alt can still win.
-    # Scaled at 1e-3 × machines — much larger than _EPS but <<< typical objective
-    # weights (≥1), so it never overrules the actual production goal.
+    # Scaled at 1e-3 × machines — far below typical objective weights (≥1), so
+    # it never overrules the actual production goal.
     if scenario.minimize_new_alts:
-        _NEW_ALT_PEN = 1e-3
         unlocked_set_lp = set(scenario.unlocked_alt_recipes)
         # pre-fetch recipe metadata to check .alternate without re-importing
         for i, k in enumerate(rkeys):
@@ -528,175 +511,219 @@ def _solve_lp_min_machines(
     return "Optimal", slvr.Objective().Value(), q_vals
 
 
-# ── Simplification pass ───────────────────────────────────────────────────────
-# The LP usually has many equally-good optima (e.g. when the objective is capped
-# by Coal, it doesn't care whether Quickwire comes from one recipe or two). GLOP
-# returns whichever vertex it lands on first, which often uses redundant parallel
-# producers and tiny side chains. This pass keeps the objective locked at its
-# optimum and picks, among all tied solutions, the one with the fewest recipes.
-_SIMPLIFY_OBJ_TOL     = 1e-6   # relative slack on the locked objective
-_SIMPLIFY_MACH_SLACK  = 0.01   # allow ≤1% more fractional machines…
-_SIMPLIFY_POWER_SLACK = 0.01   # …and ≤1% more power, in exchange for fewer recipes
-_SIMPLIFY_TIME_MS     = 5000
-_SIMPLIFY_PARALLEL_PEN = 0.5   # cost of a 2nd producer of one item, on top of its recipe
+# ── Tie-breaking: lexicographic refinement ────────────────────────────────────
+# The main LP only maximises the goal, and there are usually many solutions that
+# reach that optimum (e.g. when Turbofuel is capped by Coal, it doesn't care how
+# Quickwire is made). With the goal locked at its optimum, two more stages pick
+# between the tied solutions:
+#
+#   Stage 2 — minimise a balanced cost of machines and raw resources.
+#   Stage 3 — minimise the number of recipes and duplicate producers, allowing
+#             stage 2's cost to rise by at most _REFINE_COST_SLACK.
+#
+# Stage 2 can't simply add "1 per machine + 1 per resource unit": resource rates
+# run from single digits to thousands (Water), so they would drown out machines.
+# Instead every term is measured against its own natural scale:
+#   machines  → Σ machines / machines in the stage-1 solution
+#   resources → mean over resources of (net use / supply)
+# so "a whole factory's worth of machines" and "all of every resource" each
+# count as 1, and the weights below say how those two compare.
+_REFINE_W_MACHINES   = 1.0
+_REFINE_W_RESOURCES  = 1.0
+_REFINE_GOAL_TOL     = 1e-6   # relative slack on the locked goal
+_REFINE_COST_SLACK   = 0.01   # stage 3 may raise stage 2's cost by ≤1%
+_REFINE_PARALLEL_PEN = 0.5    # cost of a 2nd producer of one item, on top of its recipe
+_REFINE_TIME_MS      = 5000
 
-def _simplify_recipes(
+
+def _net_coeffs(usable: Dict[str,Recipe], spm: Dict[str,int]) -> Dict[str, Dict[str, float]]:
+    """item → {recipe: output×sloop_mult − input} (non-zero entries only)."""
+    net: Dict[str, Dict[str, float]] = {}
+    for k, r in usable.items():
+        mult = _output_mult(r, spm.get(k, 0))
+        for it in set(r.inputs) | set(r.outputs):
+            c = r.outputs.get(it, 0.0) * mult - r.inputs.get(it, 0.0)
+            if c:
+                net.setdefault(it, {})[k] = c
+    return net
+
+
+def _lin(coeffs: Dict[str, float], qv: Dict[str, float]) -> float:
+    return sum(c * qv.get(k, 0.0) for k, c in coeffs.items())
+
+
+class _RefineModel:
+    """
+    The main LP's feasible region (flow balance, resources, must/min/max, machine
+    cap) rebuilt in any OR-Tools backend over `keys`, with per-recipe upper
+    bounds `q_ub`. Callers add the locks and the objective.
+    """
+    def __init__(self, backend: str, scenario: Scenario, keys: List[str],
+                 net: Dict[str, Dict[str, float]], q_ub: Dict[str, float]):
+        self.s = pywraplp.Solver.CreateSolver(backend)
+        if self.s is None:
+            return
+        self.s.SuppressOutput()
+        INF = self.inf = self.s.infinity()
+        self.q = {k: self.s.NumVar(0, q_ub.get(k, INF), "") for k in keys}
+        res = scenario.available_resources
+        for it, sp in net.items():
+            if it in res:
+                self.ct(-INF, res[it], {k: -c for k, c in sp.items()})
+            else:
+                self.ct(0.0, INF, sp)
+        for it, qty in scenario.must_produce.items():
+            if it in net:
+                self.ct(qty - res.get(it, 0.0), qty - res.get(it, 0.0), net[it])
+        for it, qty in scenario.min_produce.items():
+            if it in net:
+                self.ct(qty - res.get(it, 0.0), INF, net[it])
+        for it, qty in scenario.max_produce.items():
+            if it in net:
+                self.ct(-INF, qty - res.get(it, 0.0), net[it])
+        if scenario.max_machines is not None:
+            self.ct(-INF, float(scenario.max_machines), {k: 1.0 for k in keys})
+
+    def ct(self, lo, hi, coeffs: Dict[str, float]):
+        c = self.s.Constraint(lo, hi)
+        for k, v in coeffs.items():
+            if k in self.q:
+                c.SetCoefficient(self.q[k], v)
+        return c
+
+    def values(self) -> Dict[str, float]:
+        return {k: max(0.0, v.solution_value()) for k, v in self.q.items()}
+
+    def solved(self) -> bool:
+        return self.s.Solve() in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+
+
+def _refine(
     scenario: Scenario,
     usable: Dict[str,Recipe],
     spm: Dict[str,int],
     q_vals: Dict[str,float],
 ) -> Optional[Tuple[Dict[str,float], float]]:
     """
-    Returns (q values, LP objective) using the minimum number of recipes while keeping the
-    goal objective, every constraint, machine count and power (within slack) of
-    the given solution — or None when no strictly simpler solution is found.
+    Stages 2 and 3 above. Returns (q values, goal objective), or None to keep
+    q_vals unchanged.
     """
-    active = [k for k, v in q_vals.items() if v >= 1e-5]
-    if len(active) <= 1:
+    if not any(v >= 1e-5 for v in q_vals.values()):
         return None
+    keys = list(usable.keys())
+    net  = _net_coeffs(usable, spm)
 
-    mip = None
-    for backend in ("SCIP", "CBC"):
-        mip = pywraplp.Solver.CreateSolver(backend)
-        if mip is not None:
-            break
-    if mip is None:
-        return None
-    mip.SuppressOutput()
-    mip.SetTimeLimit(_SIMPLIFY_TIME_MS)
-
-    # Rebuild the LP constraints in the MIP solver — same feasible region as the
-    # main solve (sloop multipliers included via spm).
-    rkeys = list(usable.keys())
-    eff_out = {k: {it: rt * _output_mult(usable[k], spm.get(k, 0))
-                   for it, rt in usable[k].outputs.items()} for k in rkeys}
-    net: Dict[str, Dict[int, float]] = {}
-    for i, k in enumerate(rkeys):
-        r = usable[k]
-        for it in set(r.inputs) | set(eff_out[k]):
-            c = eff_out[k].get(it, 0.0) - r.inputs.get(it, 0.0)
-            if c:
-                net.setdefault(it, {})[i] = c
-
-    INF = mip.infinity()
     # Sloops were budgeted per physical machine, so a sloop'd recipe may not
     # grow past its current machine count.
-    q = [mip.NumVar(0, math.ceil(q_vals.get(k, 0.0) - 1e-9) if spm.get(k, 0) else INF, f"q{i}")
-         for i, k in enumerate(rkeys)]
+    q_ub = {k: float(math.ceil(q_vals.get(k, 0.0) - 1e-9)) for k in keys if spm.get(k, 0)}
 
-    def add_ct(lo, hi, coeffs):
-        ct = mip.Constraint(lo, hi)
-        for i, c in coeffs.items():
-            ct.SetCoefficient(q[i], c)
-
-    res = scenario.available_resources
-    for it, sp in net.items():
-        if it in res:
-            add_ct(-INF, res[it], {i: -c for i, c in sp.items()})
-        else:
-            add_ct(0.0, INF, sp)
-    for it, qty in scenario.must_produce.items():
-        if it in net:
-            add_ct(qty - res.get(it, 0.0), qty - res.get(it, 0.0), net[it])
-    for it, qty in scenario.min_produce.items():
-        if it in net:
-            add_ct(qty - res.get(it, 0.0), INF, net[it])
-    for it, qty in scenario.max_produce.items():
-        if it in net:
-            add_ct(-INF, qty - res.get(it, 0.0), net[it])
-
-    def value(coeffs, qv=q_vals):
-        return sum(c * qv.get(rkeys[i], 0.0) for i, c in coeffs.items())
-
-    # Lock the goal objective at the current value.
-    goal: Dict[int, float] = {}
+    goal: Dict[str, float] = {}
     for it, w in scenario.objective.items():
-        for i, c in net.get(it, {}).items():
-            goal[i] = goal.get(i, 0.0) + w * c
-    if goal:
-        g0 = value(goal)
-        add_ct(g0 - max(1e-6, abs(g0) * _SIMPLIFY_OBJ_TOL), INF, goal)
+        for k, c in net.get(it, {}).items():
+            goal[k] = goal.get(k, 0.0) + w * c
+    g0 = _lin(goal, q_vals)
+    goal_floor = g0 - max(1e-6, abs(g0) * _REFINE_GOAL_TOL)
 
-    # Don't use more unlock-pending alts than the original solution did.
+    # Min New Alts: never use more not-yet-unlocked alts than stage 1 chose
+    new_alt: Dict[str, float] = {}
     if scenario.minimize_new_alts:
         unlocked = set(scenario.unlocked_alt_recipes)
-        new_alt = {i: 1.0 for i, k in enumerate(rkeys)
-                   if usable[k].alternate and k not in unlocked}
-        if new_alt:
-            add_ct(-INF, value(new_alt) + 1e-6, new_alt)
+        new_alt = {k: 1.0 for k in keys if usable[k].alternate and k not in unlocked}
+    new_alt_cap = _lin(new_alt, q_vals) + 1e-6
 
-    # Machines and power may not grow beyond a small slack.
-    all_ones = {i: 1.0 for i in range(len(rkeys))}
-    mach_cap = value(all_ones) * (1 + _SIMPLIFY_MACH_SLACK) + 1e-6
-    if scenario.max_machines is not None:
-        mach_cap = min(mach_cap, max(value(all_ones), float(scenario.max_machines)))
-    add_ct(-INF, mach_cap, all_ones)
-    power = {i: usable[k].base_power_mw * _sloop_power_mult(usable[k], spm.get(k, 0))
-             for i, k in enumerate(rkeys)}
-    p0 = value(power)
-    p_cap = p0 * (1 + _SIMPLIFY_POWER_SLACK) + 1e-6
-    if scenario.max_power_mw is not None:
-        p_cap = min(p_cap, max(p0, scenario.max_power_mw))
-    add_ct(-INF, p_cap, power)
+    # Balanced stage-2 cost (see header comment)
+    m0 = max(sum(q_vals.values()), 1.0)
+    supplied = [it for it, v in scenario.available_resources.items() if v > 0]
+    cost = {k: _REFINE_W_MACHINES / m0 for k in keys}
+    for it in supplied:
+        w = _REFINE_W_RESOURCES / len(supplied) / scenario.available_resources[it]
+        for k, c in net.get(it, {}).items():
+            cost[k] -= c * w           # −net = consumption
 
-    # y_k = 1 when recipe k runs. q_k ≤ total machines, so mach_cap is a valid big-M.
-    y = [mip.BoolVar(f"y{i}") for i in range(len(rkeys))]
-    for i in range(len(rkeys)):
-        ct = mip.Constraint(-INF, 0.0)
-        ct.SetCoefficient(q[i], 1.0)
-        ct.SetCoefficient(y[i], -mach_cap)
-
-    # Minimise recipe count, plus a penalty for each extra recipe making the same
-    # main product (e.g. Quickwire from two recipes). Byproducts are ignored —
-    # several recipes co-producing Heavy Oil Residue is normal. Machines act as a
-    # tie-break worth less than one recipe in total.
-    obj = mip.Objective()
-    obj.SetMinimization()
-    for i in range(len(rkeys)):
-        obj.SetCoefficient(y[i], 1.0)
-        obj.SetCoefficient(q[i], 0.5 / max(mach_cap, 1.0))
-    by_main: Dict[str, List[int]] = {}
-    for i, k in enumerate(rkeys):
-        outs = usable[k].outputs
-        if outs:
-            by_main.setdefault(next(iter(outs)), []).append(i)
-    for idxs in by_main.values():
-        if len(idxs) < 2:
-            continue
-        extra = mip.NumVar(0, INF, "")   # extra ≥ (#producers used) − 1
-        ct = mip.Constraint(-1.0, INF)
-        ct.SetCoefficient(extra, 1.0)
-        for i in idxs:
-            ct.SetCoefficient(y[i], -1.0)
-        obj.SetCoefficient(extra, _SIMPLIFY_PARALLEL_PEN)
-
-    status = mip.Solve()
-    if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
-        return None
-    chosen = {rkeys[i] for i in range(len(rkeys)) if y[i].solution_value() > 0.5
-              and q[i].solution_value() >= 1e-5}
-
-    def messiness(keys):
-        mains = [next(iter(usable[k].outputs), None) for k in keys]
-        return len(keys) + _SIMPLIFY_PARALLEL_PEN * (len(mains) - len(set(mains)))
-    if messiness(chosen) >= messiness(active):
-        return None
-
-    # Polish: re-solve the normal LP restricted to the chosen recipes so the
-    # rates are an exact optimum (including the usual epsilon tie-breaks).
-    st, sub_obj, sub_q = _solve_lp(scenario, {k: usable[k] for k in chosen}, spm)
-    if st != "Optimal":
-        return None
-    if goal and value(goal, sub_q) < value(goal) - max(1e-4, abs(value(goal)) * 1e-5):
-        return None
-    sloops = sum(spm.get(k, 0) * math.ceil(v) for k, v in sub_q.items() if v >= 1e-5)
-    if sloops > scenario.somersloops_available:
-        return None
-    if scenario.max_machines is not None:
-        if sum(math.ceil(v) for v in sub_q.values() if v >= 1e-5) > \
-           max(scenario.max_machines, sum(math.ceil(v) for v in q_vals.values() if v >= 1e-5)):
+    def locked(backend: str, allowed: Set[str]) -> Optional[_RefineModel]:
+        m = _RefineModel(backend, scenario, [k for k in keys if k in allowed], net, q_ub)
+        if m.s is None:
             return None
-    return {k: sub_q.get(k, 0.0) for k in usable}, sub_obj
+        if goal:
+            m.ct(goal_floor, m.inf, goal)
+        if new_alt:
+            m.ct(-m.inf, new_alt_cap, new_alt)
+        return m
+
+    def min_cost(allowed: Set[str]) -> Optional[Dict[str, float]]:
+        m = locked("GLOP", allowed)
+        obj = m.s.Objective()
+        obj.SetMinimization()
+        for k, v in m.q.items():
+            obj.SetCoefficient(v, cost[k])
+        return m.values() if m.solved() else None
+
+    # ── Stage 2 ──
+    q2 = min_cost(set(keys)) or dict(q_vals)
+    c2 = _lin(cost, q2)
+    cost_cap = c2 + abs(c2) * _REFINE_COST_SLACK + 1e-9
+
+    # ── Stage 3 ──
+    def messiness(ks) -> float:
+        mains = [next(iter(usable[k].outputs), None) for k in ks]
+        return len(ks) + _REFINE_PARALLEL_PEN * (len(mains) - len(set(mains)))
+
+    m = None
+    for backend in ("SCIP", "CBC"):
+        m = locked(backend, set(keys))
+        if m is not None:
+            break
+    if m is not None:
+        m.s.SetTimeLimit(_REFINE_TIME_MS)
+        m.ct(-m.inf, cost_cap, cost)
+        big_m = max(2.0 * sum(q2.values()), 1.0)      # generous machine bound → valid big-M
+        m.ct(-m.inf, big_m, {k: 1.0 for k in keys})
+        y = {k: m.s.BoolVar("") for k in keys}
+        obj = m.s.Objective()
+        obj.SetMinimization()
+        for k in keys:
+            ct = m.s.Constraint(-m.inf, 0.0)          # q_k ≤ big_m · y_k
+            ct.SetCoefficient(m.q[k], 1.0)
+            ct.SetCoefficient(y[k], -big_m)
+            obj.SetCoefficient(y[k], 1.0)
+            # stage-2 cost as a tie-break, worth < one recipe in total
+            obj.SetCoefficient(m.q[k], 0.5 * cost[k] / max(abs(cost_cap), 1e-9))
+        # Extra producers of the same main product (byproducts don't count —
+        # several recipes co-producing Heavy Oil Residue is normal).
+        by_main: Dict[str, List[str]] = {}
+        for k in keys:
+            if usable[k].outputs:
+                by_main.setdefault(next(iter(usable[k].outputs)), []).append(k)
+        for ks in by_main.values():
+            if len(ks) > 1:
+                extra = m.s.NumVar(0, m.inf, "")       # extra ≥ (#producers used) − 1
+                ct = m.s.Constraint(-1.0, m.inf)
+                ct.SetCoefficient(extra, 1.0)
+                for k in ks:
+                    ct.SetCoefficient(y[k], -1.0)
+                obj.SetCoefficient(extra, _REFINE_PARALLEL_PEN)
+
+        if m.solved():
+            chosen = {k for k in keys if y[k].solution_value() > 0.5
+                      and m.q[k].solution_value() >= 1e-5}
+            if messiness(chosen) < messiness({k for k, v in q2.items() if v >= 1e-5}):
+                # Polish: exact stage-2 optimum within the chosen recipes
+                q3 = min_cost(chosen)
+                if q3 is not None and _lin(cost, q3) <= cost_cap + 1e-6:
+                    q2 = q3
+
+    q2 = {k: q2.get(k, 0.0) for k in keys}
+    if goal and _lin(goal, q2) < g0 - max(1e-4, abs(g0) * 1e-5):
+        return None
+    if sum(spm.get(k, 0) * math.ceil(v) for k, v in q2.items() if v >= 1e-5) \
+            > scenario.somersloops_available:
+        return None
+    if scenario.max_machines is not None:
+        def ceil_total(qv):
+            return sum(math.ceil(v) for v in qv.values() if v >= 1e-5)
+        if ceil_total(q2) > max(scenario.max_machines, ceil_total(q_vals)):
+            return None
+    return q2, _lin(goal, q2)
 
 
 # ── Warm-start LP wrapper ─────────────────────────────────────────────────────
@@ -765,7 +792,7 @@ class WarmLP:
 
         # Pass 1: flow constraints (non-resource items): net(item) >= 0.
         # All items — including unavoidable byproducts — are allowed to be surplus.
-        # Gratuitous resource use is suppressed by the epsilon penalty on the objective.
+        # Gratuitous resource use is removed afterwards by _refine.
         self.flow_ct: Dict[str, object] = {}
         for item in self.items:
             if item in scenario.available_resources:
@@ -842,17 +869,13 @@ class WarmLP:
                 if c:
                     obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + w * c)
 
-        # Epsilon penalty on resource consumption — same logic as _build_lp.
-        # Rewards the solver for leaving slack resources idle rather than routing
-        # them through unneeded recipes when it makes no difference to the objective.
-        # ε is small enough to never alter which solution is truly optimal.
-        _EPS = 1e-7
-        for item in scenario.available_resources:
+        # Min New Alts penalty — same as _build_lp (independent of sloops, so
+        # patch_spm never needs to touch it).
+        if scenario.minimize_new_alts:
+            unlocked = set(scenario.unlocked_alt_recipes)
             for i, k in enumerate(rkeys):
-                c = net_coeff[k].get(item, 0.0)
-                if c:
-                    # c = eff_out - inputs; resource penalty = +ε * c (reward not consuming)
-                    obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + _EPS * c)
+                if usable[k].alternate and k not in unlocked:
+                    obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) - _NEW_ALT_PEN)
 
     def solve(self) -> Tuple[str, float, Dict[str, float]]:
         status = self.slvr.Solve()
@@ -904,15 +927,6 @@ class WarmLP:
             if item in self._obj_weights:
                 w = self._obj_weights[item]
                 obj.SetCoefficient(qi, obj.GetCoefficient(qi) + w * delta)
-
-            # epsilon penalty on resource consumption: reward = +ε × net_coeff.
-            # When eff_out changes, net_coeff for this (recipe, item) pair changes
-            # too, so the epsilon term must be refreshed here.
-            if item in self.scenario.available_resources:
-                _EPS = 1e-7
-                old_nc = self._net_coeff[k].get(item, 0.0)
-                new_nc = old_nc + delta   # eff_out increased by delta; inputs unchanged
-                obj.SetCoefficient(qi, obj.GetCoefficient(qi) + _EPS * (new_nc - old_nc))
 
         # Update tracking state
         self.spm[k] = new_spm_val
@@ -1092,17 +1106,12 @@ def _trial_sloop(
     owns its own WarmLP instance, never shared across threads).
     Patches the single recipe coefficient, solves, then un-patches so the
     WarmLP can be reused for the next candidate in the same thread.
-    Returns (k, gain, obj_val, q_vals, cost) if viable, else None.
+    Returns (k, gain, obj_val, q_vals, sloops_used) if viable, else None.
     """
     warm = get_warm()
     r   = warm.usable[k]
     cur = warm.spm.get(k, 0)
     if cur >= r.sloop_slots:
-        return None
-
-    n_machines = max(1, math.ceil(best_q.get(k, 0.0)))
-    cost = n_machines
-    if cost > budget:
         return None
 
     # Patch → solve → un-patch (keeps the WarmLP state clean for other workers)
@@ -1113,16 +1122,25 @@ def _trial_sloop(
     if status != "Optimal":
         return None
 
-    # Power-cap check with trial spm
+    # Real sloop use of the trial solution — the LP may have grown any
+    # sloop'd recipe (not just k), and every physical machine needs its sloops.
     trial_spm = dict(warm.spm)
     trial_spm[k] = cur + 1
+    used = _sloops_used(trial_spm, q_vals)
+    if used > budget:
+        return None
+
     if warm.scenario.max_power_mw is not None:
         pw = _total_power(warm.usable, q_vals, trial_spm, {})
         if pw > warm.scenario.max_power_mw:
             return None
 
     gain = obj_val - best_obj
-    return (k, gain, obj_val, q_vals, cost)
+    return (k, gain, obj_val, q_vals, used)
+
+
+def _sloops_used(spm: Dict[str,int], q_vals: Dict[str,float]) -> int:
+    return sum(n * math.ceil(q_vals.get(k, 0.0) - 1e-9) for k, n in spm.items() if n)
 
 
 def _iterate_sloops(
@@ -1136,7 +1154,7 @@ def _iterate_sloops(
 
     spm[k] = sloops per machine (0..max_slots). Starts at 0 for every recipe.
     Each round: all eligible candidates evaluated in parallel; the winner
-    (highest objective gain that also satisfies the power cap) is committed.
+    (highest objective gain within the sloop budget and power cap) is committed.
 
     Thread model: a single long-lived ThreadPoolExecutor is reused across all
     rounds to avoid repeated thread-lifecycle overhead. Each thread owns one
@@ -1144,7 +1162,8 @@ def _iterate_sloops(
     _get_warm() keeps thread-local LPs aligned with the committed spm after
     each round.
 
-    Budget cost = ceil(q[k]) sloops (one physical sloop per machine).
+    Budget: every accepted state is a real LP solution whose physical sloop
+    use Σ spm[k] × ceil(q[k]) fits within somersloops_available.
     """
     if scenario.somersloops_available == 0:
         return {}, base_q, base_obj
@@ -1175,12 +1194,13 @@ def _iterate_sloops(
 
     n_workers = min(len(candidates), 8)
     with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        while budget > 0:
+        while True:
+            used_now = _sloops_used(spm, best_q)
             eligible = [
                 k for k in candidates
                 if spm[k] < usable[k].sloop_slots
                 and best_q.get(k, 0.0) > 1e-3
-                and max(1, math.ceil(best_q.get(k, 0.0))) <= budget
+                and used_now + max(1, math.ceil(best_q.get(k, 0.0))) <= budget
             ]
             if not eligible:
                 break
@@ -1189,49 +1209,38 @@ def _iterate_sloops(
                     for k in eligible}
             results = [fut.result() for fut in as_completed(futs)
                        if fut.result() is not None]
-
+            results = [r for r in results if r[1] > 0]
             if not results:
                 break
 
-            # Sort winners by gain descending, then greedily commit all whose
-            # resource footprints don't overlap with already-committed recipes
-            # in this round.  Recipes with disjoint resource footprints can be
-            # committed together without re-solving because their LP effects are
-            # independent — this can halve the number of outer rounds.
+            # Winners with disjoint item footprints barely interact, so try
+            # committing all of them at once (fewer rounds). The combined state
+            # is re-solved and kept only if it is at least as good as the top
+            # winner alone and still within budget; otherwise just the top.
             results.sort(key=lambda r: r[1], reverse=True)
+            top_k, _, top_obj, top_q, _ = results[0]
+            batch, touched = [], set()
+            for cand_k, *_ in results:
+                footprint = set(usable[cand_k].inputs) | set(usable[cand_k].outputs)
+                if not footprint & touched:
+                    batch.append(cand_k)
+                    touched |= footprint
 
-            committed_items: Set[str] = set()
-            committed_any = False
-            for cand_k, gain, obj_val, new_q, cost in results:
-                if gain <= 0:
-                    break
-                # A recipe conflicts if any of its inputs or outputs were
-                # touched by a recipe already committed this round.
-                footprint = (set(usable[cand_k].inputs.keys())
-                             | set(usable[cand_k].outputs.keys()))
-                if footprint & committed_items:
-                    continue  # skip — would need a re-solve to be safe
-                if cost > budget:
-                    continue
-                spm[cand_k] += 1
-                budget      -= cost
-                committed_items |= footprint
-                committed_any = True
-                # Use the q_vals and obj from the best winner only; the others
-                # are single-recipe trials so best_q/best_obj are re-synced at
-                # the top of _get_warm() each round regardless.
-                best_q   = new_q
-                best_obj = obj_val
-
-            if not committed_any:
-                break
-
-    # A round may commit several disjoint winners, but best_q/best_obj come from
-    # a single-recipe trial — re-solve once with the final spm so they match.
-    if any(spm.values()):
-        st, obj_final, q_final = WarmLP(scenario, usable, spm).solve()
-        if st == "Optimal":
-            best_q, best_obj = q_final, obj_final
+            accepted = False
+            if len(batch) > 1:
+                trial = dict(spm)
+                for k2 in batch:
+                    trial[k2] += 1
+                st, obj_b, q_b = WarmLP(scenario, usable, trial).solve()
+                if (st == "Optimal" and obj_b >= top_obj - 1e-9
+                        and _sloops_used(trial, q_b) <= budget
+                        and (scenario.max_power_mw is None
+                             or _total_power(usable, q_b, trial, {}) <= scenario.max_power_mw)):
+                    spm, best_q, best_obj = trial, q_b, obj_b
+                    accepted = True
+            if not accepted:
+                spm[top_k] += 1
+                best_q, best_obj = top_q, top_obj
 
     return spm, best_q, best_obj
 
@@ -1534,11 +1543,11 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     else:
         spm, q_vals, obj_val = {}, base_q, base_obj
 
-    # Stage 2b: among equally-good solutions, pick the one with the fewest recipes
+    # Stages 2–3: among equally-good solutions, the leanest and simplest one
     if status == "Optimal":
-        simpler = _simplify_recipes(scenario, usable, spm, q_vals)
-        if simpler is not None:
-            q_vals, obj_val = simpler
+        refined = _refine(scenario, usable, spm, q_vals)
+        if refined is not None:
+            q_vals, obj_val = refined
 
     # Stage 3: shard allocation
     shard_alloc = _allocate_shards(
