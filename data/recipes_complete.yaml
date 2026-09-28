@@ -49,7 +49,7 @@ machine_meta:
     build_cost: {}
   Packager:
     base_power_mw: 10.0
-    sloop_slots: 2
+    sloop_slots: 0
     build_cost:
       Steel_Beam: 20
       Rubber: 10

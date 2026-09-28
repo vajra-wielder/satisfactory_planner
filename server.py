@@ -23,7 +23,7 @@ sys.path.insert(0, str(HERE))
 from solver import (
     load_recipes, load_machine_meta, load_scenario, solve,
     result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR,
-    compute_duals,
+    compute_duals, somersloop_targets,
 )
 
 ALL_RECIPES  = load_recipes()
@@ -121,7 +121,8 @@ def _run_solve_job(job_id: str, s, all_recipes, machine_meta):
             "spm": {f["recipe_key"]: f["sloops_per_machine"]
                     for f in d.get("flows", [])
                     if f.get("sloops_per_machine", 0) > 0},
-            "usable": getattr(result, "_usable", None),
+            "usable": getattr(result, "usable", None),
+            "flows": d.get("flows", []),
         }
         with _dual_lock:
             _dual_cache.clear()
@@ -357,6 +358,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
             return
 
+        if path == "/api/sloop-targets":
+            with _dual_lock:
+                cache = dict(_dual_cache)
+            if not cache:
+                self._json(200, {"targets": [], "binding": {}, "note": "No solve result cached yet."})
+                return
+            try:
+                self._json(200, somersloop_targets(
+                    cache["scenario"], ALL_RECIPES, cache.get("flows", []), cache.get("usable")))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._json(500, {"error": str(e)})
+            return
+
         if path == "/api/log":
             log_path = HERE / "planner.log"
             try:
@@ -410,7 +425,8 @@ class Handler(BaseHTTPRequestHandler):
                     "spm": {f["recipe_key"]: f["sloops_per_machine"]
                             for f in d.get("flows", [])
                             if f.get("sloops_per_machine", 0) > 0},
-                    "usable": getattr(result, "_usable", None),
+                    "usable": getattr(result, "usable", None),
+                    "flows": d.get("flows", []),
                 }
                 with _dual_lock:
                     _dual_cache.clear()
