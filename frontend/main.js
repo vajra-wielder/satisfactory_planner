@@ -430,6 +430,7 @@ function loadSaved() {
         saved,
         key => fetchScenario(key).then(data => {
           Object.assign(SC, data);
+          if (!data.unlimited_resources) SC.unlimited_resources = [];   // older saves
           if (data.pinboard) setPins(data.pinboard);
           else setPins(null);
           setResult(null);

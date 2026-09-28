@@ -104,15 +104,17 @@ function renderAnalysis() {
     });
   });
 
+  const unlimitedSet = new Set(RESULT.unlimited_resources || []);
   const utils = resources.map(([item, available]) => {
     const used  = consumed[item] || 0;
-    const pct   = available > 0 ? Math.min(100, (used / available) * 100) : 0;
+    const unlimited = unlimitedSet.has(item);
+    const pct   = unlimited ? 0 : available > 0 ? Math.min(100, (used / available) * 100) : 0;
     const dual  = duals[item] ?? null;
     const satAt = sats[item] ?? null;
-    return { item, available, used, pct, dual, satAt };
-  }).sort((a, b) => b.pct - a.pct);
+    return { item, available, used, pct, dual, satAt, unlimited };
+  }).sort((a, b) => (a.unlimited - b.unlimited) || (b.pct - a.pct));
 
-  const binding   = utils.filter(u => u.pct >= 99.0);
+  const binding   = utils.filter(u => !u.unlimited && u.pct >= 99.0);
   const coBinding = binding.length > 1;
   const hasDuals  = Object.keys(duals).length > 0;
 
@@ -133,7 +135,19 @@ function renderAnalysis() {
     el.querySelector('.an-section:last-child .an-body').innerHTML +=
       '<p style="font-size:11px;color:var(--t3)">No resource constraints in this scenario.</p>';
   } else {
-    utils.forEach(({ item, available, used, pct, dual, satAt }) => {
+    utils.forEach(({ item, available, used, pct, dual, satAt, unlimited }) => {
+      if (unlimited) {
+        el.querySelector('.an-section:last-child .an-body').innerHTML += `
+          <div style="margin-bottom:13px;padding-bottom:11px;border-bottom:1px solid var(--b)">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+              <span style="font-size:12px;font-weight:600;color:var(--t)">${itemName(item)}</span>
+              <span style="font-size:10px;color:var(--acc);font-weight:600">∞ Unlimited</span>
+            </div>
+            <div style="font-size:10px;color:var(--t3);font-family:var(--mono)">
+              ${used.toFixed(2)} per min drawn · free, no cap</div>
+          </div>`;
+        return;
+      }
       const barColor  = pct >= 99 ? 'var(--err)' : pct >= 80 ? 'var(--warn)' : 'var(--ok)';
       const statusLbl = pct >= 99 ? '⚠ Binding'  : pct >= 80 ? 'Near limit'  : 'Slack';
 

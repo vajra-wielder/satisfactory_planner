@@ -56,6 +56,8 @@ export function syncKv(name) {
     const evaled = evalExpr(String(val));
     SC[st.field][key] = evaled !== null ? evaled : (parseFloat(val) || 0);
   });
+  if (name === 'res')
+    SC.unlimited_resources = st.rows.filter(r => r.key && r.unlimited).map(r => r.key);
 }
 
 // Sync all panels at once — used by readUI() before a solve.
@@ -67,9 +69,11 @@ export function syncAllKv() {
 // Populate rows from the current SC field, then re-render.
 function loadKvFromScenario(name) {
   const st = KVS[name];
+  const unlimited = new Set(name === 'res' ? SC.unlimited_resources || [] : []);
   st.rows = Object.entries(SC[st.field] || {}).map(([key, val]) => ({
     key,
     val: String(val),
+    unlimited: unlimited.has(key),
   }));
   renderKv(name);
 }
@@ -89,7 +93,8 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
   const valInputs = [];
 
   st.rows.forEach((row, i) => {
-    const div  = document.createElement('div'); div.className = 'kvr';
+    const div  = document.createElement('div');
+    div.className = name === 'res' ? 'kvr kvr-res' : 'kvr';
     const wrap = document.createElement('div'); wrap.className = 'acw';
 
     // ── Item key input ───────────────────────────────────
@@ -152,6 +157,26 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
 
     div.appendChild(wrap);
     div.appendChild(vi);
+
+    // ── Unlimited toggle (resources only) ────────────────
+    // An unlimited resource has no cap and costs nothing, so an abundant one
+    // like Water doesn't dilute the finite resources in the solver's score.
+    if (name === 'res') {
+      const ub = document.createElement('button');
+      ub.className = 'bi binf';
+      ub.innerHTML = '∞';
+      const paint = () => {
+        ub.classList.toggle('on', !!row.unlimited);
+        ub.title = row.unlimited
+          ? 'Unlimited — click to use the amount instead'
+          : 'Treat as unlimited (no cap, free)';
+        vi.disabled = !!row.unlimited;
+        vi.value = row.unlimited ? '∞' : (row.val || '');
+      };
+      ub.addEventListener('click', () => { row.unlimited = !row.unlimited; paint(); syncKv(name); });
+      paint();
+      div.appendChild(ub);
+    }
     div.appendChild(rb);
     c.appendChild(div);
   });

@@ -19,6 +19,7 @@ export const DEF_SC = () => ({
   max_machines: null,
   notes: '',
   minimize_new_alts: false,
+  unlimited_resources: [],   // resources with no cap that don't count in the resource score
 });
 
 // Active scenario (mutable)

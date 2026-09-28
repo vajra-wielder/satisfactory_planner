@@ -150,6 +150,7 @@ def _build_scenario(b: dict) -> Scenario:
         alternate_recipes_enabled=b.get("alternate_recipes_enabled", []) or [],
         enabled_machines=b.get("enabled_machines", []) or [],
         available_resources={k: float(v) for k, v in (b.get("available_resources") or {}).items()},
+        unlimited_resources=list(b.get("unlimited_resources") or []),
         must_produce={k: float(v) for k, v in (b.get("must_produce") or {}).items()},
         min_produce={k: float(v) for k, v in (b.get("min_produce") or {}).items()},
         max_produce={k: float(v) for k, v in (b.get("max_produce") or {}).items()},

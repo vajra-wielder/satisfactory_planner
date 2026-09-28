@@ -82,6 +82,9 @@ class Scenario:
     # unlocked_alt_recipes. The planner will prefer base recipes and already-owned
     # alts, only reaching for new alts when they meaningfully improve the solution.
     minimize_new_alts: bool = False
+    # Resources treated as unlimited: no supply cap, and left out of the
+    # resource score so they're free and don't dilute the finite ones.
+    unlimited_resources: List[str] = field(default_factory=list)
 
 @dataclass
 class LayoutOption:
@@ -189,6 +192,7 @@ def load_scenario(path) -> Scenario:
         max_machines=_si(raw.get("max_machines")) if raw.get("max_machines") else None,
         notes=raw.get("notes", "") or "",
         minimize_new_alts=bool(raw.get("minimize_new_alts", False)),
+        unlimited_resources=list(raw.get("unlimited_resources") or []),
     )
 
 def list_scenarios():
@@ -212,6 +216,19 @@ def _sloop_power_mult(r: Recipe, spm_val: int) -> float:
 def _output_mult(r: Recipe, spm_val: int) -> float:
     """1 + sloops_per_machine / max_slots  — throughput scaling factor."""
     return 1.0 + (spm_val / r.sloop_slots) if r.sloop_slots > 0 else 1.0
+
+
+# ── Unlimited resources ───────────────────────────────────────────────────────
+_UNLIMITED = 1e9   # supply used for resources marked unlimited (never binding)
+
+def _with_unlimited(scenario: Scenario) -> Scenario:
+    """Scenario whose unlimited resources get a supply that can never bind."""
+    if not scenario.unlimited_resources:
+        return scenario
+    res = dict(scenario.available_resources)
+    for it in scenario.unlimited_resources:
+        res[it] = _UNLIMITED
+    return _dc_replace(scenario, available_resources=res)
 
 
 # ── Pruning — forward grounding + backward demand ─────────────────────────────
@@ -752,9 +769,11 @@ def _solve_lp_with_duals(
 # stages. Each stage keeps the previous stages' optimum locked in place:
 #
 #   1. Goal  — maximise the weighted goal items.
-#   2. Lean  — minimise a balanced cost of machines and raw resources.
+#   2. Lean  — (a) least raw resources, then (b) fewest whole machines.
+#              Resources are the finite thing; machines can always be built,
+#              so machines never buy back resources.
 #   3. Clean — minimise recipes and duplicate producers of one product, letting
-#              the stage-2 cost rise by at most _COST_SLACK.
+#              machines rise by at most _MACHINE_SLACK (resources stay locked).
 #   4. Tidy  — with everything above locked, the fewest somersloops (so none
 #              sits in a machine where it changes nothing). Shards are always
 #              the fewest the chosen machine counts need.
@@ -769,17 +788,16 @@ def _solve_lp_with_duals(
 # individually in-game, and mixing is never worse than one level per recipe.
 # Budgets: Σ l·n ≤ somersloops, Σ s ≤ shards, Σ n ≤ max_machines.
 #
-# Stage 2 can't add "1 per machine + 1 per resource unit": resource rates run
-# from single digits to thousands (Water) and would drown out machines. Each
-# term is measured against its own scale instead —
-#   machines  → Σ n / (machine-equivalents in the stage-1 solution)
-#   resources → mean over resources of (net use / supply)
-# — so "a whole factory's worth of machines" and "all of every resource" each
-# count as 1; the weights say how those two compare. Power is not optimised.
-_W_MACHINES    = 1.0
-_W_RESOURCES   = 1.0
+# Stage 2a scores resources as the mean over resources of (net use / supply),
+# so each is measured on its own scale — 50 Water/min out of 5000 counts the
+# same as 1.2 Caterium/min out of 120. Resources marked unlimited are left out
+# of that mean entirely (and uncapped), so they're free and don't dilute the
+# rest. Stage 2b's whole-number score lets the solver round its bound up
+# (77.2 → 78 machines) and prune, which keeps shard-heavy plans fast.
+# Power is not optimised.
 _GOAL_TOL      = 1e-7    # relative slack on the locked goal
-_COST_SLACK    = 0.01    # stage 3 may raise stage 2's cost by ≤1%
+_RES_TOL       = 1e-6    # relative slack on the locked resource score (numerics only)
+_MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machines for fewer recipes
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
 _STAGE_TIME_S  = (20, 20, 15)   # per stage; on timeout the best plan so far is kept
 _Q_EPS         = 1e-6    # throughput below this is treated as "not running"
@@ -1024,43 +1042,56 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe],
         g, a = m1.value(m1.goal), m1.value(m1.new_alt)
         if m1 is mip:
             best = mip.snapshot(proven)
-        m0 = max(sum(v.solution_value() for key, v in m1.var.items() if key[0] == "q"), 1.0)
         if mip.goal:
             lock(g - max(1e-6, abs(g) * _GOAL_TOL), mip.inf, lambda m: m.goal)
         if mip.new_alt:
             lock(-mip.inf, a + 1e-6, lambda m: m.new_alt)
         tighten()
-    else:
-        # No goal to scale from: size the factory by its fewest machine-equivalents
-        qs = {key: 1.0 for key in lp.var if key[0] == "q"}
-        if lp.run(qs, False, _STAGE_TIME_S[0]) is None:
-            return None
-        m0 = max(lp.value(qs), 1.0)
 
     # ── Stage 2: lean ──
-    supplied = [it for it, v in scenario.available_resources.items() if v > 0]
-    def cost_of(m) -> Dict[Key, float]:
-        cost = {key: _W_MACHINES / m0 for key in m.machines}
+    # 2a: least raw resources — resources are the finite thing, so they are
+    #     never traded for machines. One score across resources: the mean of
+    #     net use / supply (each resource on its own scale).
+    unlimited = set(scenario.unlimited_resources)
+    supplied = [it for it, v in scenario.available_resources.items()
+                if v > 0 and it not in unlimited]
+    def resources_of(m) -> Dict[Key, float]:
+        cost: Dict[Key, float] = {}
         for it in supplied:
-            w = _W_RESOURCES / len(supplied) / scenario.available_resources[it]
+            w = 1.0 / len(supplied) / scenario.available_resources[it]
             for key, c in m.net.get(it, {}).items():
                 cost[key] = cost.get(key, 0.0) - c * w     # −net = consumption
         return cost
-    cost = cost_of(mip)
-    ok = mip.run(cost, False, _STAGE_TIME_S[1])
+    if supplied:
+        # Resources depend only on throughput; integers matter only through
+        # sloops or a machine cap, so otherwise the LP gives the exact optimum.
+        integer_res = mip.integer and (scenario.somersloops_available > 0
+                                       or scenario.max_machines is not None)
+        m2 = mip if integer_res or not mip.integer else lp
+        ok = m2.run(resources_of(m2), False, _STAGE_TIME_S[1])
+        if ok is None:
+            return best
+        proven &= ok
+        r2 = m2.value(resources_of(m2))
+        lock(-mip.inf, r2 + abs(r2) * _RES_TOL + 1e-9, resources_of)
+        tighten()
+    # 2b: fewest whole machines. A whole-number score lets the solver round its
+    #     bound up (77.2 → 78) and prune — what keeps shard-heavy plans fast.
+    ok = mip.run(mip.machines, False, _STAGE_TIME_S[1])
     if ok is None:
         return best
     proven &= ok
     best = mip.snapshot(proven)
-    c2 = mip.value(cost)
-    lock(-mip.inf, c2 + abs(c2) * _COST_SLACK + 1e-9, cost_of)
+    n2 = mip.value(mip.machines)
+    extra_machines = math.floor(n2 * _MACHINE_SLACK + 1e-9)
+    lock(-mip.inf, n2 + extra_machines + 0.5, lambda m: m.machines)
     if not mip.integer:
         return best
     tighten()
 
     # ── Stage 3: clean ──
     # 3a: fewest recipes + duplicate producers (a half-integer score, quick to
-    # prove); 3b: with that locked, the lowest stage-2 cost among such plans.
+    # prove); 3b: with that locked, the fewest machines among such plans.
     obj: Dict[Key, float] = {}
     for k, yv in mip.y.items():
         obj[("y", k, 0)] = 1.0
@@ -1083,7 +1114,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe],
     best = mip.snapshot(proven)
     best.clean_proven = ok
     mip.ct(-mip.inf, mip.value(obj) + 1e-6, obj)
-    ok_b = mip.run(cost, False, _STAGE_TIME_S[2])
+    ok_b = mip.run(mip.machines, False, _STAGE_TIME_S[2])
     if ok_b is None:
         return best
     best = mip.snapshot(proven)
@@ -1091,8 +1122,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe],
 
     # ── Stage 4: tidy ──
     if mip.sloops and scenario.somersloops_available > 0:
-        c3 = mip.value(cost)
-        mip.ct(-mip.inf, c3 + abs(c3) * 1e-9 + 1e-9, cost)
+        mip.ct(-mip.inf, mip.value(mip.machines) + 0.5, mip.machines)
         if mip.run(mip.sloops, False, _STAGE_TIME_S[2]) is not None:
             tidy = mip.snapshot(proven)
             tidy.clean_proven = best.clean_proven
@@ -1204,11 +1234,12 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     shadow_prices:     Dict[str,float]  = {}   # computed lazily via compute_duals()
     saturation_points: Dict[str,object] = {}
 
-    plan = _plan(scenario, usable, warnings) if usable else None
+    model_sc = _with_unlimited(scenario)
+    plan = _plan(model_sc, usable, warnings) if usable else None
     if plan is None and usable and scenario.max_machines is not None:
         # The cap is below what the constraints need: show the fewest-machine
         # factory that meets them instead.
-        plan = _plan(_dc_replace(scenario, max_machines=None, objective={},
+        plan = _plan(_dc_replace(model_sc, max_machines=None, objective={},
                                  minimize_new_alts=False), usable, warnings)
         if plan is not None:
             warnings.append(
@@ -1293,6 +1324,9 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             item_produced[item] = item_produced.get(item, 0.0) + qty
         for item, qty in f.inputs.items():
             item_consumed[item] = item_consumed.get(item, 0.0) + qty
+    # Unlimited resources supply exactly what the plan draws (no leftover shown)
+    for item in scenario.unlimited_resources:
+        item_supply[item] = max(item_consumed.get(item, 0.0) - item_produced.get(item, 0.0), 0.0)
 
     all_system = set(item_supply.keys()) | set(item_produced.keys())
     net_items: Dict[str,float] = {}
@@ -1395,7 +1429,7 @@ def compute_duals(
         usable, _ = prune_recipes(scenario, all_recipes)
     if not usable:
         return {}, {}
-    _, _, _, shadow, saturation = _solve_lp_with_duals(scenario, usable, spm or {})
+    _, _, _, shadow, saturation = _solve_lp_with_duals(_with_unlimited(scenario), usable, spm or {})
     return shadow, saturation
 
 
@@ -1432,6 +1466,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "error_sinks":           result.error_sinks,
         "surplus_intermediates": result.surplus_intermediates,
         "cap_overshoot":         result.cap_overshoot,
+        "unlimited_resources":   list(scenario.unlimited_resources),
         "pruned_recipe_count":   result.pruned_recipe_count,
         "objective_items":       result.objective_items,
         "net_items":             result.net_items,
