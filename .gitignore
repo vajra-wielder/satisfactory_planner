@@ -12,3 +12,5 @@ venv/
 
 # Logs
 *.log
+# Cached solve results (per machine, regenerated on demand)
+scenarios/.results/

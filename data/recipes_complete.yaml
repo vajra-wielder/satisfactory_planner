@@ -199,7 +199,7 @@ recipes:
       Alclad_Aluminum_Sheet: 45.0
       Excited_Photonic_Matter: 125.0
     outputs:
-      Crystal_Oscillator: 5.0
+      Superposition_Oscillator: 5.0
       Dark_Matter_Residue: 125.0
   Neural_Quantum_Processor:
     display: Neural-Quantum Processor
@@ -220,10 +220,10 @@ recipes:
     inputs:
       Magnetic_Field_Generator: 4.0
       Neural_Quantum_Processor: 4.0
-      Crystal_Oscillator: 4.0
+      Superposition_Oscillator: 4.0
       Excited_Photonic_Matter: 100.0
     outputs:
-      Alien_Power_Matrix: 4.0
+      AI_Expansion_Server: 4.0
       Dark_Matter_Residue: 100.0
   Ionized_Fuel:
     display: Ionized Fuel

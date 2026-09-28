@@ -60,6 +60,14 @@ import {
 
 const SOLVE_STYLES = new Set();  // active style ids
 
+// Restore modifier toggles (e.g. from a cached solve)
+function setSolveStyles(styles) {
+  SOLVE_STYLES.clear();
+  (styles || []).forEach(s => SOLVE_STYLES.add(s));
+  document.querySelectorAll('.ssc[data-style]').forEach(btn =>
+    btn.classList.toggle('on', SOLVE_STYLES.has(btn.dataset.style)));
+}
+
 function initSolveStyles() {
   document.querySelectorAll('.ssc').forEach(btn => {
     if (btn.id === 'ssc-min-new-alts') return;  // wired separately below
@@ -308,7 +316,11 @@ function handleSolve() {
   if (basePayload.somersloops_available  == null) basePayload.somersloops_available  = 0;
 
   // Apply first-pass style transforms (no-byproducts tries hard caps first)
-  const payload = applyStylesFirstPass(basePayload, { hardByproducts: true });
+  // The server caches results per scenario; it keys them on the settings
+  // before modifiers (so a reopened scenario finds its last plan) plus the
+  // modifiers themselves.
+  const cacheInfo = { solve_styles: [...SOLVE_STYLES], base_scenario: basePayload };
+  const payload = { ...applyStylesFirstPass(basePayload, { hardByproducts: true }), ...cacheInfo };
 
   solving = true;
   solveAbort = new AbortController();
@@ -336,7 +348,7 @@ function handleSolve() {
       !result?.status?.startsWith('Optimal')
     ) {
       btn.textContent = 'Relaxing…';
-      const softPayload = applyStylesFirstPass(basePayload, { hardByproducts: false });
+      const softPayload = { ...applyStylesFirstPass(basePayload, { hardByproducts: false }), ...cacheInfo };
       result = await solveScenario(softPayload, myAbort.signal);
       if (result?.status?.startsWith('Optimal')) {
         result.warnings = result.warnings || [];
@@ -429,14 +441,20 @@ function loadSaved() {
       renderSaved(
         saved,
         key => fetchScenario(key).then(data => {
-          Object.assign(SC, data);
-          if (!data.unlimited_resources) SC.unlimited_resources = [];   // older saves
-          if (data.pinboard) setPins(data.pinboard);
+          const { _last_solve: last, ...scenario } = data;
+          Object.assign(SC, scenario);
+          if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
+          if (scenario.pinboard) setPins(scenario.pinboard);
           else setPins(null);
-          setResult(null);
+          // Cached plan from the last solve of exactly these settings
+          setResult(last ? last.result : null);
+          setSolveStyles(last ? last.styles : []);
           _machinesDirty = true;
           fillUI({ skipMachines: true });
           updatePinBadge();
+          updateIssuesBadge(RESULT);
+          renderResultsBar();
+          renderBuildCost();
           if (pinboardMode) rebuildPinboard();
           else initLayout();
         }),

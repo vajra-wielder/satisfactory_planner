@@ -106,27 +106,100 @@ _scenario_list_cache: dict = {}   # {frozenset of (name, mtime): list[dict]}
 # Per-scenario load cache — keyed by (name, mtime); invalidates on any file change.
 _scenario_load_cache: dict = {}   # {(name, mtime): dict}
 
+# ── Solve result cache ────────────────────────────────────────────────────────
+# The last solve of each scenario is kept in scenarios/.results/<key>.json with
+# a signature of everything that determines it, so reopening a scenario shows
+# its last plan at once and re-solving unchanged inputs is instant. The
+# signature covers the solver inputs (not name/description/notes), the
+# unlocked alts, the solve modifiers, and the recipe data + solver code
+# themselves — editing either invalidates every cached plan.
+import hashlib
+from collections import OrderedDict
+from dataclasses import asdict
+RESULTS_DIR = SCENARIOS_DIR / ".results"
+_CODE_SIG = hashlib.sha256(
+    (HERE / "solver.py").read_bytes() + (HERE / "data" / "recipes_complete.yaml").read_bytes()
+).hexdigest()[:16]
+_mem_cache: "OrderedDict[str, dict]" = OrderedDict()   # signature → result (this session)
+_MEM_CACHE_SIZE = 32
+_cache_lock = threading.Lock()
+
+def _signature(s: Scenario, styles=()) -> str:
+    d = asdict(s)
+    for f in ("name", "description", "notes"):
+        d.pop(f, None)
+    d["unlocked_alt_recipes"] = sorted(d.get("unlocked_alt_recipes") or [])
+    blob = json.dumps({"s": d, "styles": sorted(styles), "code": _CODE_SIG},
+                      sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+def _result_key(name: str) -> str:
+    # Same key the frontend saves the scenario under (see handleSave)
+    return "".join(ch for ch in "_".join(name.split()).lower() if ch.isalnum() or ch in "_-") or "scenario"
+
+def _cache_read(key: str):
+    p = RESULTS_DIR / f"{key}.json"
+    try:
+        return json.loads(p.read_text()) if p.exists() else None
+    except Exception:
+        return None
+
+def _cache_write(key: str, entry: dict) -> None:
+    try:
+        RESULTS_DIR.mkdir(exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=RESULTS_DIR, prefix=f".{key}_", suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump(entry, f, default=str)
+        os.replace(tmp, RESULTS_DIR / f"{key}.json")
+    except Exception:
+        import traceback; traceback.print_exc()
+
+def _cache_lookup(key: str, sig: str):
+    with _cache_lock:
+        if sig in _mem_cache:
+            _mem_cache.move_to_end(sig)
+            return _mem_cache[sig]
+    entry = _cache_read(key)
+    if entry and entry.get("sig") == sig:
+        return entry.get("result")
+    return None
+
+def _cache_store(key: str, sig: str, base_sig: str, styles, result: dict) -> None:
+    with _cache_lock:
+        _mem_cache[sig] = result
+        _mem_cache.move_to_end(sig)
+        while len(_mem_cache) > _MEM_CACHE_SIZE:
+            _mem_cache.popitem(last=False)
+    _cache_write(key, {"sig": sig, "base_sig": base_sig, "styles": list(styles), "result": result})
+
+def _set_dual_cache(s, result_dict: dict, usable=None) -> None:
+    new_cache = {
+        "scenario": s,
+        "spm": {f["recipe_key"]: f["sloops_per_machine"]
+                for f in result_dict.get("flows", [])
+                if f.get("sloops_per_machine", 0) > 0},
+        "usable": usable,
+        "flows": result_dict.get("flows", []),
+    }
+    with _dual_lock:
+        _dual_cache.clear()
+        _dual_cache.update(new_cache)
+
+
 # ── Async solve job store ─────────────────────────────────────────────────────
 import uuid as _uuid
 _jobs: dict = {}   # {job_id: {"status": "pending"|"done"|"error", "result": dict|None}}
 _jobs_lock = threading.Lock()
 
-def _run_solve_job(job_id: str, s, all_recipes, machine_meta):
-    """Runs in a background thread; writes result into _jobs when done."""
+def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None):
+    """Runs in a background thread; writes result into _jobs when done.
+    cache = (key, sig, base_sig, styles) to store the result under."""
     try:
         result = solve(s, all_recipes, machine_meta)
         d      = result_to_dict(result, s, machine_meta)
-        new_cache = {
-            "scenario": s,
-            "spm": {f["recipe_key"]: f["sloops_per_machine"]
-                    for f in d.get("flows", [])
-                    if f.get("sloops_per_machine", 0) > 0},
-            "usable": getattr(result, "usable", None),
-            "flows": d.get("flows", []),
-        }
-        with _dual_lock:
-            _dual_cache.clear()
-            _dual_cache.update(new_cache)
+        _set_dual_cache(s, d, getattr(result, "usable", None))
+        if cache is not None and d.get("status", "").startswith("Optimal"):
+            _cache_store(*cache, d)
         with _jobs_lock:
             _jobs[job_id] = {"status": "done", "result": d}
     except Exception as e:
@@ -310,14 +383,24 @@ class Handler(BaseHTTPRequestHandler):
             mtime = p.stat().st_mtime
             cache_key = (name, mtime)
             if cache_key in _scenario_load_cache:
-                self._json(200, _scenario_load_cache[cache_key])
-                return
-            with open(p) as f:
-                data = yaml.safe_load(f)
-            # Keep cache bounded: one entry per scenario name (drop stale mtime)
-            _scenario_load_cache.clear() if len(_scenario_load_cache) > 50 else None
-            _scenario_load_cache[cache_key] = data
-            self._json(200, data)
+                data = _scenario_load_cache[cache_key]
+            else:
+                with open(p) as f:
+                    data = yaml.safe_load(f)
+                # Keep cache bounded: one entry per scenario name (drop stale mtime)
+                _scenario_load_cache.clear() if len(_scenario_load_cache) > 50 else None
+                _scenario_load_cache[cache_key] = data
+            out = dict(data)
+            # The last solve comes along when it was made from these exact settings
+            entry = _cache_read(_result_key(data.get("name", name)))
+            if entry and entry.get("result"):
+                try:
+                    if entry.get("base_sig") == _signature(_build_scenario(data), entry.get("styles") or []):
+                        out["_last_solve"] = {"result": entry["result"], "styles": entry.get("styles") or []}
+                        _set_dual_cache(_build_scenario(data), entry["result"])
+                except Exception:
+                    pass
+            self._json(200, out)
             return
 
         if path.startswith("/api/solve/"):
@@ -407,17 +490,7 @@ class Handler(BaseHTTPRequestHandler):
                 s      = _build_scenario(b)
                 result = solve(s, ALL_RECIPES, MACHINE_META)
                 d      = result_to_dict(result, s, MACHINE_META)
-                new_cache = {
-                    "scenario": s,
-                    "spm": {f["recipe_key"]: f["sloops_per_machine"]
-                            for f in d.get("flows", [])
-                            if f.get("sloops_per_machine", 0) > 0},
-                    "usable": getattr(result, "usable", None),
-                    "flows": d.get("flows", []),
-                }
-                with _dual_lock:
-                    _dual_cache.clear()
-                    _dual_cache.update(new_cache)
+                _set_dual_cache(s, d, getattr(result, "usable", None))
                 self._json(200, d)
             except Exception as e:
                 import traceback; traceback.print_exc()
@@ -433,15 +506,32 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 s = _build_scenario(b)
+                styles = list(b.get("solve_styles") or [])
+                base = _build_scenario(b["base_scenario"]) if b.get("base_scenario") else s
             except Exception as e:
                 self._json(400, {"error": str(e)})
                 return
+            key, sig = _result_key(s.name), _signature(s, styles)
+            base_sig = _signature(base, styles)
             job_id = _uuid.uuid4().hex
+            cached = _cache_lookup(key, sig)
+            if cached is not None:
+                # Unchanged inputs: answer at once from the cache, and record it
+                # as this scenario's last solve (it may have come from another
+                # scenario with the same settings)
+                entry = _cache_read(key)
+                if not entry or entry.get("sig") != sig:
+                    _cache_store(key, sig, base_sig, styles, cached)
+                _set_dual_cache(s, cached)
+                with _jobs_lock:
+                    _jobs[job_id] = {"status": "done", "result": cached}
+                self._json(202, {"job_id": job_id})
+                return
             with _jobs_lock:
                 _jobs[job_id] = {"status": "pending", "result": None}
             t = threading.Thread(
                 target=_run_solve_job,
-                args=(job_id, s, ALL_RECIPES, MACHINE_META),
+                args=(job_id, s, ALL_RECIPES, MACHINE_META, (key, sig, base_sig, styles)),
                 daemon=True,
             )
             t.start()
@@ -484,6 +574,12 @@ class Handler(BaseHTTPRequestHandler):
             name = path[len("/api/scenarios/"):]
             p    = self._scenario_path(name)
             if p.exists():
+                try:
+                    with open(p) as f:
+                        rk = _result_key((yaml.safe_load(f) or {}).get("name", name))
+                    (RESULTS_DIR / f"{rk}.json").unlink(missing_ok=True)   # its cached plan
+                except Exception:
+                    pass
                 p.unlink()
                 stale = [k for k in _scenario_load_cache if k[0] == name]
                 for k in stale:
