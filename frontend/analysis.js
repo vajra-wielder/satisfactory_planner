@@ -4,7 +4,7 @@
  */
 
 import { SC, RESULT, RECIPES, mCol, MABBR, itemName } from './state.js';
-import { fetchDuals, solveScenario } from './api.js';
+import { fetchDuals } from './api.js';
 
 // ── DOM helpers ───────────────────────────────────────────
 function section(parent, title, extraHTML = '') {
@@ -26,9 +26,9 @@ export function openAnalysis() {
   document.getElementById('analysis-modal').classList.add('show');
   renderAnalysis();          // render immediately with whatever we have
 
-  // Fetch duals lazily if we have a result but no shadow prices yet
-  if (RESULT?.status?.startsWith('Optimal') &&
-      Object.keys(RESULT.shadow_prices || {}).length === 0) {
+  // Fetch the analysis lazily (computed once per solve on the server)
+  if (RESULT?.status?.startsWith('Optimal') && !RESULT.analysis) {
+    const res = RESULT;
     const body = document.getElementById('analysis-body');
     // Subtle loading indicator — don't wipe the already-rendered content
     const loadingBanner = document.createElement('div');
@@ -39,10 +39,11 @@ export function openAnalysis() {
     body.prepend(loadingBanner);
 
     fetchDuals()
-      .then(({ shadow_prices, saturation_points }) => {
-        RESULT.shadow_prices     = shadow_prices     || {};
-        RESULT.saturation_points = saturation_points || {};
-        renderAnalysis();   // re-render with full dual data
+      .then(analysis => {
+        res.analysis          = analysis || {};
+        res.shadow_prices     = res.analysis.shadow_prices     || {};
+        res.saturation_points = res.analysis.saturation_points || {};
+        if (res === RESULT) renderAnalysis();   // re-render unless a new solve replaced it
       })
       .catch(() => {
         const banner = document.getElementById('duals-loading');
@@ -53,7 +54,6 @@ export function openAnalysis() {
 
 export function closeAnalysis() {
   document.getElementById('analysis-modal').classList.remove('show');
-  abortInlineRanking();
 }
 
 // ── Render ────────────────────────────────────────────────
@@ -192,6 +192,30 @@ function renderAnalysis() {
     }
   }
 
+  // ── Other limits: the machine cap and the shard pool ──────────────────────
+  const limits = RESULT.analysis?.limits || {};
+  const LIMIT_LABEL = {
+    machines: ['Machine cap', 'extra machine', `${SC.max_machines ?? '—'} machines`],
+    shards:   ['Power shards', 'extra shard', `${RESULT.shards_used || 0} of ${SC.power_shards_available ?? 0} used`],
+  };
+  const limitRows = Object.entries(limits).filter(([k]) => LIMIT_LABEL[k]);
+  if (limitRows.length) {
+    section(el, 'Other Limits');
+    const limBody = el.querySelector('.an-section:last-child .an-body');
+    limitRows.forEach(([k, v]) => {
+      const [label, unit, detail] = LIMIT_LABEL[k];
+      const binding = v >= 0.0001;
+      limBody.innerHTML += `
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px">
+          <span style="font-size:12px;font-weight:600;color:var(--t)">${label}
+            <span style="font-size:10px;font-weight:400;color:var(--t3);margin-left:4px">${detail}</span></span>
+          ${binding
+            ? `<span style="font-size:11px;color:var(--acc);font-family:var(--mono);font-weight:600">+${v.toFixed(4)} obj/${unit}</span>`
+            : `<span style="font-size:11px;color:var(--t3)">not limiting</span>`}
+        </div>`;
+    });
+  }
+
   // ── Machine distribution ──────────────────────────────────────────────────
   section(el, 'Machine Distribution');
   const machBody  = el.querySelector('.an-section:last-child .an-body');
@@ -288,146 +312,59 @@ function renderAnalysis() {
   `;
 
   // ── Alternate ranking ─────────────────────────────────────────────────────
-  // Only rank the alts that actually appear in the solution — not every alt
-  // enabled in the scenario config.  We identify them by recipe_key in flows.
+  // Only the alts this plan uses. Each is switched off in the analysis model
+  // (the plan's continuous relaxation) and the goal re-optimised — instant,
+  // and unlocked alts are switched off too.
   const activeAltKeys = new Set(altFlows.map(f => f.recipe_key));
   if (activeAltKeys.size > 0) {
     section(el, 'Alternate Recipe Ranking');
     const rankBody = el.querySelector('.an-section:last-child .an-body');
+    const byRes = RESULT.analysis?.metric === 'resources';
     rankBody.innerHTML = `
       <p style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:10px">
-        Each alternate actually used in this solve is removed and the scenario
-        re-solved to measure its impact. <b style="color:var(--t2)">Delta</b>
-        = objective loss without it (${Object.keys(SC.objective || {})[0] ? itemName(Object.keys(SC.objective)[0]) + '/min' : 'obj'}).
-        <b style="color:#f87171">Required</b> means removal made the solve infeasible.
+        Each alternate this plan uses is switched off and the rest re-balanced
+        (fractional machines, sloops held in place).
+        <b style="color:var(--t2)">Delta</b> = ${byRes
+          ? 'extra share of your resources used without it'
+          : `output lost without it (${Object.keys(SC.objective || {})[0] ? itemName(Object.keys(SC.objective)[0]) + '/min' : 'obj'})`}.
+        <b style="color:#f87171">Required</b> means the plan is impossible without it.
       </p>
-      <div id="an-rank-progress-wrap" style="height:3px;border-radius:2px;background:var(--b2);overflow:hidden;margin-bottom:14px">
-        <div id="an-rank-progress-bar" style="height:100%;width:0%;background:var(--acc);border-radius:2px;transition:width .2s"></div>
-      </div>
       <div id="an-rank-results"></div>
     `;
-    _runInlineRanking(activeAltKeys, rankBody);
+    if (RESULT.analysis) _renderRanking(RESULT.analysis.alt_ranking || [], byRes);
+    else document.getElementById('an-rank-results').innerHTML =
+      '<p style="font-size:11px;color:var(--t3)">Computing…</p>';
   }
 }
 
 
-// ── Inline alt ranking (embedded in analysis modal) ───────────────────────────
-
-let _rankAbort = null;
-
-export function abortInlineRanking() {
-  if (_rankAbort) { _rankAbort.abort(); _rankAbort = null; }
-}
-
-async function _runInlineRanking(activeAltKeys, rankBody) {
-  if (_rankAbort) _rankAbort.abort();
-  _rankAbort = new AbortController();
-  const signal = _rankAbort.signal;
-
-  const baseObj    = RESULT.objective_value ?? 0;
-  const allEnabled = SC.alternate_recipes_enabled || [];
-
-  // Base payload mirrors a normal solve
-  const basePayload = {
-    ...SC,
-    power_shards_available: SC.power_shards_available ?? 0,
-    somersloops_available:  SC.somersloops_available  ?? 0,
-  };
-
-  let completed = 0;
-  const keys = [...activeAltKeys];
-
-  const probes = keys.map(async altKey => {
-    const probePayload = {
-      ...basePayload,
-      alternate_recipes_enabled: allEnabled.filter(k => k !== altKey),
-    };
-
-    let probeObj  = null;
-    let infeasible = false;
-
-    try {
-      const r = await solveScenario(probePayload, signal);
-      if (r?.status?.startsWith('Optimal')) {
-        probeObj = r.objective_value ?? 0;
-      } else {
-        infeasible = true;
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') throw err;
-      infeasible = true;
-    }
-
-    completed++;
-    const bar = document.getElementById('an-rank-progress-bar');
-    if (bar) bar.style.width = `${Math.round(completed / keys.length * 100)}%`;
-
-    const delta = probeObj !== null ? baseObj - probeObj : null;
-    return { altKey, infeasible, delta };
-  });
-
-  let results;
-  try {
-    results = await Promise.all(probes);
-  } catch (err) {
-    if (err.name === 'AbortError') return;
-    const out = document.getElementById('an-rank-results');
-    if (out) out.innerHTML = `<p style="color:var(--err);font-size:12px">Ranking failed: ${err.message}</p>`;
-    return;
-  }
-
-  // Hide progress bar
-  const wrap = document.getElementById('an-rank-progress-wrap');
-  if (wrap) wrap.style.display = 'none';
-
-  _renderInlineRanking(results, baseObj);
-}
-
-function _renderInlineRanking(results, baseObj) {
+// ── Alt ranking (computed server-side with the rest of the analysis) ────────
+function _renderRanking(results, byRes) {
   const out = document.getElementById('an-rank-results');
   if (!out) return;
 
-  // Classify: 0=REQUIRED, 1=ACTIVE+impactful, 2=ACTIVE+zero-drop (shouldn't
-  // happen since we only probe alts that appeared in the solution, but kept
-  // for safety)
-  const classify = r => {
-    if (r.infeasible)                          return 0;
-    if (r.delta !== null && r.delta > 0.0001)  return 1;
-    return 2;
+  const BADGE = {
+    required:  { label: 'REQUIRED',  bg: 'rgba(239,68,68,.18)',  color: '#f87171' },
+    active:    { label: 'ACTIVE',    bg: 'rgba(52,211,153,.15)', color: '#34d399' },
+    redundant: { label: 'REDUNDANT', bg: 'rgba(251,191,36,.13)', color: '#fbbf24' },
   };
-
-  results.sort((a, b) => {
-    const ca = classify(a), cb = classify(b);
-    if (ca !== cb) return ca - cb;
-    if (ca === 1)  return (b.delta ?? 0) - (a.delta ?? 0);
-    return _altDisplayName(a.altKey).localeCompare(_altDisplayName(b.altKey));
-  });
-
-  const BADGE = [
-    { label: 'REQUIRED',  bg: 'rgba(239,68,68,.18)',  color: '#f87171' },
-    { label: 'ACTIVE',    bg: 'rgba(52,211,153,.15)',  color: '#34d399' },
-    { label: 'REDUNDANT', bg: 'rgba(251,191,36,.13)',  color: '#fbbf24' },
-  ];
 
   out.innerHTML = '';
   let rank = 1;
-  results.forEach(({ altKey, infeasible, delta }) => {
-    const cls   = classify({ infeasible, delta });
-    const badge = BADGE[cls];
-    const r     = RECIPES[altKey];
+  results.forEach(({ key, required, delta, pct }) => {
+    const r = RECIPES[key];
     if (!r) return;
-
-    const color    = mCol(r.machine);
-    const abbr     = MABBR[r.machine] || r.machine;
-    const dispName = _altDisplayName(altKey);
+    const badge = BADGE[required ? 'required' : (delta > 0.0001 ? 'active' : 'redundant')];
+    const color = mCol(r.machine);
+    const abbr  = MABBR[r.machine] || r.machine;
 
     let deltaStr;
-    if (infeasible) {
+    if (required) {
       deltaStr = `<span style="color:#f87171;font-family:var(--mono);font-size:11px">infeasible</span>`;
-    } else if (delta !== null && delta > 0.0001) {
-      deltaStr = `<span style="color:var(--err);font-family:var(--mono);font-size:11px">−${delta.toFixed(2)}</span>`;
-    } else if (delta !== null && delta < -0.0001) {
-      deltaStr = `<span style="color:var(--t3);font-family:var(--mono);font-size:11px">+${Math.abs(delta).toFixed(2)}</span>`;
+    } else if (delta > 0.0001) {
+      const amt = byRes ? `+${delta.toFixed(2)}%` : `−${delta.toFixed(2)}`;
+      const share = !byRes && pct != null ? ` <span style="color:var(--t3)">(${pct.toFixed(1)}%)</span>` : '';
+      deltaStr = `<span style="color:var(--err);font-family:var(--mono);font-size:11px">${amt}</span>${share}`;
     } else {
       deltaStr = `<span style="color:var(--t3);font-family:var(--mono);font-size:11px">±0</span>`;
     }
@@ -436,9 +373,9 @@ function _renderInlineRanking(results, baseObj) {
       <div class="ra-row">
         <span class="ra-rank">${rank++}.</span>
         <span class="ra-machine" style="background:${color}22;color:${color};border:1px solid ${color}44">${abbr}</span>
-        <span class="ra-name">${dispName}</span>
+        <span class="ra-name">${_altDisplayName(key)}</span>
         <span class="ra-badge" style="background:${badge.bg};color:${badge.color}">${badge.label}</span>
-        <span class="ra-delta" title="Objective change when this alternate is removed">${deltaStr}</span>
+        <span class="ra-delta" title="Change when this alternate is switched off">${deltaStr}</span>
       </div>
     `;
   });

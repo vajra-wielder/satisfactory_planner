@@ -23,7 +23,7 @@ sys.path.insert(0, str(HERE))
 from solver import (
     load_recipes, load_machine_meta, load_scenario, solve,
     result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR,
-    compute_duals,
+    analyse,
 )
 
 ALL_RECIPES  = load_recipes()
@@ -117,7 +117,7 @@ def _build_boot_bytes():
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
-_dual_cache: dict = {}   # {'scenario': Scenario, 'spm': dict, 'usable': dict}
+_dual_cache: dict = {}   # {'scenario', 'usable', 'flows', 'analysis' (once computed)}
 _dual_lock = threading.Lock()
 
 # Scenario list cache — keyed by (name, mtime) pairs so stale entries auto-invalidate.
@@ -195,9 +195,6 @@ def _cache_store(key: str, sig: str, base_sig: str, styles, result: dict) -> Non
 def _set_dual_cache(s, result_dict: dict, usable=None) -> None:
     new_cache = {
         "scenario": s,
-        "spm": {f["recipe_key"]: f["sloops_per_machine"]
-                for f in result_dict.get("flows", [])
-                if f.get("sloops_per_machine", 0) > 0},
         "usable": usable,
         "flows": result_dict.get("flows", []),
     }
@@ -455,10 +452,14 @@ class Handler(BaseHTTPRequestHandler):
                                  "note": "No solve result cached yet."})
                 return
             try:
-                shadow, sat = compute_duals(
-                    cache["scenario"], ALL_RECIPES,
-                    cache.get("spm"), cache.get("usable"))
-                self._json(200, {"shadow_prices": shadow, "saturation_points": sat})
+                # Computed once per solve (the cache is replaced on each solve)
+                if "analysis" not in cache:
+                    cache["analysis"] = analyse(cache["scenario"], ALL_RECIPES,
+                                                cache.get("flows", []), cache.get("usable"))
+                    with _dual_lock:
+                        if _dual_cache.get("flows") is cache.get("flows"):
+                            _dual_cache["analysis"] = cache["analysis"]
+                self._json(200, cache["analysis"])
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._json(500, {"error": str(e)})

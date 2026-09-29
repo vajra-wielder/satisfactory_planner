@@ -23,13 +23,13 @@ POWER FORMULA:
 PRUNING:
   Recipe tree is computed once (forward grounding + backward demand).
 
-SHADOW PRICES:
-  compute_duals() uses the continuous LP (_build_lp / WarmLP) for resource
-  shadow prices and saturation points.
+ANALYSIS:
+  analyse() reads what limits a plan — resource shadow prices, exact
+  saturation points, machine/shard budget prices and an alternate ranking —
+  off the continuous relaxation of the same planning model.
 """
 
 import math, yaml, json
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -40,7 +40,9 @@ RECIPES_PATH  = ROOT / "data" / "recipes_complete.yaml"
 SCENARIOS_DIR = ROOT / "scenarios"
 
 POWER_EXP   = math.log2(2.5)   # ≈1.3219 — 1.0 overclock power curve (250% → 3.36× power)
-_NEW_ALT_PEN = 1e-3   # Min New Alts: goal-weight cost per machine on a not-yet-unlocked alt
+# Min New Alts: the goal may drop by at most this share to use fewer alts you
+# haven't unlocked yet (each costs a hard drive, however much it runs).
+_NEW_ALT_TOL = 0.01
 SHARD_BOOST = 0.5
 MAX_CLOCK   = 2.5
 
@@ -77,11 +79,10 @@ class Scenario:
     notes: str = ""
     # Permanent unlock tracking — populated by the server from unlocked_alts.yaml.
     # The solver treats these alts as always-available (no per-scenario enable needed)
-    # and does NOT penalise them when minimize_new_alts is True.
+    # and does NOT count them when minimize_new_alts is True.
     unlocked_alt_recipes: List[str] = field(default_factory=list)
-    # When True, add a soft penalty for using alternate recipes that are NOT in
-    # unlocked_alt_recipes. The planner will prefer base recipes and already-owned
-    # alts, only reaching for new alts when they meaningfully improve the solution.
+    # When True, use the fewest alternates that are NOT in unlocked_alt_recipes
+    # (each costs a hard drive), giving up at most _NEW_ALT_TOL of the goal.
     minimize_new_alts: bool = False
     # Resources treated as unlimited: no supply cap, and left out of the
     # resource score so they're free and don't dilute the finite ones.
@@ -218,7 +219,7 @@ def get_all_items(recipes: Dict[str,Recipe]) -> List[str]:
 
 
 # ── Power helpers ─────────────────────────────────────────────────────────────
-# Defined early so they are available to both WarmLP and the free functions below.
+# Defined early so every model below can use them.
 
 def _sloop_power_mult(r: Recipe, spm_val: int) -> float:
     """(1 + sloops_per_machine / max_slots)^2  — power scaling factor."""
@@ -359,422 +360,6 @@ def prune_recipes(
     return usable, unsatisfiable
 
 
-# ── LP with sloop multipliers baked in ───────────────────────────────────────
-def _build_lp(
-    scenario: Scenario,
-    usable: Dict[str,Recipe],
-    spm: Dict[str,int],
-) -> Tuple[object, list, list, dict, dict]:
-    """
-    Build the GLOP LP. Returns (solver, q_vars, rkeys, net_expr, res_constraints).
-    Separated from solving so callers can extract duals after solving.
-
-    Avoids duplicate cons/prod sums: resource items share their net expression
-    with the res_constraint (computed once, used for both flow-balance and cap).
-    Non-zero filtering mirrors WarmLP to keep both implementations symmetric.
-    """
-    rkeys = list(usable.keys())
-    n     = len(rkeys)
-
-    # Effective output rates with sloop multiplier baked in
-    eff_out: Dict[str, Dict[str, float]] = {}
-    for k in rkeys:
-        r = usable[k]; s = spm.get(k, 0)
-        mult = _output_mult(r, s)
-        eff_out[k] = {item: rate * mult for item, rate in r.outputs.items()}
-
-    # Collect all items that appear in the LP
-    item_set: Set[str] = set(scenario.available_resources.keys())
-    for k in rkeys:
-        item_set.update(usable[k].inputs.keys())
-        item_set.update(eff_out[k].keys())
-
-    slvr = pywraplp.Solver.CreateSolver("GLOP")
-    slvr.SuppressOutput()
-    INF = slvr.infinity()
-    q   = [slvr.NumVar(0, INF, f"q{i}") for i in range(n)]
-
-    # Build net(item) expressions by accumulating only non-zero coefficients.
-    # For each item, net_coeff[i] = eff_out[rkeys[i]][item] - inputs[rkeys[i]][item].
-    # Storing as sparse {var_index: coeff} avoids O(n * items) zero multiplications.
-    def sparse_net(item: str) -> Dict[int, float]:
-        d: Dict[int, float] = {}
-        for i, k in enumerate(rkeys):
-            c = eff_out[k].get(item, 0.0) - usable[k].inputs.get(item, 0.0)
-            if c:
-                d[i] = c
-        return d
-
-    net_sparse = {item: sparse_net(item) for item in item_set}
-
-    # Non-resource flow-balance constraints: net(item) >= 0 for all items.
-    # This permits unavoidable byproducts (e.g. Heavy Oil Residue alongside Rubber)
-    # to be surplus without making the LP infeasible.
-    net_expr: Dict[str, object] = {}
-    for item in item_set:
-        sp = net_sparse[item]
-        expr = slvr.Sum([q[i] * c for i, c in sp.items()])
-        net_expr[item] = expr  # used by must/min/max produce below
-
-        if item not in scenario.available_resources:
-            ct = slvr.Constraint(0.0, INF, f"flow_{item}")
-            for i, c in sp.items():
-                ct.SetCoefficient(q[i], c)
-
-    # Resource capacity constraints: cons - prod <= supply
-    # Equivalent to: -net(item) <= supply - supply_const  →  -net_q <= supply
-    # We express as sum(input_i - eff_out_i) * q[i] <= supply.
-    # Kept separately so duals can be read after solving.
-    res_constraints: Dict[str, object] = {}
-    for item, supply in scenario.available_resources.items():
-        ct = slvr.Constraint(-INF, supply, f"res_{item}")
-        sp = net_sparse[item]
-        for i, c in sp.items():
-            ct.SetCoefficient(q[i], -c)   # cons - prod = -(eff_out - inputs)
-        res_constraints[item] = ct
-
-    # Goal constraints
-    for item, qty in scenario.must_produce.items():
-        if item not in net_expr:
-            continue
-        ct = slvr.Constraint(qty, qty, f"must_{item}")
-        sp = net_sparse[item]
-        supply = scenario.available_resources.get(item, 0.0)
-        # net(item) == qty  →  sum(net_coeff * q) == qty - supply
-        for i, c in sp.items():
-            ct.SetCoefficient(q[i], c)
-        ct.SetBounds(qty - supply, qty - supply)
-
-    for item, qty in scenario.min_produce.items():
-        if item not in net_expr:
-            continue
-        supply = scenario.available_resources.get(item, 0.0)
-        ct = slvr.Constraint(qty - supply, INF, f"min_{item}")
-        for i, c in net_sparse[item].items():
-            ct.SetCoefficient(q[i], c)
-
-    for item, qty in scenario.max_produce.items():
-        if item not in net_expr:
-            continue
-        supply = scenario.available_resources.get(item, 0.0)
-        ct = slvr.Constraint(-INF, qty - supply, f"max_{item}")
-        for i, c in net_sparse[item].items():
-            ct.SetCoefficient(q[i], c)
-
-    if scenario.max_machines is not None:
-        ct = slvr.Constraint(-INF, float(scenario.max_machines), "max_machines")
-        for qi in q:
-            ct.SetCoefficient(qi, 1.0)
-
-    # Objective: maximise sum(weight * net(item)) over objective items.
-    # Ties (same goal output, different machines/resources) are broken afterwards
-    # by _plan, not by epsilon terms here.
-    obj = slvr.Objective()
-    obj.SetMaximization()
-    for item, w in scenario.objective.items():
-        if item not in net_sparse:
-            continue
-        for i, c in net_sparse[item].items():
-            obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + w * c)
-        # supply * w is a constant and does not affect q — omitted intentionally
-
-    # Min New Alts penalty: when the modifier is on, subtract a moderate penalty
-    # for each unit of throughput on alt recipes the user hasn't unlocked yet.
-    # Penalty is large enough to prefer base/unlocked paths when they exist, but
-    # small enough that a genuinely needed new alt can still win.
-    # Scaled at 1e-3 × machines — far below typical objective weights (≥1), so
-    # it never overrules the actual production goal.
-    if scenario.minimize_new_alts:
-        unlocked_set_lp = set(scenario.unlocked_alt_recipes)
-        # pre-fetch recipe metadata to check .alternate without re-importing
-        for i, k in enumerate(rkeys):
-            r = usable[k]
-            if r.alternate and k not in unlocked_set_lp:
-                obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) - _NEW_ALT_PEN)
-
-    return slvr, q, rkeys, net_expr, res_constraints
-
-
-# ── Warm-start LP wrapper ─────────────────────────────────────────────────────
-class WarmLP:
-    """
-    A GLOP model of the continuous LP with sloop multipliers baked in, kept
-    around so the saturation search can move one resource bound at a time and
-    re-solve from the previous basis.
-    """
-
-    def __init__(self, scenario: Scenario, usable: Dict[str, Recipe],
-                 spm: Dict[str, int]):
-        self.scenario = scenario
-        self.usable   = usable
-        self.spm      = dict(spm)   # own copy — patched in place
-
-        rkeys = list(usable.keys())
-        self.rkeys = rkeys
-        n = len(rkeys)
-        self.ridx: Dict[str, int] = {k: i for i, k in enumerate(rkeys)}
-
-        # Current effective output rates (including sloop multiplier)
-        self.eff_out: Dict[str, Dict[str, float]] = {}
-        for k in rkeys:
-            r = usable[k]
-            self.eff_out[k] = {item: rate * _output_mult(r, spm.get(k, 0))
-                                for item, rate in r.outputs.items()}
-
-        item_set: Set[str] = set(scenario.available_resources.keys())
-        for k in rkeys:
-            item_set.update(usable[k].inputs.keys())
-            item_set.update(self.eff_out[k].keys())
-        self.items = list(item_set)
-
-        slvr = pywraplp.Solver.CreateSolver("GLOP")
-        slvr.SuppressOutput()
-        self.slvr = slvr
-        INF = slvr.infinity()
-        q = [slvr.NumVar(0, INF, f"q{i}") for i in range(n)]
-        self.q = q
-
-        # Pre-compute sparse net coefficients for every (recipe, item) pair.
-        # net_coeff[k][item] = eff_out rate - input rate  (non-zero only)
-        net_coeff: Dict[str, Dict[str, float]] = {}
-        for k in rkeys:
-            r  = usable[k]
-            nc: Dict[str, float] = {}
-            for item, rate in self.eff_out[k].items():
-                c = rate - r.inputs.get(item, 0.0)
-                if c:
-                    nc[item] = c
-            for item, rate in r.inputs.items():
-                if item not in nc:
-                    c = -rate   # pure consumer; eff_out is 0
-                    if c:
-                        nc[item] = c
-            net_coeff[k] = nc
-
-        # Pass 1: flow constraints (non-resource items): net(item) >= 0.
-        # All items — including unavoidable byproducts — are allowed to be surplus.
-        self.flow_ct: Dict[str, object] = {}
-        for item in self.items:
-            if item in scenario.available_resources:
-                continue
-            ct = slvr.Constraint(0.0, INF, f"flow_{item}")
-            for i, k in enumerate(rkeys):
-                c = net_coeff[k].get(item, 0.0)
-                if c:
-                    ct.SetCoefficient(q[i], c)
-            self.flow_ct[item] = ct
-
-        self.res_ct: Dict[str, object] = {}
-        for item, supply in scenario.available_resources.items():
-            ct = slvr.Constraint(-INF, supply, f"res_{item}")
-            for i, k in enumerate(rkeys):
-                # res_ct expresses cons - prod <= supply,
-                # i.e. -(eff_out - inputs) = inputs - eff_out per recipe
-                c = net_coeff[k].get(item, 0.0)
-                if c:
-                    ct.SetCoefficient(q[i], -c)
-            self.res_ct[item] = ct
-
-        # must/min/max produce — accept items present in either constraint dict
-        # (mirrors the `if item in net_expr` guard in _build_lp exactly).
-        def _add_produce_ct(item: str, lo: float, hi: float, name: str) -> Optional[object]:
-            if item not in self.flow_ct and item not in self.res_ct:
-                return None
-            supply = scenario.available_resources.get(item, 0.0)
-            ct = slvr.Constraint(
-                lo - supply if lo > -INF else -INF,
-                hi - supply if hi <  INF else  INF,
-                name,
-            )
-            for i, k in enumerate(rkeys):
-                c = net_coeff[k].get(item, 0.0)
-                if c:
-                    ct.SetCoefficient(q[i], c)
-            return ct
-
-        self.must_ct: Dict[str, object] = {}
-        for item, qty in scenario.must_produce.items():
-            ct = _add_produce_ct(item, qty, qty, f"must_{item}")
-            if ct:
-                self.must_ct[item] = ct
-
-        self.min_ct: Dict[str, object] = {}
-        for item, qty in scenario.min_produce.items():
-            ct = _add_produce_ct(item, qty, INF, f"min_{item}")
-            if ct:
-                self.min_ct[item] = ct
-
-        self.max_ct: Dict[str, object] = {}
-        for item, qty in scenario.max_produce.items():
-            ct = _add_produce_ct(item, -INF, qty, f"max_{item}")
-            if ct:
-                self.max_ct[item] = ct
-
-        if scenario.max_machines is not None:
-            ct = slvr.Constraint(-INF, float(scenario.max_machines), "max_machines")
-            for qi in q:
-                ct.SetCoefficient(qi, 1.0)
-
-        # Objective — mirrors _build_lp: accept items in either constraint dict.
-        # Supply is a constant and is omitted intentionally (see _build_lp note).
-        obj = slvr.Objective()
-        obj.SetMaximization()
-        self._obj_weights: Dict[str, float] = {}
-        for item, w in scenario.objective.items():
-            if item not in self.flow_ct and item not in self.res_ct:
-                continue
-            self._obj_weights[item] = w
-            for i, k in enumerate(rkeys):
-                c = net_coeff[k].get(item, 0.0)
-                if c:
-                    obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) + w * c)
-
-        # Min New Alts penalty — same as _build_lp.
-        if scenario.minimize_new_alts:
-            unlocked = set(scenario.unlocked_alt_recipes)
-            for i, k in enumerate(rkeys):
-                if usable[k].alternate and k not in unlocked:
-                    obj.SetCoefficient(q[i], obj.GetCoefficient(q[i]) - _NEW_ALT_PEN)
-
-    def solve(self) -> Tuple[str, float, Dict[str, float]]:
-        status = self.slvr.Solve()
-        ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-        if not ok:
-            return "Infeasible", 0.0, {}
-        q_vals = {self.rkeys[i]: max(0.0, self.q[i].solution_value())
-                  for i in range(len(self.rkeys))}
-        return "Optimal", self.slvr.Objective().Value(), q_vals
-
-# ── Saturation binary search ──────────────────────────────────────────────────
-def _sat_search(
-    item: str,
-    scenario: Scenario,
-    usable: Dict[str, Recipe],
-    spm: Dict[str, int],
-) -> Optional[float]:
-    """
-    Binary search for the supply level of `item` where its shadow price drops to
-    zero (adding more stops helping the objective).
-
-    Fast path: if the item's resource constraint doesn't appear in the LP (the
-    item is never consumed by any recipe), the shadow price is always 0 — return
-    None immediately rather than running 28 LP solves to learn nothing.
-
-    Uses one WarmLP for all iterations; only the constraint upper-bound changes.
-    Returns the saturation supply level rounded to 1 decimal place.
-    """
-    lo = scenario.available_resources[item]
-
-    # Build a private WarmLP with a mutable resource dict so we can adjust SetUb.
-    res2 = dict(scenario.available_resources)
-    sc2  = _dc_replace(scenario, available_resources=res2, description="", notes="")
-    warm = WarmLP(sc2, usable, spm)
-    res_ct = warm.res_ct.get(item)
-
-    # Fast path: item is not consumed by any recipe in the LP → always slack
-    if res_ct is None:
-        return None
-
-    # Adaptive upper-bound search: double hi until the dual at hi drops to zero.
-    # This avoids the pathological case where lo == 0, which made the old
-    # fixed bound (max(0*20+5000, 0+50000) = 50000) require 28 iterations to
-    # narrow all the way down to a true saturation point of, say, 300.
-    hi = max(lo * 2.0, lo + 100.0)
-    for _ in range(20):
-        res_ct.SetUb(hi)
-        st = warm.slvr.Solve()
-        if st not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
-            break
-        try:
-            d = res_ct.dual_value()
-        except Exception:
-            d = 0.0
-        if d < 0.001:
-            break
-        hi *= 2.0
-
-    for _ in range(28):        # ≤28 iterations; converges to 0.5-unit precision
-        if hi - lo < 0.5:
-            break
-        mid = (lo + hi) / 2.0
-        res_ct.SetUb(mid)
-        status = warm.slvr.Solve()
-        ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-        if not ok:
-            hi = mid
-            continue
-        try:
-            dual_mid = res_ct.dual_value()
-        except Exception:
-            dual_mid = 0.0
-        if dual_mid < 0.001:
-            hi = mid
-        else:
-            lo = mid
-    return round(hi, 1)
-
-
-# ── LP with duals ─────────────────────────────────────────────────────────────
-def _solve_lp_with_duals(
-    scenario: Scenario,
-    usable: Dict[str,Recipe],
-    spm: Dict[str,int],
-) -> Tuple[str, float, Dict[str,float], Dict[str,float], Dict[str,Optional[float]]]:
-    """
-    Solve LP and extract shadow prices + saturation points for resource constraints.
-
-    Shadow price of resource R = marginal improvement in objective per additional
-    unit/min of R at the current supply level.  This is the LP dual value.
-
-    GLOP dual_value() for a <= constraint in a maximisation problem returns a
-    NON-NEGATIVE value when the constraint is binding.  Zero means resource has slack.
-
-    Saturation point: supply level at which shadow price drops to zero.
-    Found by binary search per binding resource (parallelised).
-
-    Returns (status, objective, q_vals, shadow_prices, saturation_points).
-    saturation_points[item] = None  → resource already has slack (not worth searching).
-    """
-    if not usable:
-        return "No recipes", 0.0, {}, {}, {}
-    slvr, q, rkeys, _, res_constraints = _build_lp(scenario, usable, spm)
-    status = slvr.Solve()
-    ok = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-    if not ok:
-        return "Infeasible", 0.0, {}, {}, {}
-
-    q_vals = {rkeys[i]: max(0.0, q[i].solution_value()) for i in range(len(rkeys))}
-
-    # Extract shadow prices (raw dual_value() — no negation required for GLOP max)
-    shadow: Dict[str, float] = {}
-    for item, ct in res_constraints.items():
-        try:
-            shadow[item] = round(ct.dual_value(), 6)
-        except Exception:
-            shadow[item] = 0.0
-
-    # Saturation points: only search binding resources; others are immediately None
-    binding_items = [item for item, sp in shadow.items() if sp >= 0.001]
-    saturation: Dict[str, Optional[float]] = {
-        item: None for item in shadow if shadow[item] < 0.001
-    }
-
-    if binding_items:
-        with ThreadPoolExecutor(max_workers=min(len(binding_items), 8)) as ex:
-            futs = {
-                ex.submit(_sat_search, item, scenario, usable, spm): item
-                for item in binding_items
-            }
-            for fut in as_completed(futs):
-                item = futs[fut]
-                try:
-                    saturation[item] = fut.result()
-                except Exception:
-                    saturation[item] = None
-
-    return "Optimal", slvr.Objective().Value(), q_vals, shadow, saturation
-
-
 # ── Exact planner (mixed-integer) ─────────────────────────────────────────────
 # One mixed-integer model of the whole factory, solved in three lexicographic
 # stages. Each stage keeps the previous stages' optimum locked in place:
@@ -841,6 +426,7 @@ class _Plan:
     proven: bool               # goal and lean stages proven optimal
     clean_proven: bool = True  # recipe cleanup proven optimal
     goal_bound: Optional[float] = None   # proven upper bound on the goal (stage 1)
+    goal_pre: Optional[float] = None     # stage-1 goal before Min New Alts traded some away
     lean_proven: bool = True   # resource and machine stages proven (within their gaps)
 
     def machines(self) -> int:
@@ -913,9 +499,10 @@ class _Model:
             self.links[k] = links
 
         res = scenario.available_resources
+        self.res_ct: Dict[str, object] = {}     # resource → its supply constraint
         for it, sp in self.net.items():
             if it in res:
-                self.ct(-INF, res[it], {v: -c for v, c in sp.items()})
+                self.res_ct[it] = self.ct(-INF, res[it], {v: -c for v, c in sp.items()})
             else:
                 self.ct(0.0, INF, sp)
         for it, qty in scenario.must_produce.items():
@@ -930,12 +517,15 @@ class _Model:
 
         self.machines = {key: 1.0 for key in self.var if key[0] == "n"}
         self.sloops = {key: float(key[2]) for key in self.machines if key[2]}
+        # Budgets, kept by name so the analysis can read their prices
+        self.budget_ct: Dict[str, object] = {}
         if use_sloops:
-            self.ct(-INF, float(S), self.sloops)
+            self.budget_ct["sloops"] = self.ct(-INF, float(S), self.sloops)
         if SH > 0:
-            self.ct(-INF, float(SH), {key: 1.0 for key in self.var if key[0] == "s"})
+            self.budget_ct["shards"] = self.ct(
+                -INF, float(SH), {key: 1.0 for key in self.var if key[0] == "s"})
         if scenario.max_machines is not None:
-            self.ct(-INF, float(scenario.max_machines), self.machines)
+            self.budget_ct["machines"] = self.ct(-INF, float(scenario.max_machines), self.machines)
 
         self.goal: Dict[Key, float] = {}
         for it, w in scenario.objective.items():
@@ -946,6 +536,7 @@ class _Model:
             unlocked = set(scenario.unlocked_alt_recipes)
             self.new_alt = {key: 1.0 for key in self.var if key[0] == "q"
                             and usable[key[1]].alternate and key[1] not in unlocked}
+        self.new_alt_recipes = sorted({key[1] for key in self.new_alt})
         self._hint: Optional[Tuple[list, list]] = None
 
     # ── helpers ──
@@ -1019,6 +610,7 @@ class _Model:
             ps.sort(key=lambda p: -p.level)
         return _Plan(parts, self.value(self.goal), proven,
                      goal_bound=getattr(self, "goal_bound", None),
+                     goal_pre=getattr(self, "goal_pre", None),
                      lean_proven=getattr(self, "lean_proven", True))
 
 
@@ -1067,23 +659,22 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     best: Optional[_Plan] = None
 
     # ── Stage 1: goal ──
+    # Min New Alts adds two steps: with the goal kept within _NEW_ALT_TOL of
+    # its best, use the fewest alts you haven't unlocked (a count — each is a
+    # hard drive, however much it runs); then the best goal with that many.
     if mip.goal or mip.new_alt:
-        def stage1(m):
-            obj = dict(m.goal)
-            for key, a in m.new_alt.items():
-                obj[key] = obj.get(key, 0.0) - _NEW_ALT_PEN * a
-            return obj
         # Integers only matter for the goal when sloops or a machine cap are in play
         integer_goal = mip.integer and (scenario.somersloops_available > 0
                                         or scenario.max_machines is not None)
         m1 = mip if integer_goal or not mip.integer else lp
-        ok = m1.run(stage1(m1), True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
+        ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
         if ok is None:
             return None
         proven &= ok
-        g, a = m1.value(m1.goal), m1.value(m1.new_alt)
-        # Proven ceiling on the goal (the penalty term only lowers the objective)
-        goal_bound = m1.bound + _NEW_ALT_PEN * a if mip.goal else None
+        g = m1.value(m1.goal)
+        mip.goal_pre = g        # the best goal before any trade for fewer new alts
+        # Proven ceiling on the goal, before any trade for fewer new alts
+        goal_bound = m1.bound if mip.goal else None
         mip.goal_bound = goal_bound
         if info is not None:
             info["goal_bound"] = goal_bound
@@ -1096,12 +687,40 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
                 info["alloc"] = {k: int(round(x)) for k, x in alloc.items() if round(x) > 0}
                 info["goal"] = g
             return None
+        if mip.new_alt:
+            if mip.goal:
+                lock(g - abs(g) * _NEW_ALT_TOL - 1e-6, mip.inf, lambda m: m.goal)
+            if mip.integer:
+                count = {("y", k, 0): 1.0 for k in mip.new_alt_recipes}
+                for k in mip.new_alt_recipes:
+                    mip.var[("y", k, 0)] = mip.y[k]
+                ok = mip.run(count, False, _STAGE_TIME_S[0])
+                if ok is None:
+                    return None
+                proven &= ok
+                # Keep the chosen alts and leave the rest out entirely — a far
+                # easier model for the later stages than a count constraint
+                # (read the choice first: changing the model voids the solution)
+                dropped = [k for k in mip.new_alt_recipes if mip.y[k].solution_value() < 0.5]
+                for k in dropped:
+                    mip.bound_recipe(k, 0.0)
+                    lp.bound_recipe(k, 0.0)
+                m1 = mip
+            else:
+                # No integer solver: fall back to the least new-alt throughput
+                if lp.run(lp.new_alt, False, _STAGE_TIME_S[0]) is None:
+                    return None
+                lock(-mip.inf, lp.value(lp.new_alt) + 1e-6, lambda m: m.new_alt)
+            if mip.goal:
+                ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
+                if ok is None:
+                    return None
+                proven &= ok
+                g = m1.value(m1.goal)
         if m1 is mip:
             best = mip.snapshot(proven)
         if mip.goal:
             lock(g - max(1e-6, abs(g) * _GOAL_TOL), mip.inf, lambda m: m.goal)
-        if mip.new_alt:
-            lock(-mip.inf, a + 1e-6, lambda m: m.new_alt)
     else:
         goal_bound = None
         mip.goal_bound = None
@@ -1237,9 +856,7 @@ def _dive_sloops(scenario: Scenario, usable: Dict[str, Recipe]
                  ) -> Optional[Tuple[Dict[str, int], float]]:
     """Returns (sloops per recipe, relaxation ceiling on the goal), or None."""
     lp = _Model(scenario, usable, integer=False)
-    obj = dict(lp.goal)
-    for key, a in lp.new_alt.items():
-        obj[key] = obj.get(key, 0.0) - _NEW_ALT_PEN * a
+    obj = lp.goal
     if lp.run(obj, True, _STAGE_TIME_S[0]) is None:
         return None
     ceiling = lp.value(lp.goal) + 0.0
@@ -1371,7 +988,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         return SolveResult("No recipes", 0, [], {}, {}, {}, {}, {}, {}, {},
                            0, 0, 0, 0, warnings, conflict_hints, 0, {})
 
-    shadow_prices:     Dict[str,float]  = {}   # computed lazily via compute_duals()
+    shadow_prices:     Dict[str,float]  = {}   # computed lazily via analyse()
     saturation_points: Dict[str,object] = {}
 
     model_sc = _with_unlimited(scenario)
@@ -1383,8 +1000,11 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             alloc, ceiling = dive
             plan = _plan(model_sc, usable, warnings, sloop_caps=alloc)
             if plan is not None and ceiling > 1e-9:
-                certified = min(1.0, plan.goal / ceiling)
-                if certified < _POLISH_BELOW:
+                # Sloop placement is judged on the goal before Min New Alts
+                # traded any away — that trade is deliberate, not a shortfall.
+                pre = lambda p: p.goal if p.goal_pre is None else p.goal_pre
+                placed = min(1.0, pre(plan) / ceiling)
+                if placed < _POLISH_BELOW:
                     # Try the exact goal search, seeded from nothing but bounded:
                     #  • below the target (usually a machine cap, which makes the
                     #    fractional ceiling loose): run until proven within the
@@ -1393,19 +1013,21 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
                     # Either way a better plan replaces the dive's, and the
                     # tighter of the two bounds certifies the result.
                     info: dict = {}
-                    below = certified < _CERT_TARGET
+                    below = placed < _CERT_TARGET
                     exact = _plan(model_sc, usable, [],
                                   goal_gap=(1 - _CERT_TARGET) if below else None,
                                   goal_time=None if below else _POLISH_TIME_S,
-                                  beat=plan.goal, info=info)
+                                  beat=pre(plan), info=info)
                     if "alloc" in info:
                         # Better sloop placement found: rebuild with it fixed
                         better = _plan(model_sc, usable, [], sloop_caps=info["alloc"])
-                        if better is not None and better.goal > plan.goal + 1e-9:
+                        if better is not None and pre(better) > pre(plan) + 1e-9:
                             plan = better
                     bound = info.get("goal_bound")
                     if bound and bound > 1e-9:
-                        certified = min(1.0, plan.goal / min(ceiling, bound))
+                        ceiling = min(ceiling, bound)
+                placed = min(1.0, pre(plan) / ceiling)
+                certified = min(1.0, plan.goal / ceiling)
     if plan is None:
         plan = _plan(model_sc, usable, warnings) if usable else None
         if plan is not None and plan.goal_bound:
@@ -1423,7 +1045,11 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             )
     status  = "Optimal" if plan is not None else "Infeasible"
     obj_val = plan.goal if plan is not None else 0.0
-    if certified is not None and certified < _CERT_TARGET - 1e-9:
+    # Warn on the plan's own shortfall, not on a Min New Alts trade
+    placed_cert = certified
+    if certified is not None and plan.goal_pre and plan.goal > 1e-12:
+        placed_cert = min(1.0, certified * plan.goal_pre / plan.goal)
+    if placed_cert is not None and placed_cert < _CERT_TARGET - 1e-9:
         warnings.append(f"Plan is certified to reach at least {100 * certified:.1f}% of the "
                         f"best possible — below the {100 * _CERT_TARGET:.0f}% target.")
     elif certified is None and plan is not None and not plan.proven:
@@ -1595,25 +1221,110 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
 
 
 # ── Public helpers ────────────────────────────────────────────────────────────
-def compute_duals(
-    scenario: Scenario,
-    all_recipes: Dict[str,Recipe],
-    spm: Optional[Dict[str,int]] = None,
-    usable: Optional[Dict[str,Recipe]] = None,
-) -> Tuple[Dict[str,float], Dict[str,object]]:
+def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
+            flows: List[dict], usable: Optional[Dict[str, Recipe]] = None) -> dict:
     """
-    Compute shadow prices and saturation points.
-    Called lazily (only when the Analysis modal is opened).
+    What limits the plan — for the Analysis window. Runs on the continuous
+    relaxation of the planning model (fractional machines; shards, the machine
+    cap and every budget included) with the plan's somersloops held where the
+    plan put them, and with any new alt the plan chose not to use left out.
+    One warm model; every number is a few LP solves.
 
-    spm:    sloops-per-machine from the last solve, or {} for no sloops.
-    usable: pre-pruned recipe set from the last solve — pass result.usable to skip re-pruning.
+      shadow_prices[r]     goal gained per extra unit/min of resource r
+      saturation_points[r] supply of r beyond which more r stops helping —
+                           exact: the least r that reaches the best goal with r
+                           unlimited (None when more r never stops helping)
+      limits[b]            goal gained per extra machine (cap) / power shard
+      alt_ranking          per alternate the plan uses: goal lost without it
+                           (or extra resource share, when there's no goal);
+                           required = impossible without it
     """
     if usable is None:
         usable, _ = prune_recipes(scenario, all_recipes)
+    out = {"shadow_prices": {}, "saturation_points": {}, "limits": {},
+           "alt_ranking": [], "metric": "goal"}
     if not usable:
-        return {}, {}
-    _, _, _, shadow, saturation = _solve_lp_with_duals(_with_unlimited(scenario), usable, spm or {})
-    return shadow, saturation
+        return out
+    sc = _with_unlimited(scenario)
+    lp = _Model(sc, usable, integer=False)
+    used = {f["recipe_key"]: f for f in flows}
+    # The plan's somersloops stay where the plan put them
+    for k, levels in lp.levels.items():
+        expr = {("n", k, l): float(l) for l in levels if l}
+        if expr:
+            lp.ct(-lp.inf, float(used.get(k, {}).get("sloops_used", 0)), expr)
+    # New alts the plan passed on (Min New Alts) stay out
+    for k in lp.new_alt_recipes:
+        if k not in used:
+            for l in lp.levels[k]:
+                lp.var[("q", k, l)].SetUb(0.0)
+
+    unlimited = set(scenario.unlimited_resources)
+    finite = [it for it, v in sc.available_resources.items()
+              if v > 0 and it not in unlimited and it in lp.res_ct]
+    T = _STAGE_TIME_S[0]
+    if lp.goal:
+        metric, maximize = lp.goal, True
+    else:
+        # No goal to grow: rank alternates by the resources they save instead
+        out["metric"] = "resources"
+        metric = {}
+        for it in finite:
+            w = 100.0 / len(finite) / sc.available_resources[it]
+            for key, c in lp.net.get(it, {}).items():
+                metric[key] = metric.get(key, 0.0) - c * w
+        maximize = False
+    if lp.run(metric, maximize, T) is None:
+        return out
+    base = lp.value(metric)
+
+    if lp.goal:
+        def price(ct) -> float:
+            try:
+                return round(max(0.0, ct.dual_value()), 6)
+            except Exception:
+                return 0.0
+        for it in finite:
+            out["shadow_prices"][it] = price(lp.res_ct[it])
+        for name, ct in lp.budget_ct.items():
+            if name != "sloops":    # sloops are held where the plan put them
+                out["limits"][name] = price(ct)
+        for it in finite:
+            if out["shadow_prices"][it] < 1e-4:
+                out["saturation_points"][it] = None
+                continue
+            ct = lp.res_ct[it]
+            ub = ct.ub()
+            ct.SetUb(lp.inf)
+            sat = None
+            if lp.run(lp.goal, True, T) is not None:
+                g = lp.value(lp.goal)
+                g_ct = lp.ct(g - max(1e-9, abs(g) * 1e-9), lp.inf, lp.goal)
+                use = {key: -c for key, c in lp.net[it].items()}
+                if lp.run(use, False, T) is not None:
+                    sat = round(lp.value(use), 2)
+                g_ct.SetBounds(-lp.inf, lp.inf)
+            ct.SetUb(ub)
+            out["saturation_points"][it] = sat
+
+    for k in sorted(k for k in used if k in usable and usable[k].alternate):
+        cols = [lp.var[("q", k, l)] for l in lp.levels[k]]
+        ubs = [v.ub() for v in cols]
+        for v in cols:
+            v.SetUb(0.0)
+        if lp.run(metric, maximize, T) is None:
+            out["alt_ranking"].append({"key": k, "required": True, "delta": None, "pct": None})
+        else:
+            v = lp.value(metric)
+            delta = (base - v) if maximize else (v - base)
+            pct = 100.0 * delta / abs(base) if maximize and abs(base) > 1e-9 else None
+            out["alt_ranking"].append({"key": k, "required": False,
+                                       "delta": round(delta, 4),
+                                       "pct": None if pct is None else round(pct, 2)})
+        for v, ub in zip(cols, ubs):
+            v.SetUb(ub)
+    out["alt_ranking"].sort(key=lambda r: (not r["required"], -(r["delta"] or 0.0), r["key"]))
+    return out
 
 
 def compute_build_cost(result: SolveResult, machine_meta: Dict) -> Dict[str,int]:
