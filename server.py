@@ -197,6 +197,7 @@ def _set_dual_cache(s, result_dict: dict, usable=None) -> None:
         "scenario": s,
         "usable": usable,
         "flows": result_dict.get("flows", []),
+        "goal": result_dict.get("objective_value"),
     }
     with _dual_lock:
         _dual_cache.clear()
@@ -455,7 +456,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Computed once per solve (the cache is replaced on each solve)
                 if "analysis" not in cache:
                     cache["analysis"] = analyse(cache["scenario"], ALL_RECIPES,
-                                                cache.get("flows", []), cache.get("usable"))
+                                                cache.get("flows", []), cache.get("usable"),
+                                                cache.get("goal"))
                     with _dual_lock:
                         if _dual_cache.get("flows") is cache.get("flows"):
                             _dual_cache["analysis"] = cache["analysis"]
