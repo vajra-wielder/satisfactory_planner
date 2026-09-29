@@ -809,6 +809,10 @@ def _solve_lp_with_duals(
 # Power is not optimised.
 _GOAL_TOL      = 1e-7    # relative slack on the locked goal
 _RES_TOL       = 1e-6    # relative slack on the locked resource score (numerics only)
+# With machines_first the resource stage finds its best plan early but proving
+# it to 1e-9 can take the whole time limit (a weak bound under the machine
+# lock). Stopping within 1% mirrors _MACHINE_SLACK in the default order.
+_RES_GAP       = 0.01    # machines_first: resources within 1% of the least
 _MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machines for fewer recipes
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
 _STAGE_TIME_S  = (20, 20, 15)   # per stage; on timeout the best plan so far is kept
@@ -837,6 +841,7 @@ class _Plan:
     proven: bool               # goal and lean stages proven optimal
     clean_proven: bool = True  # recipe cleanup proven optimal
     goal_bound: Optional[float] = None   # proven upper bound on the goal (stage 1)
+    lean_proven: bool = True   # resource and machine stages proven (within their gaps)
 
     def machines(self) -> int:
         return sum(p.n for ps in self.parts.values() for p in ps)
@@ -1013,7 +1018,8 @@ class _Model:
         for ps in parts.values():
             ps.sort(key=lambda p: -p.level)
         return _Plan(parts, self.value(self.goal), proven,
-                     goal_bound=getattr(self, "goal_bound", None))
+                     goal_bound=getattr(self, "goal_bound", None),
+                     lean_proven=getattr(self, "lean_proven", True))
 
 
 def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
@@ -1131,10 +1137,12 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
                                        or scenario.max_machines is not None
                                        or scenario.machines_first)
         m2 = mip if integer_res or not mip.integer else lp
-        ok = m2.run(resources_of(m2), False, _STAGE_TIME_S[1])
+        ok = m2.run(resources_of(m2), False, _STAGE_TIME_S[1],
+                    gap=_RES_GAP if scenario.machines_first else None)
         if ok is None:
             return False
         proven &= ok
+        mip.lean_proven = getattr(mip, "lean_proven", True) and ok
         r2 = m2.value(resources_of(m2))
         if m2 is mip:
             best = mip.snapshot(proven)
@@ -1152,6 +1160,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         if ok is None:
             return False
         proven &= ok
+        mip.lean_proven = getattr(mip, "lean_proven", True) and ok
         best = mip.snapshot(proven)
         n2 = mip.value(mip.machines)
         n_floor = math.ceil(mip.bound - 1e-6) if mip.integer else n2
@@ -1420,6 +1429,10 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     elif certified is None and plan is not None and not plan.proven:
         warnings.append("Solver time limit reached — this is the best plan found, "
                         "but it is not proven optimal.")
+    elif plan is not None and not plan.lean_proven:
+        # The goal is certified, but trimming resources/machines ran out of time
+        warnings.append("Resource and machine minimisation hit its time limit — the "
+                        "output is as certified, but a leaner plan may exist.")
     elif plan is not None and not plan.clean_proven:
         warnings.append("Recipe cleanup hit its time limit — output and machine counts "
                         "are optimal, but a plan with fewer recipes may exist.")
