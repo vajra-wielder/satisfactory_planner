@@ -657,16 +657,20 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
           beat: Optional[float] = None,
           info: Optional[dict] = None,
           bounds: Optional[Dict[str, float]] = None,
-          seed: Optional[_Plan] = None) -> Optional[_Plan]:
+          seed: Optional[_Plan] = None,
+          known: Optional[dict] = None) -> Optional[_Plan]:
     """
     Run the stages. Returns None when the scenario is infeasible.
     sloop_caps: at most this many sloops per recipe (from _dive_sloops).
     goal_gap:   stop stage 1 once proven within this relative gap.
     goal_time:  stage-1 time limit (default _STAGE_TIME_S[0]).
-    beat:       polish mode — stop right after stage 1 and return None; if its
-                goal beats this, info["alloc"] gets its sloops per recipe so the
-                caller can rebuild quickly with those fixed.
+    beat:       goal-only mode — stop right after stage 1 and return None, with
+                info["goal"], ["goal_bound"], ["proven"] and ["plan"] (for
+                `known`); if its goal beats this, info["alloc"] gets its sloops
+                per recipe so the caller can build with those fixed.
     info:       receives {"goal_bound": …} after stage 1.
+    known:      stage 1's result from an earlier goal-only run of this same
+                model (its info dict): stage 1 is skipped and resumes from it.
     seed:       a plan to start the search from (the dive's): the goal search
                 then only has to prove its bound, not also find a good plan.
     bounds:     per-recipe throughput bounds already worked out for this
@@ -706,6 +710,8 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     else:
         for k, ub in bounds.items():
             mip.bound_recipe(k, ub)
+    if seed is None and known is not None:
+        seed = known.get("plan")
     if seed is not None and mip.integer:
         vals: Dict[Key, float] = {key: 0.0 for key in mip.var}
         for k, parts in seed.parts.items():
@@ -727,25 +733,30 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         integer_goal = mip.integer and (scenario.somersloops_available > 0
                                         or scenario.max_machines is not None)
         m1 = mip if integer_goal or not mip.integer else lp
-        ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
-        if ok is None:
-            return None
+        if known is not None:
+            ok, g, goal_bound = known["proven"], known["goal"], known["goal_bound"]
+        else:
+            ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
+            if ok is None:
+                return None
+            g = m1.value(m1.goal)
+            # Proven ceiling on the goal, before any trade for fewer new alts
+            goal_bound = m1.bound if mip.goal else None
         proven &= ok
-        g = m1.value(m1.goal)
         mip.goal_pre = g        # the best goal before any trade for fewer new alts
-        # Proven ceiling on the goal, before any trade for fewer new alts
-        goal_bound = m1.bound if mip.goal else None
         mip.goal_bound = goal_bound
         if info is not None:
             info["goal_bound"] = goal_bound
         if beat is not None:
-            if g > beat + max(1e-9, abs(beat) * 1e-9) and info is not None:
-                alloc: Dict[str, float] = {}
-                for (kind, k, l), v in m1.var.items():
-                    if kind == "n" and l:
-                        alloc[k] = alloc.get(k, 0.0) + l * v.solution_value()
-                info["alloc"] = {k: int(round(x)) for k, x in alloc.items() if round(x) > 0}
-                info["goal"] = g
+            if info is not None:
+                info.update(goal=g, proven=ok,
+                            plan=mip.snapshot(proven) if m1 is mip else None)
+                if g > beat + max(1e-9, abs(beat) * 1e-9):
+                    alloc: Dict[str, float] = {}
+                    for (kind, k, l), v in m1.var.items():
+                        if kind == "n" and l:
+                            alloc[k] = alloc.get(k, 0.0) + l * v.solution_value()
+                    info["alloc"] = {k: int(round(x)) for k, x in alloc.items() if round(x) > 0}
             return None
         if mip.new_alt:
             if mip.goal:
@@ -777,7 +788,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
                     return None
                 proven &= ok
                 g = m1.value(m1.goal)
-        if m1 is mip:
+        if m1 is mip and (known is None or mip.new_alt):   # only if solved here
             best = mip.snapshot(proven)
         if mip.goal:
             lock(g - max(1e-6, abs(g) * _GOAL_TOL), mip.inf, lambda m: m.goal)
@@ -1071,38 +1082,42 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
             alloc, ceiling = dive
             # One set of recipe bounds for every plan this solve builds
             rb = _recipe_bounds(model_sc, usable)
-            plan = _plan(model_sc, usable, warnings, sloop_caps=alloc, bounds=rb)
-            if plan is not None and ceiling > 1e-9:
-                # Sloop placement is judged on the goal before Min New Alts
-                # traded any away — that trade is deliberate, not a shortfall.
-                pre = lambda p: p.goal if p.goal_pre is None else p.goal_pre
-                placed = min(1.0, pre(plan) / ceiling)
-                if placed < _POLISH_BELOW:
-                    # Try the exact goal search, seeded from nothing but bounded:
+            # Decide the sloop placement on the goal alone, then build the full
+            # plan (resources, space, cleanup) once, for the placement that wins.
+            first: dict = {}
+            _plan(model_sc, usable, warnings, sloop_caps=alloc, bounds=rb,
+                  beat=math.inf, info=first)
+            if "goal" in first and ceiling > 1e-9:
+                # Placement is judged on the goal before Min New Alts trades any
+                # away (stage 1's own goal) — that trade is deliberate.
+                use_alloc, use_known = alloc, first
+                if first["goal"] / ceiling < _POLISH_BELOW:
+                    # Try the exact goal search, seeded with the dive's plan:
                     #  • below the target (usually a machine cap, which makes the
                     #    fractional ceiling loose): run until proven within the
                     #    target — its bound respects whole machines;
                     #  • otherwise: a short polish, kept only if it beats the dive.
-                    # Either way a better plan replaces the dive's, and the
-                    # tighter of the two bounds certifies the result.
+                    # Either way the tighter of the two bounds certifies.
                     info: dict = {}
-                    below = placed < _CERT_TARGET
-                    exact = _plan(model_sc, usable, [],
-                                  # The solver's gap is (bound − plan) ÷ plan, so
-                                  # certifying the target needs 1/target − 1
-                                  goal_gap=(1 / _CERT_TARGET - 1) if below else None,
-                                  goal_time=None if below else _POLISH_TIME_S,
-                                  beat=pre(plan), info=info, bounds=rb, seed=plan)
+                    below = first["goal"] / ceiling < _CERT_TARGET
+                    _plan(model_sc, usable, [],
+                          # The solver's gap is (bound − plan) ÷ plan, so
+                          # certifying the target needs 1/target − 1
+                          goal_gap=(1 / _CERT_TARGET - 1) if below else None,
+                          goal_time=None if below else _POLISH_TIME_S,
+                          beat=first["goal"], info=info, bounds=rb, seed=first.get("plan"))
                     if "alloc" in info:
-                        # Better sloop placement found: rebuild with it fixed
-                        better = _plan(model_sc, usable, [], sloop_caps=info["alloc"], bounds=rb)
-                        if better is not None and pre(better) > pre(plan) + 1e-9:
-                            plan = better
+                        use_alloc, use_known = info["alloc"], None   # better placement
                     bound = info.get("goal_bound")
                     if bound and bound > 1e-9:
                         ceiling = min(ceiling, bound)
-                placed = min(1.0, pre(plan) / ceiling)
-                certified = min(1.0, plan.goal / ceiling)
+                plan = _plan(model_sc, usable, warnings, sloop_caps=use_alloc, bounds=rb,
+                             known=use_known)
+                if plan is None and use_known is None:
+                    plan = _plan(model_sc, usable, warnings, sloop_caps=alloc, bounds=rb,
+                                 known=first)
+                if plan is not None:
+                    certified = min(1.0, plan.goal / ceiling)
     if plan is None:
         plan = _plan(model_sc, usable, warnings) if usable else None
         if plan is not None and plan.goal_bound:
