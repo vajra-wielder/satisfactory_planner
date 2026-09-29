@@ -6,8 +6,8 @@ PLAN (see _plan):
   a somersloop level per recipe, power shards per recipe, hard budgets for
   sloops, shards and max_machines — solved in three lexicographic stages:
     1. Goal   maximise the weighted goals
-    2. Lean   least raw resources, then fewest machines (or the reverse
-              with machines_first)
+    2. Lean   least raw resources, then least machine space — machines
+              weighed by the room they take (or the reverse with machines_first)
     3. Clean  fewest recipes and duplicate producers
   Each stage is solved to proven optimality (MIP gap 1e-9) with earlier
   stages locked, so the result is the best plan, not a greedy approximation.
@@ -43,6 +43,15 @@ POWER_EXP   = math.log2(2.5)   # ≈1.3219 — 1.0 overclock power curve (250% �
 # Min New Alts: the goal may drop by at most this share to use fewer alts you
 # haven't unlocked yet (each costs a hard drive, however much it runs).
 _NEW_ALT_TOL = 0.01
+# Machines are weighed by the room they take, not counted: w × l × h from
+# machine_meta size_m (metres), in whole m³ so the solver can round its bounds.
+_DEFAULT_SPACE_M3 = 1000
+def machine_space(meta: Dict, machine: str) -> int:
+    size = (meta.get(machine) or {}).get("size_m")
+    if not size or len(size) != 3:
+        return _DEFAULT_SPACE_M3
+    return max(1, int(round(float(size[0]) * float(size[1]) * float(size[2]))))
+
 SHARD_BOOST = 0.5
 MAX_CLOCK   = 2.5
 
@@ -61,6 +70,7 @@ class Recipe:
     key: str; display: str; machine: str; alternate: bool
     inputs: Dict[str,float]; outputs: Dict[str,float]
     base_power_mw: float = 10.0; sloop_slots: int = 0
+    space_m3: int = _DEFAULT_SPACE_M3   # room one machine takes (see machine_meta size_m)
 
 @dataclass
 class Scenario:
@@ -90,8 +100,8 @@ class Scenario:
     # Somersloop placement: "dive" (fast, certified ≥ 95% of the best) or
     # "exact" (the full integer search, for comparing on big plans).
     sloop_search: str = "dive"
-    # Lean stage order: least raw resources first (default), or fewest
-    # machines first and then the least resources among those plans.
+    # Lean stage order: least raw resources first (default), or least machine
+    # space first and then the least resources among those plans.
     machines_first: bool = False
 
 @dataclass
@@ -170,6 +180,7 @@ def _build_recipes(raw: dict) -> Dict[str, "Recipe"]:
             # A recipe may set its own power (variable-power machines)
             base_power_mw=float(d.get("power_mw", m.get("base_power_mw", 10.0))),
             sloop_slots=int(SLOOP_SLOTS_BY_MACHINE.get(machine, 0)),
+            space_m3=machine_space(meta, machine),
         )
     return out
 
@@ -365,10 +376,11 @@ def prune_recipes(
 # stages. Each stage keeps the previous stages' optimum locked in place:
 #
 #   1. Goal  — maximise the weighted goal items.
-#   2. Lean  — (a) least raw resources, then (b) fewest whole machines.
+#   2. Lean  — (a) least raw resources, then (b) least machine space: whole
+#              machines weighed by the room they take (w·l·h, size_m).
 #              Resources are the finite thing; machines can always be built,
 #              so machines never buy back resources. (machines_first swaps
-#              the two: fewest machines, then least resources.)
+#              the two: least machine space, then least resources.)
 #   3. Clean — minimise recipes and duplicate producers of one product, letting
 #              machines rise by at most _MACHINE_SLACK (resources stay locked).
 #   4. Tidy  — with everything above locked, the fewest somersloops (so none
@@ -398,7 +410,7 @@ _RES_TOL       = 1e-6    # relative slack on the locked resource score (numerics
 # it to 1e-9 can take the whole time limit (a weak bound under the machine
 # lock). Stopping within 1% mirrors _MACHINE_SLACK in the default order.
 _RES_GAP       = 0.01    # machines_first: resources within 1% of the least
-_MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machines for fewer recipes
+_MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machine space for fewer recipes
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
 _STAGE_TIME_S  = (20, 20, 15)   # per stage; on timeout the best plan so far is kept
 _Q_EPS         = 1e-6    # throughput below this is treated as "not running"
@@ -516,6 +528,8 @@ class _Model:
                 self.ct(-INF, qty - res.get(it, 0.0), self.net[it])
 
         self.machines = {key: 1.0 for key in self.var if key[0] == "n"}
+        # What the lean stages minimise: machine space, not machine count
+        self.space = {key: float(usable[key[1]].space_m3) for key in self.machines}
         self.sloops = {key: float(key[2]) for key in self.machines if key[2]}
         # Budgets, kept by name so the analysis can read their prices
         self.budget_ct: Dict[str, object] = {}
@@ -726,10 +740,10 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         mip.goal_bound = None
 
     # ── Stage 2: lean ──
-    # Default order: (a) least raw resources, then (b) fewest whole machines —
+    # Default order: (a) least raw resources, then (b) least machine space —
     # resources are the finite thing, so they are never traded for machines.
-    # machines_first swaps the two: fewest machines, then the least resources
-    # among plans with that many.
+    # machines_first swaps the two: least machine space, then the least
+    # resources among plans that small.
     unlimited = set(scenario.unlimited_resources)
     supplied = [it for it, v in scenario.available_resources.items()
                 if v > 0 and it not in unlimited]
@@ -769,22 +783,23 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         return True
 
     def lean_machines() -> bool:
-        # Fewest whole machines. A whole-number score lets the solver round its
-        # bound up (77.2 → 78) and prune — what keeps shard-heavy plans fast.
-        # Stage 3 may add _MACHINE_SLACK anyway, so proving the minimum more
-        # tightly than that is wasted search: stop within that gap, then allow
-        # at most _MACHINE_SLACK over the proven minimum in total.
+        # Least machine space (whole machines weighed by the room they take).
+        # A whole-number score (space in whole m³) lets the solver round its
+        # bound up and prune — what keeps shard-heavy plans fast. Stage 3 may
+        # add _MACHINE_SLACK anyway, so proving the minimum more tightly than
+        # that is wasted search: stop within that gap, then allow at most
+        # _MACHINE_SLACK over the proven minimum in total.
         nonlocal proven, best
-        ok = mip.run(mip.machines, False, _STAGE_TIME_S[1], gap=_MACHINE_SLACK)
+        ok = mip.run(mip.space, False, _STAGE_TIME_S[1], gap=_MACHINE_SLACK)
         if ok is None:
             return False
         proven &= ok
         mip.lean_proven = getattr(mip, "lean_proven", True) and ok
         best = mip.snapshot(proven)
-        n2 = mip.value(mip.machines)
-        n_floor = math.ceil(mip.bound - 1e-6) if mip.integer else n2
-        cap = max(n2, math.floor(n_floor * (1 + _MACHINE_SLACK) + 1e-9))
-        lock(-mip.inf, cap + 0.5, lambda m: m.machines)
+        v2 = mip.value(mip.space)
+        v_floor = math.ceil(mip.bound - 1e-6) if mip.integer else v2
+        cap = max(v2, math.floor(v_floor * (1 + _MACHINE_SLACK) + 1e-9))
+        lock(-mip.inf, cap + 0.5, lambda m: m.space)
         return True
 
     for step in ((lean_machines, lean_resources) if scenario.machines_first
@@ -797,7 +812,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
 
     # ── Stage 3: clean ──
     # 3a: fewest recipes + duplicate producers (a half-integer score, quick to
-    # prove); 3b: with that locked, the fewest machines among such plans.
+    # prove); 3b: with that locked, the least machine space among such plans.
     obj: Dict[Key, float] = {}
     for k, yv in mip.y.items():
         obj[("y", k, 0)] = 1.0
@@ -820,7 +835,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     best = mip.snapshot(proven)
     best.clean_proven = ok
     mip.ct(-mip.inf, mip.value(obj) + 1e-6, obj)
-    ok_b = mip.run(mip.machines, False, _STAGE_TIME_S[2])
+    ok_b = mip.run(mip.space, False, _STAGE_TIME_S[2])
     if ok_b is None:
         return best
     best = mip.snapshot(proven)
@@ -828,7 +843,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
 
     # ── Stage 4: tidy ──
     if mip.sloops and scenario.somersloops_available > 0:
-        mip.ct(-mip.inf, mip.value(mip.machines) + 0.5, mip.machines)
+        mip.ct(-mip.inf, mip.value(mip.space) + 0.5, mip.space)
         if mip.run(mip.sloops, False, _STAGE_TIME_S[2]) is not None:
             tidy = mip.snapshot(proven)
             tidy.clean_proven = best.clean_proven
@@ -1060,7 +1075,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         warnings.append("Resource and machine minimisation hit its time limit — the "
                         "output is as certified, but a leaner plan may exist.")
     elif plan is not None and not plan.clean_proven:
-        warnings.append("Recipe cleanup hit its time limit — output and machine counts "
+        warnings.append("Recipe cleanup hit its time limit — output and machine space "
                         "are optimal, but a plan with fewer recipes may exist.")
 
     # Build flows — single pass over active recipes
@@ -1312,7 +1327,8 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 #   resources  for the same output with supply uncapped, how much more of your
 #              resources you'd need without it (downstream: the planner's
 #              resource score, as a % of the plan's)
-#   machines   extra machines for that same output (second, as in the planner)
+#   machines   extra machine space (m³) for that same output (second, as in
+#              the planner — machines weighed by the room they take)
 # An alternate whose saving lands on a resource that isn't limiting shows no
 # output, only resources. "required" = the goals can't be met without it at
 # all; "short" = not at your supply (output counts as all at stake), but with
@@ -1329,7 +1345,8 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 # like Cast Screw) — each compares cleanly only with the ones above it still.
 # Pairs of one kind and measure chain into groups, each measured as a whole.
 _SYN_REL = 0.15                                         # of the pair's value …
-_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 0.5}   # … and at least
+_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 250.0}   # … and at least
+#           (% output, % resources, m³ of machine space — about half a Constructor)
 _MAX_PAIRS = 800
 _MEASURES = ("output", "resources", "machines")
 
@@ -1382,7 +1399,7 @@ def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
                     return None
                 r = lp.value(score)
                 lock = lp.ct(-lp.inf, r + abs(r) * 1e-7 + 1e-9, score)
-            got = (r, lp.value(lp.machines)) if lp.run(lp.machines, False, T) is not None else None
+            got = (r, lp.value(lp.space)) if lp.run(lp.space, False, T) is not None else None
             if lock is not None:
                 lock.SetBounds(-lp.inf, lp.inf)
             return got
@@ -1507,6 +1524,9 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "objective_value":       result.objective_value,
         "total_power_mw":        result.total_power_mw,
         "total_machines":        result.total_machines,
+        # Room the machines take (Σ machines × w·l·h), what the planner minimises
+        "total_space_m3":        sum(f.machines_final * machine_space(machine_meta, f.machine)
+                                     for f in result.flows),
         "shards_used":           result.shards_used,
         "sloops_used":           result.sloops_used,
         "warnings":              result.warnings,

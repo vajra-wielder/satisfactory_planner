@@ -5,6 +5,7 @@
 
 import { SC, RESULT, RECIPES, mCol, MABBR, itemName } from './state.js';
 import { fetchDuals } from './api.js';
+import { _fmtSpace } from './ui.js';
 
 // ── DOM helpers ───────────────────────────────────────────
 function section(parent, title, extraHTML = '') {
@@ -325,7 +326,7 @@ function renderAnalysis() {
         either <b style="color:var(--t2)">upstream</b>: the share of your output it provides
         with your supply, or, when output doesn't depend on it,
         <b style="color:var(--t2)">downstream</b>: the resources it saves for the same output.
-        Then the machines it saves.
+        Then the machine space it saves (machines weighed by the room they take).
         <b style="color:#f87171">Required</b> = the goals can't be met without it;
         <b style="color:#fb923c">Short</b> = not at your supply.
       </p>
@@ -333,7 +334,7 @@ function renderAnalysis() {
         <span style="font-size:10px;color:var(--t3)">Sort by</span>
         <div class="seg" id="an-rank-sort">
           <button type="button" data-by="value" class="${_rankSort === 'value' ? 'on' : ''}">Value</button>
-          <button type="button" data-by="machines" class="${_rankSort === 'machines' ? 'on' : ''}">Machines</button>
+          <button type="button" data-by="machines" class="${_rankSort === 'machines' ? 'on' : ''}">Space</button>
         </div>
       </div>
       <div id="an-rank-results"></div>
@@ -373,10 +374,10 @@ function _valueCells(v) {
                 'Without it the same output needs this much more of your resources');
   else
     main = mono('—', 'var(--t3)', 'No effect: other recipes cover for it');
-  const m = v.machines ?? 0;
-  const mach = Math.abs(m) < 0.05 ? ''
-    : mono(`${m > 0 ? '−' : '+'}${Math.abs(m).toFixed(1)} m`, m > 0 ? 'var(--ok)' : 'var(--t3)',
-           m > 0 ? 'Machines it saves' : 'Extra machines it takes');
+  const m = v.machines ?? 0;          // machine space, m³
+  const mach = Math.abs(m) < 1 ? ''
+    : mono(`${m > 0 ? '−' : '+'}${_fmtSpace(Math.abs(m))}`, m > 0 ? 'var(--ok)' : 'var(--t3)',
+           m > 0 ? 'Machine space it saves' : 'Extra machine space it takes');
   return `${main}${mach ? `<span style="margin-left:8px">${mach}</span>` : ''}`;
 }
 
@@ -388,7 +389,7 @@ function _renderRanking(analysis) {
     short:    { label: 'SHORT',          bg: 'rgba(251,146,60,.16)', color: '#fb923c' },
     output:   { label: 'MORE OUTPUT',    bg: 'rgba(52,211,153,.15)', color: '#34d399' },
     res:      { label: 'LESS RESOURCES', bg: 'rgba(52,211,153,.15)', color: '#34d399' },
-    mach:     { label: 'FEWER MACHINES', bg: 'rgba(59,130,246,.15)', color: '#60a5fa' },
+    mach:     { label: 'LESS SPACE',     bg: 'rgba(59,130,246,.15)', color: '#60a5fa' },
     none:     { label: 'COVERED',        bg: 'rgba(251,191,36,.13)', color: '#fbbf24' },
   };
   const rows = [...(analysis.alt_ranking || [])];
@@ -408,7 +409,7 @@ function _renderRanking(analysis) {
     const r = RECIPES[v.key];
     if (!r) return;
     const badge = BADGE[v.required ? 'required' : v.short ? 'short' : v.output > 0.05 ? 'output'
-      : v.resources > 0.05 ? 'res' : v.machines > 0.5 ? 'mach' : 'none'];
+      : v.resources > 0.05 ? 'res' : v.machines > 100 ? 'mach' : 'none'];
     const color = mCol(r.machine);
     out.innerHTML += `
       <div class="ra-row">
@@ -431,7 +432,7 @@ function _renderRanking(analysis) {
     either:   ['Either one',    'They cover for each other: drop one and the other takes over; drop all and it costs this.', '#fbbf24'],
   };
   const fmt = { output: v => `${v.toFixed(1)}% output`, resources: v => `${v.toFixed(1)}% res`,
-                machines: v => `${v.toFixed(1)} machines` };
+                machines: v => _fmtSpace(v) };
   let h = `<div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Synergy</div>`;
   ['together', 'either'].forEach(kind => {
     const gs = groups.filter(g => g.kind === kind);
@@ -441,7 +442,7 @@ function _renderRanking(analysis) {
           <div style="font-size:10px;color:var(--t3);margin-bottom:6px">${blurb}</div>`;
     gs.forEach(g => {
       const detail = g.required ? 'required as a set'
-        : `together ${fmt[g.by](g[g.by])} · apart ${fmt[g.by](g['apart_' + g.by])}`;
+        : `by ${g.by === 'machines' ? 'space' : g.by}: together ${fmt[g.by](g[g.by])} · apart ${fmt[g.by](g['apart_' + g.by])}`;
       h += `
         <div style="border:1px solid var(--b);border-radius:var(--rsm);padding:6px 8px;margin-bottom:6px">
           <div style="font-size:11px;color:var(--t2);margin-bottom:3px">${g.keys.map(_altDisplayName).join(' + ')}</div>

@@ -36,6 +36,7 @@ export function closeWarn() { document.getElementById('wo').classList.remove('sh
 // RESULTS BAR + BUILD COST
 // ══════════════════════════════════════════════════════════
 let _rbLastHTML = null;
+export const _fmtSpace = v => v >= 1e6 ? `${(v / 1e6).toFixed(2)}M m³` : v >= 1e4 ? `${(v / 1e3).toFixed(0)}k m³` : `${Math.round(v)} m³`;
 export function renderResultsBar() {
   const rb = document.getElementById('rb');
   if (!RESULT?.status?.startsWith('Optimal')) {
@@ -72,6 +73,8 @@ export function renderResultsBar() {
   });
   if (objItems.length) h += sep;
   h += st('Machines', RESULT.total_machines) + sep;
+  // Room the machines take — what the planner minimises (w×l×h per machine)
+  if (RESULT.total_space_m3 != null) h += st('Space', _fmtSpace(RESULT.total_space_m3)) + sep;
   // Net power: negative when generators (nuclear plants) make more than the factory uses
   const pw = RESULT.total_power_mw ?? 0;
   h += pw < 0 ? st('Power made', `${(-pw).toFixed(0)} MW`, 'var(--ok)')

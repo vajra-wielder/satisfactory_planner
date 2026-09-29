@@ -752,7 +752,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
             <div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solve Modifiers</div>
             <div id="solve-styles">
               <button class="ssc" data-style="no-byproducts" title="Forces the solver to recycle byproducts (e.g. Polymer Resin → Rubber/Plastic). Tries hard caps first; falls back to soft penalty if that causes infeasibility."><span class="ssc-dot"></span>No Byproducts</button>
-              <button class="ssc" id="ssc-machines-first" title="Fewest machines first, then the least raw resources among those plans. Default (off) is the reverse: least resources first, then fewest machines."><span class="ssc-dot"></span>Min Machines</button>
+              <button class="ssc" id="ssc-machines-first" title="Least machine space first (machines weighed by the room they take), then the least raw resources among those plans. Default (off) is the reverse: least resources first, then least machine space."><span class="ssc-dot"></span>Min Machines</button>
               <button class="ssc" id="ssc-min-new-alts" title="Use as few alternates you haven't unlocked yet as possible (each is a hard drive). Output may drop by at most 1% to save one; then the best output with that set."><span class="ssc-dot"></span>Min New Alts</button>
 
             </div>

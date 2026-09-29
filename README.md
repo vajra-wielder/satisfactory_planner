@@ -13,7 +13,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Weighted multi-item objectives
 - Resource constraints
 - Production minimums, maximums, and exact requirements
-- Least raw resources first, then fewest machines, then fewest recipes
+- Least raw resources first, then least machine space (machines weighed by the
+  room they take, w × l × h from `size_m` in the recipe data), then fewest recipes
 - Mark abundant resources (e.g. Water) unlimited: uncapped and free
 - Machine count limits (whole machines, enforced exactly)
 - Power Shard placement optimised across the whole factory
