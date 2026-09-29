@@ -1236,8 +1236,8 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
                            exact: the least r that reaches the best goal with r
                            unlimited (None when more r never stops helping)
       limits[b]            goal gained per extra machine (cap) / power shard
-      alt_ranking          per alternate the plan uses: extra resources, then
-                           machines, to make the plan's output without it
+      alt_ranking          per alternate the plan uses: the output it provides,
+                           the resources and machines it saves
       alt_groups           alternates that cover for each other ("either") or
                            only pay off as a package ("together")
     (see _alt_value)
@@ -1245,7 +1245,7 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
     if usable is None:
         usable, _ = prune_recipes(scenario, all_recipes)
     out = {"shadow_prices": {}, "saturation_points": {}, "limits": {},
-           "alt_ranking": [], "alt_groups": [], "alt_base": None}
+           "alt_ranking": [], "alt_groups": []}
     if not usable:
         return out
     sc = _with_unlimited(scenario)
@@ -1298,19 +1298,25 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
                 g_ct.SetBounds(-lp.inf, lp.inf)
             ct.SetUb(ub)
             out["saturation_points"][it] = sat
-        if plan_goal is not None:
-            goal_best = min(goal_best, plan_goal)
 
-    out.update(_alt_value(lp, sc, usable, used, finite, goal_best))
+    goal_held = goal_best if plan_goal is None or goal_best is None else min(goal_best, plan_goal)
+    out.update(_alt_value(lp, sc, usable, used, finite, goal_best, goal_held))
     return out
 
 
 # ── Alternate value and synergy ───────────────────────────────────────────────
-# What each alternate the plan uses is worth, measured as the planner ranks
-# plans: to make the plan's output without it, how much more of your resources
-# (the same mean use/supply score, in points) and then how many more machines.
-# Supply caps and the machine cap are lifted for this, so the answer is always
-# a cost; "required" means the output can't be made without it at all.
+# What each alternate the plan uses is worth, in the planner's own terms — it
+# shows up either upstream or downstream:
+#   output     with your supply and limits, the share of the goal it provides
+#              (upstream: how much less you'd make without it)
+#   resources  for the same output with supply uncapped, how much more of your
+#              resources you'd need without it (downstream: the planner's
+#              resource score, as a % of the plan's)
+#   machines   extra machines for that same output (second, as in the planner)
+# An alternate whose saving lands on a resource that isn't limiting shows no
+# output, only resources. "required" = the goals can't be met without it at
+# all; "short" = not at your supply (output counts as all at stake), but with
+# more resources they could.
 #
 # Alternates rarely act alone, so related pairs (sharing an item) are also
 # switched off together and compared with the two apart:
@@ -1318,51 +1324,57 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 #              covers for the other (two ways to the same saving).
 #   together — losing both costs less: they pay off only as a package (one
 #              feeds the other, e.g. a step-skipping chain).
-# Pairs are judged on resources first, and on machines only for alternates
-# that leave resources untouched (step-skippers like Cast Screw); pairs of one kind and measure chain into groups, and each group's
-# combined value is measured.
-_SYN_REL      = 0.15    # an interaction must exceed 15% of the pair's value …
-_SYN_ABS_RES  = 0.1     # … and 0.1 points of resource share
-_SYN_ABS_MACH = 0.5     # … or half a machine, when judged on machines
-_MAX_PAIRS    = 800
+# Judged on output first; on resources only when output doesn't move for any
+# of the three switch-offs; on machines only when neither does (step-skippers
+# like Cast Screw) — each compares cleanly only with the ones above it still.
+# Pairs of one kind and measure chain into groups, each measured as a whole.
+_SYN_REL = 0.15                                         # of the pair's value …
+_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 0.5}   # … and at least
+_MAX_PAIRS = 800
+_MEASURES = ("output", "resources", "machines")
 
 
 def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
                used: Dict[str, dict], finite: List[str],
-               goal_target: Optional[float]) -> dict:
-    out = {"alt_ranking": [], "alt_groups": [], "alt_base": None}
+               goal_max: Optional[float], goal_target: Optional[float]) -> dict:
+    out = {"alt_ranking": [], "alt_groups": []}
     alts = sorted(k for k in used if k in usable and usable[k].alternate)
     if not alts:
         return out
     T = _STAGE_TIME_S[0]
-    supplied = [it for it in sc.available_resources if it in lp.res_ct]
-    unlimited = set(sc.unlimited_resources)
-
-    # Make the plan's output at least cost: caps lifted, output held
-    added, restore = [], []
-    for it in supplied:
-        ct = lp.res_ct[it]
-        restore.append((ct, ct.ub()))
-        ct.SetUb(lp.inf)
-    cap = lp.budget_ct.get("machines")
-    if cap is not None:
-        restore.append((cap, cap.ub()))
-        cap.SetUb(lp.inf)
-    if lp.goal and goal_target is not None:
-        added.append(lp.ct(goal_target - max(1e-9, abs(goal_target) * 1e-7), lp.inf, lp.goal))
+    upstream = bool(lp.goal) and goal_max is not None and abs(goal_max) > 1e-9
     score: Dict[Key, float] = {}
     for it in finite:
-        w = 100.0 / len(finite) / sc.available_resources[it]
+        w = 1.0 / len(finite) / sc.available_resources[it]
         for key, c in lp.net.get(it, {}).items():
             score[key] = score.get(key, 0.0) - c * w
-    use_of = {it: {key: -c for key, c in lp.net[it].items()} for it in supplied}
+    caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
+    if "machines" in lp.budget_ct:
+        caps.append(lp.budget_ct["machines"])
 
-    def evaluate(off) -> Optional[Tuple[float, float, Dict[str, float]]]:
-        """(resource score, machines, use per resource) with `off` switched off."""
+    def switched_off(off, fn):
         cols = [lp.var[("q", k, l)] for k in off for l in lp.levels[k]]
         ubs = [v.ub() for v in cols]
         for v in cols:
             v.SetUb(0.0)
+        try:
+            return fn()
+        finally:
+            for v, ub in zip(cols, ubs):
+                v.SetUb(ub)
+
+    def goal_now() -> Optional[float]:
+        """Best goal under the plan's own supply and limits."""
+        return lp.value(lp.goal) if lp.run(lp.goal, True, T) is not None else None
+
+    def cost_now() -> Optional[Tuple[float, float]]:
+        """(resource score, machines) for the held output, caps lifted."""
+        ubs = [ct.ub() for ct in caps]
+        for ct in caps:
+            ct.SetUb(lp.inf)
+        held = None
+        if lp.goal and goal_target is not None:
+            held = lp.ct(goal_target - max(1e-9, abs(goal_target) * 1e-7), lp.inf, lp.goal)
         try:
             r, lock = 0.0, None
             if score:
@@ -1370,115 +1382,104 @@ def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
                     return None
                 r = lp.value(score)
                 lock = lp.ct(-lp.inf, r + abs(r) * 1e-7 + 1e-9, score)
-            ok = lp.run(lp.machines, False, T)
-            got = None
-            if ok is not None:
-                got = (r, lp.value(lp.machines),
-                       {it: lp.value(e) for it, e in use_of.items()})
+            got = (r, lp.value(lp.machines)) if lp.run(lp.machines, False, T) is not None else None
             if lock is not None:
                 lock.SetBounds(-lp.inf, lp.inf)
             return got
         finally:
-            for v, ub in zip(cols, ubs):
-                v.SetUb(ub)
+            if held is not None:
+                held.SetBounds(-lp.inf, lp.inf)
+            for ct, ub in zip(caps, ubs):
+                ct.SetUb(ub)
 
-    try:
-        base = evaluate(())
-        if base is None:
-            return out
-        out["alt_base"] = {"resources": round(base[0], 3), "machines": round(base[1], 2)}
-        orig = sc.available_resources
-
-        def delta(e) -> Tuple[float, float]:
-            return e[0] - base[0], e[1] - base[1]
-
-        def changes(e) -> List[dict]:
-            """The resources this alternate saves, biggest first."""
-            rows = []
-            for it in supplied:
-                d = e[2][it] - base[2][it]
-                if abs(d) < 1e-3:
-                    continue
-                scale = max(base[2][it], 1.0) if it in unlimited else orig[it]
-                rows.append({"item": it, "delta": round(d, 3),
-                             "new": base[2][it] < 1e-6 and e[2][it] > 1e-6,
-                             "share": d / scale})
-            rows.sort(key=lambda x: -abs(x["share"]))
-            for x in rows:
-                del x["share"]
-            return rows[:4]
-
-        single: Dict[str, Optional[Tuple[float, float]]] = {}
-        for k in alts:
-            e = evaluate((k,))
-            if e is None:
-                single[k] = None
-                out["alt_ranking"].append({"key": k, "required": True,
-                                           "resources": None, "machines": None, "changes": []})
-            else:
-                single[k] = delta(e)
-                out["alt_ranking"].append({"key": k, "required": False,
-                                           "resources": round(single[k][0], 3),
-                                           "machines": round(single[k][1], 2),
-                                           "changes": changes(e)})
-        out["alt_ranking"].sort(key=lambda x: (not x["required"], -(x["resources"] or 0.0),
-                                               -(x["machines"] or 0.0), x["key"]))
-
-        # ── pairs ──
-        items_of = {k: set(usable[k].inputs) | set(usable[k].outputs) for k in alts}
-        free = [k for k in alts if single[k] is not None]
-        pairs = [(a, b) for i, a in enumerate(free) for b in free[i + 1:]
-                 if items_of[a] & items_of[b]][:_MAX_PAIRS]
-        links: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
-        for a, b in pairs:
-            e = evaluate((a, b))
-            if e is None:                    # each alone can go, both can't
-                links.setdefault(("either", "resources"), []).append((a, b))
-                continue
-            jr, jm = delta(e)
-            sr, sm = single[a][0] + single[b][0], single[a][1] + single[b][1]
-            ir, im = jr - sr, jm - sm
-            tr = max(_SYN_ABS_RES, _SYN_REL * max(abs(jr), abs(sr)))
-            tm = max(_SYN_ABS_MACH, _SYN_REL * max(abs(jm), abs(sm)))
-            if abs(ir) > tr:
-                key = ("either" if ir > 0 else "together", "resources")
-            elif abs(im) > tm and max(abs(jr), abs(single[a][0]), abs(single[b][0])) <= _SYN_ABS_RES:
-                # Machines only compare cleanly when resources don't move at
-                # all (machines are counted after resources are minimised)
-                key = ("either" if im > 0 else "together", "machines")
-            else:
-                continue
-            links.setdefault(key, []).append((a, b))
-
-        for (kind, by), edges in links.items():
-            parent = {k: k for k in alts}
-            def find(x):
-                while parent[x] != x:
-                    parent[x] = parent[parent[x]]
-                    x = parent[x]
-                return x
-            for a, b in edges:
-                parent[find(a)] = find(b)
-            groups: Dict[str, List[str]] = {}
-            for k in sorted({k for p in edges for k in p}):
-                groups.setdefault(find(k), []).append(k)
-            for keys in groups.values():
-                e = evaluate(tuple(keys))
-                out["alt_groups"].append({
-                    "kind": kind, "by": by, "keys": keys, "required": e is None,
-                    "resources": None if e is None else round(delta(e)[0], 3),
-                    "machines": None if e is None else round(delta(e)[1], 2),
-                    "apart_resources": round(sum(single[k][0] for k in keys), 3),
-                    "apart_machines": round(sum(single[k][1] for k in keys), 2),
-                    "changes": [] if e is None else changes(e)})
-        out["alt_groups"].sort(key=lambda g: (not g["required"], -(g["resources"] or 0.0),
-                                              -(g["machines"] or 0.0)))
+    cost0 = cost_now()
+    if cost0 is None:
         return out
-    finally:
-        for ct in added:
-            ct.SetBounds(-lp.inf, lp.inf)
-        for ct, ub in restore:
-            ct.SetUb(ub)
+
+    def measure(off, need_cost=True) -> Optional[Dict[str, Optional[float]]]:
+        """Value lost with `off` switched off: output (% of goal), resources
+        (% more), machines (more). None = the goals can't be met."""
+        m: Dict[str, Optional[float]] = {"output": 0.0, "resources": None, "machines": None}
+        if upstream:
+            g = switched_off(off, goal_now)
+            if g is None:
+                # Its fixed outputs can't be met at your supply — but maybe with
+                # more of it: then it's short (all output at stake), not required
+                need_cost, m["output"], m["short"] = True, 100.0, True
+            else:
+                m["output"] = 100.0 * (goal_max - g) / abs(goal_max)
+        if need_cost:
+            c = switched_off(off, cost_now)
+            if c is None:
+                return None
+            m["resources"] = (100.0 * (c[0] - cost0[0]) / cost0[0]) if cost0[0] > 1e-12 else 0.0
+            m["machines"] = c[1] - cost0[1]
+        return m
+
+    def rounded(m) -> Dict[str, object]:
+        r: Dict[str, object] = {k: None if m is None or m[k] is None
+                                else round(m[k], 3 if k != "machines" else 2) for k in _MEASURES}
+        r["short"] = bool(m and m.get("short"))
+        return r
+
+    single: Dict[str, Optional[dict]] = {}
+    for k in alts:
+        single[k] = measure((k,))
+        out["alt_ranking"].append({"key": k, "required": single[k] is None, **rounded(single[k])})
+    out["alt_ranking"].sort(key=lambda x: (not x["required"],
+                                           *[-(x[m] or 0.0) for m in _MEASURES], x["key"]))
+
+    # ── pairs ──
+    items_of = {k: set(usable[k].inputs) | set(usable[k].outputs) for k in alts}
+    free = [k for k in alts if single[k] is not None]
+    pairs = [(a, b) for i, a in enumerate(free) for b in free[i + 1:]
+             if items_of[a] & items_of[b]][:_MAX_PAIRS]
+    links: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+    for a, b in pairs:
+        joint = measure((a, b), need_cost=False)
+        if joint is None:                        # each alone can go, both can't
+            links.setdefault(("either", "output"), []).append((a, b))
+            continue
+        # With a pair short at your supply, output is all at stake either way —
+        # only resources and machines tell the pair apart
+        short = joint.get("short") or single[a].get("short") or single[b].get("short")
+        for m in (_MEASURES[1:] if short else _MEASURES):
+            if m != "output" and joint.get(m) is None:
+                c = measure((a, b))
+                if c is None:
+                    links.setdefault(("either", m), []).append((a, b))
+                    break
+                joint.update(c)
+            j, sa, sb = joint[m], single[a][m], single[b][m]
+            inter = j - sa - sb
+            thr = max(_SYN_ABS[m], _SYN_REL * max(abs(j), abs(sa + sb)))
+            if abs(inter) > thr:
+                links.setdefault(("either" if inter > 0 else "together", m), []).append((a, b))
+                break
+            # The next measure only compares cleanly if this one didn't move
+            if max(abs(j), abs(sa), abs(sb)) > _SYN_ABS[m]:
+                break
+
+    for (kind, by), edges in links.items():
+        parent = {k: k for k in alts}
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        for a, b in edges:
+            parent[find(a)] = find(b)
+        groups: Dict[str, List[str]] = {}
+        for k in sorted({k for p in edges for k in p}):
+            groups.setdefault(find(k), []).append(k)
+        for keys in groups.values():
+            g = measure(tuple(keys))
+            out["alt_groups"].append({
+                "kind": kind, "by": by, "keys": keys, "required": g is None, **rounded(g),
+                **{f"apart_{m}": round(sum(single[k][m] for k in keys), 3) for m in _MEASURES}})
+    out["alt_groups"].sort(key=lambda g: (not g["required"],
+                                          *[-(g[m] or 0.0) for m in _MEASURES]))
+    return out
 
 
 def compute_build_cost(result: SolveResult, machine_meta: Dict) -> Dict[str,int]:

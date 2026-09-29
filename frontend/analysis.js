@@ -321,16 +321,18 @@ function renderAnalysis() {
     const rankBody = el.querySelector('.an-section:last-child .an-body');
     rankBody.innerHTML = `
       <p style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:8px">
-        Each alternate is switched off and the plan's output re-made at least cost
-        (fractional machines, sloops held in place).
-        <b style="color:var(--t2)">Resources</b> = extra share of your supply needed without it
-        (points of the resource score); <b style="color:var(--t2)">Machines</b> = extra machines at that.
-        <b style="color:#f87171">Required</b> = the output can't be made without it.
+        What each alternate is worth to this plan (fractional machines, sloops held in place) —
+        either <b style="color:var(--t2)">upstream</b>: the share of your output it provides
+        with your supply, or, when output doesn't depend on it,
+        <b style="color:var(--t2)">downstream</b>: the resources it saves for the same output.
+        Then the machines it saves.
+        <b style="color:#f87171">Required</b> = the goals can't be met without it;
+        <b style="color:#fb923c">Short</b> = not at your supply.
       </p>
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
         <span style="font-size:10px;color:var(--t3)">Sort by</span>
         <div class="seg" id="an-rank-sort">
-          <button type="button" data-by="resources" class="${_rankSort === 'resources' ? 'on' : ''}">Resources</button>
+          <button type="button" data-by="value" class="${_rankSort === 'value' ? 'on' : ''}">Value</button>
           <button type="button" data-by="machines" class="${_rankSort === 'machines' ? 'on' : ''}">Machines</button>
         </div>
       </div>
@@ -352,25 +354,30 @@ function renderAnalysis() {
 
 
 // ── Alt value + synergy (computed server-side with the rest of the analysis) ─
-let _rankSort = 'resources';   // 'resources' (the planner's priority) or 'machines'
+let _rankSort = 'value';   // 'value' (output, then resources) or 'machines'
 
-const _fmtRes  = v => `${v > 0 ? '+' : ''}${v.toFixed(2)} pt`;
-const _fmtMach = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}`;
-
-// "without it: +38 Copper Ore, needs Sulfur"
-function _changesLine(changes) {
-  if (!changes?.length) return '';
-  const parts = changes.map(c => c.new
-    ? `<b style="color:var(--warn)">needs ${itemName(c.item)}</b> (${c.delta.toFixed(1)}/min)`
-    : `${c.delta > 0 ? '+' : ''}${c.delta.toFixed(1)} ${itemName(c.item)}`);
-  return `<div style="font-size:10px;color:var(--t3);margin:-2px 0 6px 26px">without: ${parts.join(', ')}</div>`;
-}
-
-function _valueCells(required, res, mach) {
-  if (required) return `<span style="color:#f87171;font-family:var(--mono);font-size:11px">required</span>`;
-  const col = v => v > 1e-3 ? 'var(--err)' : v < -1e-3 ? 'var(--ok)' : 'var(--t3)';
-  return `<span style="font-family:var(--mono);font-size:11px;color:${col(res)}" title="Extra resource share without it">${_fmtRes(res)}</span>
-          <span style="font-family:var(--mono);font-size:11px;color:${col(mach)};margin-left:8px" title="Extra machines without it">${_fmtMach(mach)} m</span>`;
+// The one number that says what an alternate does: output it provides
+// (upstream), else resources it saves (downstream); then machines it saves.
+function _valueCells(v) {
+  if (v.required) return `<span style="color:#f87171;font-family:var(--mono);font-size:11px">required</span>`;
+  const mono = (txt, col, tip) =>
+    `<span style="font-family:var(--mono);font-size:11px;color:${col}" title="${tip}">${txt}</span>`;
+  let main;
+  if (v.short)
+    main = mono(`short · +${v.resources.toFixed(1)}% res`, '#fb923c',
+                'Without it your supply can\'t meet the fixed outputs; this much more would');
+  else if (v.output > 0.05)
+    main = mono(`${v.output.toFixed(1)}% output`, 'var(--ok)', 'Share of your output it provides');
+  else if (v.resources > 0.05)
+    main = mono(`−${v.resources.toFixed(1)}% res`, 'var(--ok)',
+                'Without it the same output needs this much more of your resources');
+  else
+    main = mono('—', 'var(--t3)', 'No effect: other recipes cover for it');
+  const m = v.machines ?? 0;
+  const mach = Math.abs(m) < 0.05 ? ''
+    : mono(`${m > 0 ? '−' : '+'}${Math.abs(m).toFixed(1)} m`, m > 0 ? 'var(--ok)' : 'var(--t3)',
+           m > 0 ? 'Machines it saves' : 'Extra machines it takes');
+  return `${main}${mach ? `<span style="margin-left:8px">${mach}</span>` : ''}`;
 }
 
 function _renderRanking(analysis) {
@@ -378,33 +385,39 @@ function _renderRanking(analysis) {
   if (!out) return;
   const BADGE = {
     required: { label: 'REQUIRED',       bg: 'rgba(239,68,68,.18)',  color: '#f87171' },
-    res:      { label: 'SAVES RES',      bg: 'rgba(52,211,153,.15)', color: '#34d399' },
-    mach:     { label: 'SAVES MACHINES', bg: 'rgba(59,130,246,.15)', color: '#60a5fa' },
+    short:    { label: 'SHORT',          bg: 'rgba(251,146,60,.16)', color: '#fb923c' },
+    output:   { label: 'MORE OUTPUT',    bg: 'rgba(52,211,153,.15)', color: '#34d399' },
+    res:      { label: 'LESS RESOURCES', bg: 'rgba(52,211,153,.15)', color: '#34d399' },
+    mach:     { label: 'FEWER MACHINES', bg: 'rgba(59,130,246,.15)', color: '#60a5fa' },
     none:     { label: 'COVERED',        bg: 'rgba(251,191,36,.13)', color: '#fbbf24' },
   };
   const rows = [...(analysis.alt_ranking || [])];
   const key = _rankSort === 'machines'
-    ? r => [r.machines ?? 0, r.resources ?? 0]
-    : r => [r.resources ?? 0, r.machines ?? 0];
-  rows.sort((a, b) => (b.required - a.required) || (key(b)[0] - key(a)[0]) || (key(b)[1] - key(a)[1]));
+    ? r => [r.machines ?? 0, r.output ?? 0, r.resources ?? 0]
+    : r => [r.output ?? 0, r.resources ?? 0, r.machines ?? 0];
+  const cmp = (a, b) => {
+    const ka = key(a), kb = key(b);
+    for (let i = 0; i < ka.length; i++) if (kb[i] !== ka[i]) return kb[i] - ka[i];
+    return 0;
+  };
+  rows.sort((a, b) => (b.required - a.required) || (b.short - a.short) || cmp(a, b));
 
   out.innerHTML = '';
   let rank = 1;
-  rows.forEach(({ key: k, required, resources, machines, changes }) => {
-    const r = RECIPES[k];
+  rows.forEach(v => {
+    const r = RECIPES[v.key];
     if (!r) return;
-    const badge = BADGE[required ? 'required'
-      : resources > 0.05 ? 'res' : machines > 0.5 ? 'mach' : 'none'];
+    const badge = BADGE[v.required ? 'required' : v.short ? 'short' : v.output > 0.05 ? 'output'
+      : v.resources > 0.05 ? 'res' : v.machines > 0.5 ? 'mach' : 'none'];
     const color = mCol(r.machine);
     out.innerHTML += `
       <div class="ra-row">
         <span class="ra-rank">${rank++}.</span>
         <span class="ra-machine" style="background:${color}22;color:${color};border:1px solid ${color}44">${MABBR[r.machine] || r.machine}</span>
-        <span class="ra-name">${_altDisplayName(k)}</span>
+        <span class="ra-name">${_altDisplayName(v.key)}</span>
         <span class="ra-badge" style="background:${badge.bg};color:${badge.color}">${badge.label}</span>
-        <span class="ra-delta">${_valueCells(required, resources, machines)}</span>
+        <span class="ra-delta">${_valueCells(v)}</span>
       </div>
-      ${_changesLine(changes)}
     `;
   });
   if (!rows.length) out.innerHTML = `<p style="font-size:12px;color:var(--t3)">No active alternates to rank.</p>`;
@@ -415,8 +428,10 @@ function _renderRanking(analysis) {
   if (!gEl || !groups.length) { if (gEl) gEl.innerHTML = ''; return; }
   const KIND = {
     together: ['Work together', 'Worth more as a package than apart — one feeds the other.', '#34d399'],
-    either:   ['Either one',    'They cover for each other: drop one and the other takes over, drop both and it costs this.', '#fbbf24'],
+    either:   ['Either one',    'They cover for each other: drop one and the other takes over; drop all and it costs this.', '#fbbf24'],
   };
+  const fmt = { output: v => `${v.toFixed(1)}% output`, resources: v => `${v.toFixed(1)}% res`,
+                machines: v => `${v.toFixed(1)} machines` };
   let h = `<div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Synergy</div>`;
   ['together', 'either'].forEach(kind => {
     const gs = groups.filter(g => g.kind === kind);
@@ -425,15 +440,12 @@ function _renderRanking(analysis) {
     h += `<div style="font-size:11px;font-weight:600;color:${col};margin:8px 0 2px">${title}</div>
           <div style="font-size:10px;color:var(--t3);margin-bottom:6px">${blurb}</div>`;
     gs.forEach(g => {
-      const apart = g.by === 'machines'
-        ? `apart ${_fmtMach(g.apart_machines)} m` : `apart ${_fmtRes(g.apart_resources)}`;
+      const detail = g.required ? 'required as a set'
+        : `together ${fmt[g.by](g[g.by])} · apart ${fmt[g.by](g['apart_' + g.by])}`;
       h += `
         <div style="border:1px solid var(--b);border-radius:var(--rsm);padding:6px 8px;margin-bottom:6px">
           <div style="font-size:11px;color:var(--t2);margin-bottom:3px">${g.keys.map(_altDisplayName).join(' + ')}</div>
-          <div style="display:flex;justify-content:space-between;align-items:baseline">
-            <span style="font-size:10px;color:var(--t3)">by ${g.by}${g.required ? '' : ` · ${apart}`}</span>
-            <span>${_valueCells(g.required, g.resources, g.machines)}</span>
-          </div>
+          <div style="font-size:10px;color:var(--t3);font-family:var(--mono)">${detail}</div>
         </div>`;
     });
   });
