@@ -255,6 +255,8 @@ def _build_scenario(b: dict) -> Scenario:
         notes=b.get("notes", "") or "",
         unlocked_alt_recipes=unlocked,
         minimize_new_alts=bool(b.get("minimize_new_alts", False)),
+        sloop_search="exact" if b.get("sloop_search") == "exact" else "dive",
+        machines_first=bool(b.get("machines_first", False)),
     )
 
 

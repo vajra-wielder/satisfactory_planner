@@ -19,6 +19,8 @@ export const DEF_SC = () => ({
   max_machines: null,
   notes: '',
   minimize_new_alts: false,
+  machines_first: false,     // fewest machines first, then least resources
+  sloop_search: 'dive',      // 'dive' (fast, certified ≥95%) or 'exact'
   unlimited_resources: [],   // resources with no cap that don't count in the resource score
 });
 

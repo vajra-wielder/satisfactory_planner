@@ -212,6 +212,9 @@ export function fillUI({ skipMachines = false } = {}) {
   // Min New Alts toggle
   const mnaBtn = document.getElementById('ssc-min-new-alts');
   if (mnaBtn) mnaBtn.classList.toggle('on', !!SC.minimize_new_alts);
+  document.getElementById('ssc-machines-first')?.classList.toggle('on', !!SC.machines_first);
+  document.querySelectorAll('#sl-mode button').forEach(b =>
+    b.classList.toggle('on', b.dataset.mode === (SC.sloop_search || 'dive')));
 
   // KV panels
   loadAllKv();
@@ -235,6 +238,8 @@ export function readUI() {
     max_machines:           _pn(document.getElementById('sc-mm').value),
     notes:                  document.getElementById('sc-nt').value || '',
     minimize_new_alts:      mnaBtn ? mnaBtn.classList.contains('on') : false,
+    machines_first:         !!document.getElementById('ssc-machines-first')?.classList.contains('on'),
+    sloop_search:           document.querySelector('#sl-mode button.on')?.dataset.mode || 'dive',
   });
 
   // Flush all KV panels into SC (each panel writes its own SC field)

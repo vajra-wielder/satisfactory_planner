@@ -70,7 +70,7 @@ function setSolveStyles(styles) {
 
 function initSolveStyles() {
   document.querySelectorAll('.ssc').forEach(btn => {
-    if (btn.id === 'ssc-min-new-alts') return;  // wired separately below
+    if (btn.id === 'ssc-min-new-alts' || btn.id === 'ssc-machines-first') return;  // wired separately below
     btn.addEventListener('click', () => {
       const s = btn.dataset.style;
       if (SOLVE_STYLES.has(s)) SOLVE_STYLES.delete(s);
@@ -86,6 +86,21 @@ function initSolveStyles() {
       mnaBtn.classList.toggle('on', SC.minimize_new_alts);
     });
   }
+
+  const mfBtn = document.getElementById('ssc-machines-first');
+  if (mfBtn) {
+    mfBtn.addEventListener('click', () => {
+      SC.machines_first = !SC.machines_first;
+      mfBtn.classList.toggle('on', SC.machines_first);
+    });
+  }
+
+  document.querySelectorAll('#sl-mode button').forEach(btn =>
+    btn.addEventListener('click', () => {
+      SC.sloop_search = btn.dataset.mode;
+      document.querySelectorAll('#sl-mode button').forEach(b =>
+        b.classList.toggle('on', b.dataset.mode === SC.sloop_search));
+    }));
 }
 
 // ── Shared byproduct item sets ────────────────────────────────────────────────
@@ -444,6 +459,8 @@ function loadSaved() {
           const { _last_solve: last, ...scenario } = data;
           Object.assign(SC, scenario);
           if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
+          if (scenario.machines_first == null) SC.machines_first = false;
+          if (!scenario.sloop_search) SC.sloop_search = 'dive';
           if (scenario.pinboard) setPins(scenario.pinboard);
           else setPins(null);
           // Cached plan from the last solve of exactly these settings

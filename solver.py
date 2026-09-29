@@ -6,7 +6,8 @@ PLAN (see _plan):
   a somersloop level per recipe, power shards per recipe, hard budgets for
   sloops, shards and max_machines — solved in three lexicographic stages:
     1. Goal   maximise the weighted goals
-    2. Lean   minimise machines + raw resources, each on its own scale
+    2. Lean   least raw resources, then fewest machines (or the reverse
+              with machines_first)
     3. Clean  fewest recipes and duplicate producers
   Each stage is solved to proven optimality (MIP gap 1e-9) with earlier
   stages locked, so the result is the best plan, not a greedy approximation.
@@ -85,6 +86,12 @@ class Scenario:
     # Resources treated as unlimited: no supply cap, and left out of the
     # resource score so they're free and don't dilute the finite ones.
     unlimited_resources: List[str] = field(default_factory=list)
+    # Somersloop placement: "dive" (fast, certified ≥ 95% of the best) or
+    # "exact" (the full integer search, for comparing on big plans).
+    sloop_search: str = "dive"
+    # Lean stage order: least raw resources first (default), or fewest
+    # machines first and then the least resources among those plans.
+    machines_first: bool = False
 
 @dataclass
 class LayoutOption:
@@ -195,6 +202,8 @@ def load_scenario(path) -> Scenario:
         notes=raw.get("notes", "") or "",
         minimize_new_alts=bool(raw.get("minimize_new_alts", False)),
         unlimited_resources=list(raw.get("unlimited_resources") or []),
+        sloop_search="exact" if raw.get("sloop_search") == "exact" else "dive",
+        machines_first=bool(raw.get("machines_first", False)),
     )
 
 def list_scenarios():
@@ -773,7 +782,8 @@ def _solve_lp_with_duals(
 #   1. Goal  — maximise the weighted goal items.
 #   2. Lean  — (a) least raw resources, then (b) fewest whole machines.
 #              Resources are the finite thing; machines can always be built,
-#              so machines never buy back resources.
+#              so machines never buy back resources. (machines_first swaps
+#              the two: fewest machines, then least resources.)
 #   3. Clean — minimise recipes and duplicate producers of one product, letting
 #              machines rise by at most _MACHINE_SLACK (resources stay locked).
 #   4. Tidy  — with everything above locked, the fewest somersloops (so none
@@ -1091,45 +1101,68 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         mip.goal_bound = None
 
     # ── Stage 2: lean ──
-    # 2a: least raw resources — resources are the finite thing, so they are
-    #     never traded for machines. One score across resources: the mean of
-    #     net use / supply (each resource on its own scale).
+    # Default order: (a) least raw resources, then (b) fewest whole machines —
+    # resources are the finite thing, so they are never traded for machines.
+    # machines_first swaps the two: fewest machines, then the least resources
+    # among plans with that many.
     unlimited = set(scenario.unlimited_resources)
     supplied = [it for it, v in scenario.available_resources.items()
                 if v > 0 and it not in unlimited]
     def resources_of(m) -> Dict[Key, float]:
+        # One score across resources: the mean of net use / supply (each
+        # resource on its own scale).
         cost: Dict[Key, float] = {}
         for it in supplied:
             w = 1.0 / len(supplied) / scenario.available_resources[it]
             for key, c in m.net.get(it, {}).items():
                 cost[key] = cost.get(key, 0.0) - c * w     # −net = consumption
         return cost
-    if supplied:
+
+    # Each step snapshots its plan before locking its score (adding the lock
+    # invalidates the solver's current solution).
+    def lean_resources() -> bool:
+        nonlocal proven, best
+        if not supplied:
+            return True
         # Resources depend only on throughput; integers matter only through
-        # sloops or a machine cap, so otherwise the LP gives the exact optimum.
+        # sloops, a machine cap or a machine lock, so otherwise the LP gives
+        # the exact optimum.
         integer_res = mip.integer and (scenario.somersloops_available > 0
-                                       or scenario.max_machines is not None)
+                                       or scenario.max_machines is not None
+                                       or scenario.machines_first)
         m2 = mip if integer_res or not mip.integer else lp
         ok = m2.run(resources_of(m2), False, _STAGE_TIME_S[1])
         if ok is None:
-            return best
+            return False
         proven &= ok
         r2 = m2.value(resources_of(m2))
+        if m2 is mip:
+            best = mip.snapshot(proven)
         lock(-mip.inf, r2 + abs(r2) * _RES_TOL + 1e-9, resources_of)
-    # 2b: fewest whole machines. A whole-number score lets the solver round its
-    #     bound up (77.2 → 78) and prune — what keeps shard-heavy plans fast.
-    #     Stage 3 may add _MACHINE_SLACK anyway, so proving the minimum more
-    #     tightly than that is wasted search: stop within that gap, then allow
-    #     at most _MACHINE_SLACK over the proven minimum in total.
-    ok = mip.run(mip.machines, False, _STAGE_TIME_S[1], gap=_MACHINE_SLACK)
-    if ok is None:
-        return best
-    proven &= ok
-    best = mip.snapshot(proven)
-    n2 = mip.value(mip.machines)
-    n_floor = math.ceil(mip.bound - 1e-6) if mip.integer else n2
-    cap = max(n2, math.floor(n_floor * (1 + _MACHINE_SLACK) + 1e-9))
-    lock(-mip.inf, cap + 0.5, lambda m: m.machines)
+        return True
+
+    def lean_machines() -> bool:
+        # Fewest whole machines. A whole-number score lets the solver round its
+        # bound up (77.2 → 78) and prune — what keeps shard-heavy plans fast.
+        # Stage 3 may add _MACHINE_SLACK anyway, so proving the minimum more
+        # tightly than that is wasted search: stop within that gap, then allow
+        # at most _MACHINE_SLACK over the proven minimum in total.
+        nonlocal proven, best
+        ok = mip.run(mip.machines, False, _STAGE_TIME_S[1], gap=_MACHINE_SLACK)
+        if ok is None:
+            return False
+        proven &= ok
+        best = mip.snapshot(proven)
+        n2 = mip.value(mip.machines)
+        n_floor = math.ceil(mip.bound - 1e-6) if mip.integer else n2
+        cap = max(n2, math.floor(n_floor * (1 + _MACHINE_SLACK) + 1e-9))
+        lock(-mip.inf, cap + 0.5, lambda m: m.machines)
+        return True
+
+    for step in ((lean_machines, lean_resources) if scenario.machines_first
+                 else (lean_resources, lean_machines)):
+        if not step():
+            return best
     if not mip.integer:
         return best
     tighten()     # tight big-Ms for the recipe-count stage
@@ -1334,7 +1367,8 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
 
     model_sc = _with_unlimited(scenario)
     plan, certified = None, None
-    if usable and model_sc.somersloops_available > 0 and model_sc.objective:
+    if usable and model_sc.somersloops_available > 0 and model_sc.objective \
+            and model_sc.sloop_search != "exact":
         dive = _dive_sloops(model_sc, usable)
         if dive is not None:
             alloc, ceiling = dive

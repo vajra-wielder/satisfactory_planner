@@ -407,6 +407,13 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
   background: var(--acc-glow);
   box-shadow: 0 0 0 1px var(--acc);
 }
+/* Two-way segmented toggle (sloop search mode) */
+.seg { display: inline-flex; border: 1px solid var(--b2); border-radius: 20px; overflow: hidden; }
+.seg button {
+  padding: 1px 5px; font-size: 9.5px; font-family: var(--font);
+  background: var(--p3); color: var(--t3); border: 0; cursor: pointer;
+}
+.seg button.on { background: var(--acc-glow); color: var(--acc); }
 .ssc .ssc-dot {
   width: 5px; height: 5px; border-radius: 50%;
   background: currentColor; flex-shrink: 0;
@@ -733,7 +740,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
         <div class="secb">
           <div class="bgrid">
             <div class="bcard"><div class="blbl sh">&#x1F4CE; Shards</div><input type="number" id="sc-sh" placeholder="0" min="0" step="1"/><div style="font-size:10px;color:var(--t3);margin-top:2px">Total pool</div></div>
-            <div class="bcard"><div class="blbl sl">&#x1F52E; Sloops</div><input type="number" id="sc-sl" placeholder="0" min="0" max="106" step="1"/><div style="font-size:10px;color:var(--t3);margin-top:2px">Max 106</div></div>
+            <div class="bcard"><div class="blbl sl">&#x1F52E; Sloops</div><input type="number" id="sc-sl" placeholder="0" min="0" max="106" step="1"/><div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px"><span style="font-size:10px;color:var(--t3);white-space:nowrap">Max 106</span><div class="seg" id="sl-mode" title="Dive: fast somersloop placement, certified ≥95% of the best. Exact: the full integer search — slower on big plans, for comparing against the dive."><button type="button" data-mode="dive" class="on">Dive</button><button type="button" data-mode="exact">Exact</button></div></div></div>
             <div class="bcard" style="grid-column:1/-1">
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
                 <div><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Power cap (MW)</div><input type="number" id="sc-mp" placeholder="No limit" min="0" step="50"/></div>
@@ -745,6 +752,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
             <div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solve Modifiers</div>
             <div id="solve-styles">
               <button class="ssc" data-style="no-byproducts" title="Forces the solver to recycle byproducts (e.g. Polymer Resin → Rubber/Plastic). Tries hard caps first; falls back to soft penalty if that causes infeasibility."><span class="ssc-dot"></span>No Byproducts</button>
+              <button class="ssc" id="ssc-machines-first" title="Fewest machines first, then the least raw resources among those plans. Default (off) is the reverse: least resources first, then fewest machines."><span class="ssc-dot"></span>Min Machines</button>
               <button class="ssc" id="ssc-min-new-alts" title="Prefer base recipes and already-unlocked alts. Soft-penalises alt recipes you haven't unlocked yet — only reaches for new alts when they meaningfully improve the result."><span class="ssc-dot"></span>Min New Alts</button>
 
             </div>
