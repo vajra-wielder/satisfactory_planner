@@ -255,6 +255,51 @@ def _with_unlimited(scenario: Scenario) -> Scenario:
 
 
 # ── Pruning — forward grounding + backward demand ─────────────────────────────
+def _pointless_loops(recipes: Dict[str, "Recipe"], targets: Set[str],
+                     supplied: Set[str] = frozenset()) -> Set[str]:
+    """Recipes that can only ever run as half of a net-zero loop: a recipe and
+    its exact inverse (pack X / unpack X — same items, same ratios, no sloop
+    slots, so the loop can't amplify). Unpacking is pointless when packing is
+    the only source of what it unpacks; packing is pointless when unpacking is
+    the only use of what it packs (and it isn't a goal). What you supply
+    counts as a source, so unpacking a supplied packaged item always stays.
+    Repeats until stable,
+    since dropping one can make its partner pointless too."""
+    def ratio(r, items):
+        base = r.inputs[items[0]] if items[0] in r.inputs else r.outputs[items[0]]
+        return {i: (r.inputs.get(i) or r.outputs.get(i)) / base for i in items}
+    dropped: Set[str] = set()
+    while True:
+        live = {k: r for k, r in recipes.items() if k not in dropped}
+        prod: Dict[str, Set[str]] = {}
+        cons: Dict[str, Set[str]] = {}
+        for k, r in live.items():
+            for it in r.outputs:
+                prod.setdefault(it, set()).add(k)
+            for it in r.inputs:
+                cons.setdefault(it, set()).add(k)
+        new: Set[str] = set()
+        for a, ra in live.items():                      # a packs, b unpacks
+            if ra.sloop_slots:
+                continue
+            for b in {k for it in ra.outputs for k in cons.get(it, ())}:
+                rb = live[b]
+                if b == a or rb.sloop_slots or set(ra.outputs) != set(rb.inputs) \
+                        or set(ra.inputs) != set(rb.outputs):
+                    continue
+                items = sorted(set(ra.inputs) | set(ra.outputs))
+                if any(abs(x - y) > 1e-9 for x, y in
+                       zip(ratio(ra, items).values(), ratio(rb, items).values())):
+                    continue                            # not an exact inverse
+                if all(prod.get(i, set()) == {a} and i not in supplied for i in rb.inputs):
+                    new.add(b)
+                if all(cons.get(i, set()) <= {b} and i not in targets for i in ra.outputs):
+                    new.add(a)
+        if not new:
+            return dropped
+        dropped |= new
+
+
 def prune_recipes(
     scenario: Scenario,
     all_recipes: Dict[str,Recipe],
@@ -326,19 +371,30 @@ def prune_recipes(
         for item in allowed[key].outputs:
             allowed_producers.setdefault(item, []).append(key)
 
-    needed: Set[str] = set()
-    visited: Set[str] = set(available_raw)
-    queue = list(target_items)
-    while queue:
-        item = queue.pop()
-        if item in visited:
-            continue
-        visited.add(item)
-        for rkey in allowed_producers.get(item, []):
-            needed.add(rkey)
-            for inp in allowed[rkey].inputs:
-                if inp not in visited:
-                    queue.append(inp)
+    def demand(skip: Set[str]) -> Set[str]:
+        needed: Set[str] = set()
+        visited: Set[str] = set(available_raw)
+        queue = list(target_items)
+        while queue:
+            item = queue.pop()
+            if item in visited:
+                continue
+            visited.add(item)
+            for rkey in allowed_producers.get(item, []):
+                if rkey in skip:
+                    continue
+                needed.add(rkey)
+                for inp in allowed[rkey].inputs:
+                    if inp not in visited:
+                        queue.append(inp)
+        return needed
+
+    needed = demand(set())
+    # Pointless loops out, then demand again: what only fed them goes too
+    loops = _pointless_loops({k: allowed[k] for k in needed}, target_items,
+                             available_raw) if _PRUNE_LOOPS else set()
+    if loops:
+        needed = demand(loops)
 
     # Sorted: set order changes between runs, and the model's row/column order
     # steers which of several equal LP optima the dive lands on — sorting
@@ -417,6 +473,7 @@ _MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machine space for fewer re
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
 _STAGE_TIME_S  = (20, 20, 15)   # per stage; on timeout the best plan so far is kept
 _POLISH_SPACE_S = 2.0           # stage 3b: space polish within the chosen recipes
+_PRUNE_LOOPS   = True    # drop pack/unpack pairs that can only loop (see _pointless_loops)
 _Q_EPS         = 1e-6    # throughput below this is treated as "not running"
 _MIP_BACKENDS  = ("SCIP", "CBC")
 _USE_HINTS     = True    # warm-start each stage from the previous stage's plan
