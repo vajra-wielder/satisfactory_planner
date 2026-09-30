@@ -16,7 +16,6 @@ export const DEF_SC = () => ({
   power_shards_available: null,
   somersloops_available: null,
   max_power_mw: null,
-  max_machines: null,
   notes: '',
   minimize_new_alts: false,
   machines_first: false,     // fewest machines first, then least resources

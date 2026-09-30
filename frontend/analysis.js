@@ -196,7 +196,6 @@ function renderAnalysis() {
   // ── Other limits: the machine cap and the shard pool ──────────────────────
   const limits = RESULT.analysis?.limits || {};
   const LIMIT_LABEL = {
-    machines: ['Machine cap', 'extra machine', `${SC.max_machines ?? '—'} machines`],
     shards:   ['Power shards', 'extra shard', `${RESULT.shards_used || 0} of ${SC.power_shards_available ?? 0} used`],
   };
   const limitRows = Object.entries(limits).filter(([k]) => LIMIT_LABEL[k]);
@@ -326,7 +325,7 @@ function renderAnalysis() {
         either <b style="color:var(--t2)">upstream</b>: the share of your output it provides
         with your supply, or, when output doesn't depend on it,
         <b style="color:var(--t2)">downstream</b>: the resources it saves for the same output.
-        Then the machine space it saves (machines weighed by the room they take).
+        Then the machine space it saves, in Smelter units (a Smelter = 1).
         <b style="color:#f87171">Required</b> = the goals can't be met without it;
         <b style="color:#fb923c">Short</b> = not at your supply.
       </p>
@@ -374,8 +373,8 @@ function _valueCells(v) {
                 'Without it the same output needs this much more of your resources');
   else
     main = mono('—', 'var(--t3)', 'No effect: other recipes cover for it');
-  const m = v.machines ?? 0;          // machine space, m³
-  const mach = Math.abs(m) < 1 ? ''
+  const m = v.machines ?? 0;          // machine space, Smelter units
+  const mach = Math.abs(m) < 0.5 ? ''
     : mono(`${m > 0 ? '−' : '+'}${_fmtSpace(Math.abs(m))}`, m > 0 ? 'var(--ok)' : 'var(--t3)',
            m > 0 ? 'Machine space it saves' : 'Extra machine space it takes');
   return `${main}${mach ? `<span style="margin-left:8px">${mach}</span>` : ''}`;
@@ -409,7 +408,7 @@ function _renderRanking(analysis) {
     const r = RECIPES[v.key];
     if (!r) return;
     const badge = BADGE[v.required ? 'required' : v.short ? 'short' : v.output > 0.05 ? 'output'
-      : v.resources > 0.05 ? 'res' : v.machines > 100 ? 'mach' : 'none'];
+      : v.resources > 0.05 ? 'res' : v.machines > 0.5 ? 'mach' : 'none'];
     const color = mCol(r.machine);
     out.innerHTML += `
       <div class="ra-row">

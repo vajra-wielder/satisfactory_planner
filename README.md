@@ -14,9 +14,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Resource constraints
 - Production minimums, maximums, and exact requirements
 - Least raw resources first, then least machine space (machines weighed by the
-  room they take, w × l × h from `size_m` in the recipe data), then fewest recipes
+  room they take — w × l × h from `size_m` in the recipe data, in Smelter units:
+  a Smelter is 1, a Manufacturer 9), then fewest recipes
 - Mark abundant resources (e.g. Water) unlimited: uncapped and free
-- Machine count limits (whole machines, enforced exactly)
 - Power Shard placement optimised across the whole factory
 - Somersloop placement optimised across the whole factory
 - Nuclear Power Plants: burning fuel rods yields Uranium/Plutonium waste, so full
@@ -142,7 +142,6 @@ A scenario may contain:
 - Minimum Production Targets
 - Maximum Production Targets
 - Power Limits
-- Machine Limits
 - Alternate Recipe Selection
 - Machine Availability
 

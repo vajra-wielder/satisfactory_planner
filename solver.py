@@ -4,7 +4,7 @@ Satisfactory Factory Planner — exact solver
 PLAN (see _plan):
   One mixed-integer model of the whole factory — integer machines per recipe,
   a somersloop level per recipe, power shards per recipe, hard budgets for
-  sloops, shards and max_machines — solved in three lexicographic stages:
+  sloops and shards — solved in three lexicographic stages:
     1. Goal   maximise the weighted goals
     2. Lean   least raw resources, then least machine space — machines
               weighed by the room they take (or the reverse with machines_first)
@@ -44,13 +44,23 @@ POWER_EXP   = math.log2(2.5)   # ≈1.3219 — 1.0 overclock power curve (250% �
 # haven't unlocked yet (each costs a hard drive, however much it runs).
 _NEW_ALT_TOL = 0.01
 # Machines are weighed by the room they take, not counted: w × l × h from
-# machine_meta size_m (metres), in whole m³ so the solver can round its bounds.
-_DEFAULT_SPACE_M3 = 1000
-def machine_space(meta: Dict, machine: str) -> int:
+# machine_meta size_m (metres), in Smelter units — nothing is smaller than a
+# Smelter, so it is 1 and every machine is a whole number of them (at least 1).
+# Small whole numbers let the solver round its bounds, as it can for counts.
+_SPACE_UNIT_MACHINE = "Smelter"
+_DEFAULT_SPACE_UNITS = 2
+def _volume(meta: Dict, machine: str) -> Optional[float]:
     size = (meta.get(machine) or {}).get("size_m")
     if not size or len(size) != 3:
-        return _DEFAULT_SPACE_M3
-    return max(1, int(round(float(size[0]) * float(size[1]) * float(size[2]))))
+        return None
+    return float(size[0]) * float(size[1]) * float(size[2])
+
+def machine_space(meta: Dict, machine: str) -> int:
+    """Room one machine takes, in Smelter units."""
+    v, unit = _volume(meta, machine), _volume(meta, _SPACE_UNIT_MACHINE)
+    if v is None or not unit:
+        return _DEFAULT_SPACE_UNITS
+    return max(1, int(round(v / unit)))
 
 SHARD_BOOST = 0.5
 MAX_CLOCK   = 2.5
@@ -70,7 +80,7 @@ class Recipe:
     key: str; display: str; machine: str; alternate: bool
     inputs: Dict[str,float]; outputs: Dict[str,float]
     base_power_mw: float = 10.0; sloop_slots: int = 0
-    space_m3: int = _DEFAULT_SPACE_M3   # room one machine takes (see machine_meta size_m)
+    space: int = _DEFAULT_SPACE_UNITS   # room one machine takes, Smelter units (see machine_space)
 
 @dataclass
 class Scenario:
@@ -85,7 +95,6 @@ class Scenario:
     power_shards_available: int   = 0
     somersloops_available:  int   = 0
     max_power_mw:  Optional[float] = None
-    max_machines:  Optional[int]   = None
     notes: str = ""
     # Permanent unlock tracking — populated by the server from unlocked_alts.yaml.
     # The solver treats these alts as always-available (no per-scenario enable needed)
@@ -180,7 +189,7 @@ def _build_recipes(raw: dict) -> Dict[str, "Recipe"]:
             # A recipe may set its own power (variable-power machines)
             base_power_mw=float(d.get("power_mw", m.get("base_power_mw", 10.0))),
             sloop_slots=int(SLOOP_SLOTS_BY_MACHINE.get(machine, 0)),
-            space_m3=machine_space(meta, machine),
+            space=machine_space(meta, machine),
         )
     return out
 
@@ -210,7 +219,6 @@ def load_scenario(path) -> Scenario:
         power_shards_available=_si(raw.get("power_shards_available"), 0),
         somersloops_available=_si(raw.get("somersloops_available"), 0),
         max_power_mw=_sf(raw.get("max_power_mw")) if raw.get("max_power_mw") else None,
-        max_machines=_si(raw.get("max_machines")) if raw.get("max_machines") else None,
         notes=raw.get("notes", "") or "",
         minimize_new_alts=bool(raw.get("minimize_new_alts", False)),
         unlimited_resources=list(raw.get("unlimited_resources") or []),
@@ -454,7 +462,7 @@ def prune_recipes(
 # A recipe may run machines at several sloop levels at once (e.g. one
 # Manufacturer with 4 sloops and two with none) — each machine is filled
 # individually in-game, and mixing is never worse than one level per recipe.
-# Budgets: Σ l·n ≤ somersloops, Σ s ≤ shards, Σ n ≤ max_machines.
+# Budgets: Σ l·n ≤ somersloops, Σ s ≤ shards.
 #
 # Stage 2a scores resources as the mean over resources of (net use / supply),
 # so each is measured on its own scale — 50 Water/min out of 5000 counts the
@@ -472,7 +480,6 @@ _RES_GAP       = 0.01    # machines_first: resources within 1% of the least
 _MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machine space for fewer recipes
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
 _STAGE_TIME_S  = (20, 20, 15)   # per stage; on timeout the best plan so far is kept
-_POLISH_SPACE_S = 2.0           # stage 3b: space polish within the chosen recipes
 _PRUNE_LOOPS   = True    # drop pack/unpack pairs that can only loop (see _pointless_loops)
 _Q_EPS         = 1e-6    # throughput below this is treated as "not running"
 _MIP_BACKENDS  = ("SCIP", "CBC")
@@ -590,7 +597,7 @@ class _Model:
 
         self.machines = {key: 1.0 for key in self.var if key[0] == "n"}
         # What the lean stages minimise: machine space, not machine count
-        self.space = {key: float(usable[key[1]].space_m3) for key in self.machines}
+        self.space = {key: float(usable[key[1]].space) for key in self.machines}
         self.sloops = {key: float(key[2]) for key in self.machines if key[2]}
         # Budgets, kept by name so the analysis can read their prices
         self.budget_ct: Dict[str, object] = {}
@@ -599,8 +606,6 @@ class _Model:
         if SH > 0:
             self.budget_ct["shards"] = self.ct(
                 -INF, float(SH), {key: 1.0 for key in self.var if key[0] == "s"})
-        if scenario.max_machines is not None:
-            self.budget_ct["machines"] = self.ct(-INF, float(scenario.max_machines), self.machines)
 
         self.goal: Dict[Key, float] = {}
         for it, w in scenario.objective.items():
@@ -701,12 +706,6 @@ def _recipe_bounds(scenario: Scenario, usable: Dict[str, Recipe]) -> Dict[str, f
     return out
 
 
-def _space_gap(usable: Dict[str, Recipe], space: float) -> float:
-    """Relative gap worth one of the smallest machines in play."""
-    smallest = min((r.space_m3 for r in usable.values()), default=_DEFAULT_SPACE_M3)
-    return min(_MACHINE_SLACK, smallest / max(space, 1.0))
-
-
 def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
           sloop_caps: Optional[Dict[str, int]] = None,
           goal_gap: Optional[float] = None,
@@ -786,9 +785,8 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     # its best, use the fewest alts you haven't unlocked (a count — each is a
     # hard drive, however much it runs); then the best goal with that many.
     if mip.goal or mip.new_alt:
-        # Integers only matter for the goal when sloops or a machine cap are in play
-        integer_goal = mip.integer and (scenario.somersloops_available > 0
-                                        or scenario.max_machines is not None)
+        # Integers only matter for the goal when sloops are in play
+        integer_goal = mip.integer and scenario.somersloops_available > 0
         m1 = mip if integer_goal or not mip.integer else lp
         if known is not None:
             ok, g, goal_bound = known["proven"], known["goal"], known["goal_bound"]
@@ -878,10 +876,8 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         if not supplied:
             return True
         # Resources depend only on throughput; integers matter only through
-        # sloops, a machine cap or a machine lock, so otherwise the LP gives
-        # the exact optimum.
+        # sloops or a space lock, so otherwise the LP gives the exact optimum.
         integer_res = mip.integer and (scenario.somersloops_available > 0
-                                       or scenario.max_machines is not None
                                        or scenario.machines_first)
         m2 = mip if integer_res or not mip.integer else lp
         ok = m2.run(resources_of(m2), False, _STAGE_TIME_S[1],
@@ -898,7 +894,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
 
     def lean_machines() -> bool:
         # Least machine space (whole machines weighed by the room they take).
-        # A whole-number score (space in whole m³) lets the solver round its
+        # A whole-number score (space in Smelter units) lets the solver round its
         # bound up and prune — what keeps shard-heavy plans fast. Stage 3 may
         # add _MACHINE_SLACK anyway, so proving the minimum more tightly than
         # that is wasted search: stop within that gap, then allow at most
@@ -952,18 +948,14 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         return best
     best = mip.snapshot(proven)
     best.clean_proven = ok
-    # 3b only takes back space 3a spent: the lean lock already holds space
-    # within _MACHINE_SLACK of the proven minimum whatever 3b does, so it's a
-    # short polish, not a proof — proving the last few m³ of a mix of machine
-    # sizes could take the whole time limit. It stops early once no plan could
-    # be smaller by even the smallest machine's room.
-    # (Read the values before adding the lock: that voids the solution.)
-    gap_b = _space_gap(usable, mip.value(mip.space))
+    # Space is in whole Smelter units, so the solver rounds its bound and this
+    # proves quickly (in m³ it couldn't, and ran out of time).
     mip.ct(-mip.inf, mip.value(obj) + 1e-6, obj)
-    if mip.run(mip.space, False, _POLISH_SPACE_S, gap=gap_b) is None:
+    ok_b = mip.run(mip.space, False, _STAGE_TIME_S[2])
+    if ok_b is None:
         return best
     best = mip.snapshot(proven)
-    best.clean_proven = ok
+    best.clean_proven = ok and ok_b
 
     # ── Stage 4: tidy ──
     if mip.sloops and scenario.somersloops_available > 0:
@@ -1150,9 +1142,9 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
                 use_alloc, use_known = alloc, first
                 if first["goal"] / ceiling < _POLISH_BELOW:
                     # Try the exact goal search, seeded with the dive's plan:
-                    #  • below the target (usually a machine cap, which makes the
-                    #    fractional ceiling loose): run until proven within the
-                    #    target — its bound respects whole machines;
+                    #  • below the target (whole machines make the fractional
+                    #    ceiling loose): run until proven within the target —
+                    #    its bound respects whole machines;
                     #  • otherwise: a short polish, kept only if it beats the dive.
                     # Either way the tighter of the two bounds certifies.
                     info: dict = {}
@@ -1179,17 +1171,6 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         plan = _plan(model_sc, usable, warnings) if usable else None
         if plan is not None and plan.goal_bound:
             certified = min(1.0, plan.goal / plan.goal_bound) if plan.goal_bound > 1e-9 else None
-    if plan is None and usable and scenario.max_machines is not None:
-        # The cap is below what the constraints need: show the fewest-machine
-        # factory that meets them instead.
-        plan = _plan(_dc_replace(model_sc, max_machines=None, objective={},
-                                 minimize_new_alts=False), usable, warnings)
-        certified = None
-        if plan is not None:
-            warnings.append(
-                f"max_machines cap ({scenario.max_machines}) is below the "
-                f"minimum required ({plan.machines()}); showing minimum machine layout."
-            )
     status  = "Optimal" if plan is not None else "Infeasible"
     obj_val = plan.goal if plan is not None else 0.0
     # Warn on the plan's own shortfall, not on a Min New Alts trade
@@ -1264,8 +1245,6 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         ))
 
     # Cap overshoot warnings
-    if scenario.max_machines is not None and total_machines_int > scenario.max_machines:
-        cap_overshoot["machines_over"] = total_machines_int - scenario.max_machines
     if scenario.max_power_mw is not None and total_power > scenario.max_power_mw + 0.5:
         cap_overshoot["power_over"] = round(total_power - scenario.max_power_mw, 1)
 
@@ -1382,7 +1361,7 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
       saturation_points[r] supply of r beyond which more r stops helping —
                            exact: the least r that reaches the best goal with r
                            unlimited (None when more r never stops helping)
-      limits[b]            goal gained per extra machine (cap) / power shard
+      limits[b]            goal gained per extra power shard
       alt_ranking          per alternate the plan uses: the output it provides,
                            the resources and machines it saves
       alt_groups           alternates that cover for each other ("either") or
@@ -1459,7 +1438,7 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 #   resources  for the same output with supply uncapped, how much more of your
 #              resources you'd need without it (downstream: the planner's
 #              resource score, as a % of the plan's)
-#   machines   extra machine space (m³) for that same output (second, as in
+#   machines   extra machine space (Smelter units) for that same output (second, as in
 #              the planner — machines weighed by the room they take)
 # An alternate whose saving lands on a resource that isn't limiting shows no
 # output, only resources. "required" = the goals can't be met without it at
@@ -1477,8 +1456,8 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 # like Cast Screw) — each compares cleanly only with the ones above it still.
 # Pairs of one kind and measure chain into groups, each measured as a whole.
 _SYN_REL = 0.15                                         # of the pair's value …
-_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 250.0}   # … and at least
-#           (% output, % resources, m³ of machine space — about half a Constructor)
+_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 0.5}   # … and at least
+#           (% output, % resources, Smelter units of machine space)
 _MAX_PAIRS = 800
 _MEASURES = ("output", "resources", "machines")
 
@@ -1498,8 +1477,6 @@ def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
         for key, c in lp.net.get(it, {}).items():
             score[key] = score.get(key, 0.0) - c * w
     caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
-    if "machines" in lp.budget_ct:
-        caps.append(lp.budget_ct["machines"])
 
     def switched_off(off, fn):
         cols = [lp.var[("q", k, l)] for k in off for l in lp.levels[k]]
@@ -1657,7 +1634,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "total_power_mw":        result.total_power_mw,
         "total_machines":        result.total_machines,
         # Room the machines take (Σ machines × w·l·h), what the planner minimises
-        "total_space_m3":        sum(f.machines_final * machine_space(machine_meta, f.machine)
+        "total_space":           sum(f.machines_final * machine_space(machine_meta, f.machine)
                                      for f in result.flows),
         "shards_used":           result.shards_used,
         "sloops_used":           result.sloops_used,

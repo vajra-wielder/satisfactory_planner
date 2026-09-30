@@ -249,7 +249,6 @@ def _build_scenario(b: dict) -> Scenario:
         power_shards_available=int(b.get("power_shards_available") or 0),
         somersloops_available=int(b.get("somersloops_available") or 0),
         max_power_mw=float(b["max_power_mw"]) if b.get("max_power_mw") else None,
-        max_machines=int(b["max_machines"]) if b.get("max_machines") else None,
         notes=b.get("notes", "") or "",
         unlocked_alt_recipes=unlocked,
         minimize_new_alts=bool(b.get("minimize_new_alts", False)),

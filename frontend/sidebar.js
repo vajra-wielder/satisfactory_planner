@@ -206,7 +206,6 @@ export function fillUI({ skipMachines = false } = {}) {
   document.getElementById('sc-sh').value   = SC.power_shards_available ?? '';
   document.getElementById('sc-sl').value   = SC.somersloops_available  ?? '';
   document.getElementById('sc-mp').value   = SC.max_power_mw           ?? '';
-  document.getElementById('sc-mm').value   = SC.max_machines           ?? '';
   document.getElementById('sc-nt').value   = SC.notes || '';
 
   // Min New Alts toggle
@@ -235,7 +234,6 @@ export function readUI() {
     power_shards_available: _pn(document.getElementById('sc-sh').value),
     somersloops_available:  _pn(document.getElementById('sc-sl').value),
     max_power_mw:           _pn(document.getElementById('sc-mp').value),
-    max_machines:           _pn(document.getElementById('sc-mm').value),
     notes:                  document.getElementById('sc-nt').value || '',
     minimize_new_alts:      mnaBtn ? mnaBtn.classList.contains('on') : false,
     machines_first:         !!document.getElementById('ssc-machines-first')?.classList.contains('on'),
