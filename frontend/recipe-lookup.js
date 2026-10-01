@@ -3,8 +3,7 @@
  * Extracted from sidebar.js for maintainability.
  */
 
-import { ALL_ITEMS, RECIPES, mCol, MABBR, itemName, addPin, removePin, isPinned } from './state.js';
-import { updatePinBadge, rebuild } from './pinboard.js';
+import { ALL_ITEMS, RECIPES, mCol, MABBR, itemName } from './state.js';
 import { makeAC } from './sidebar.js';
 
 let rlPanel = null;
@@ -90,44 +89,15 @@ function showRecipeLookup(item, container) {
     ioHTML += '<div style="border-top:1px solid var(--b);margin:3px 0"></div>';
     Object.entries(r.outputs).forEach(([k, v]) => { ioHTML += `<div class="rlrow"><span style="color:var(--ok)">→ ${itemName(k)}</span><span>${v}/min</span></div>`; });
 
-    const pinned = isPinned(key);
     card.innerHTML = `
       <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px;flex-wrap:wrap">
         <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${color}22;color:${color};border:1px solid ${color}44;font-family:var(--mono);font-weight:600">${MABBR[r.machine] || r.machine}</span>
         ${r.alternate ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--acc-glow);color:var(--acc);border:1px solid var(--acc)">ALT</span>' : ''}
         <span class="rlrname">${cleanDisp}</span>
         <span style="margin-left:auto;font-size:10px;color:${role === 'prod' ? 'var(--ok)' : '#3b82f6'}">${role === 'prod' ? 'produces' : 'consumes'} ${Number(rate).toFixed(2)}/min</span>
-        <button class="rl-pin-btn" data-key="${key}" title="${pinned ? 'Unpin' : 'Pin to Pinboard'}" style="
-          background:${pinned ? 'rgba(245,158,11,.2)' : 'transparent'};
-          border:1px solid ${pinned ? 'var(--acc)' : 'var(--b2)'};
-          border-radius:4px;padding:2px 5px;cursor:pointer;font-size:11px;
-          color:${pinned ? 'var(--acc)' : 'var(--t3)'};transition:all .12s;flex-shrink:0
-        ">📌</button>
       </div>
       ${ioHTML}
     `;
-
-    // Pin button
-    card.querySelector('.rl-pin-btn').addEventListener('click', ev => {
-      ev.stopPropagation();
-      const btn = ev.currentTarget;
-      const k   = btn.dataset.key;
-      if (isPinned(k)) {
-        removePin(k);
-        btn.style.background = 'transparent';
-        btn.style.borderColor = 'var(--b2)';
-        btn.style.color = 'var(--t3)';
-        btn.title = 'Pin to Pinboard';
-      } else {
-        addPin(k);
-        btn.style.background = 'rgba(245,158,11,.2)';
-        btn.style.borderColor = 'var(--acc)';
-        btn.style.color = 'var(--acc)';
-        btn.title = 'Unpin';
-      }
-      updatePinBadge();
-      rebuild();
-    });
 
     el.appendChild(card);
   }

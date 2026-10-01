@@ -26,7 +26,6 @@
  */
 
 import { RESULT, mCol, MABBR, itemName } from './state.js';
-import { isPinboardActive } from './pinboard.js';
 
 // ── Canvas refs (lazy — resolved on first use, not at module parse time) ──────
 let CV = null, C = null, GE = null;
@@ -62,7 +61,6 @@ let BANDCLICK = null;      // {band, x, y} — band header pressed, toggles on r
 // ── Animation ────────────────────────────────────────────
 let animFrame = null;
 function schedDraw() {
-  if (isPinboardActive()) return;
   if (animFrame) return;
   animFrame = requestAnimationFrame(() => { animFrame = null; draw(); });
 }
@@ -114,7 +112,6 @@ function nodeH(node) {
 
 // ── DPI resize ───────────────────────────────────────────
 export function resize() {
-  if (isPinboardActive()) return;
   if (!initCanvasRefs()) return;
   const dpr  = window.devicePixelRatio || 1;
   const rect = CV.parentElement.getBoundingClientRect();
@@ -270,7 +267,6 @@ function collapseGroups(flows, groupOf, groups) {
 }
 
 export function initLayout({ keepView = false } = {}) {
-  if (isPinboardActive()) return;
   if (!initCanvasRefs()) return;
   NODES = []; EDGES = []; NODEMAP = {}; BANDS = [];
   SPATGRID = null;
@@ -977,7 +973,6 @@ function centreOnNode(nodeId, animate = true) {
 // DRAW
 // ═══════════════════════════════════════════════════════════
 export function draw() {
-  if (isPinboardActive()) return;
   if (!initCanvasRefs()) return;
   try {
     _draw();

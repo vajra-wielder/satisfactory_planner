@@ -13,7 +13,6 @@ import {
   SC, RESULT, RECIPES,
   setResult, resetSC, setAllItems, setRecipes, buildItemDisplay,
   nextSolveSeq, solveSeq,
-  PINS, setPins,
 } from './state.js';
 
 import {
@@ -42,11 +41,7 @@ import {
 import { initRecipeLookup } from './recipe-lookup.js';
 import { openAnalysis, closeAnalysis } from './analysis.js';
 
-import {
-  isPinboardActive, enterPinboard, exitPinboard,
-  initPinboardEvents, updatePinBadge, rebuild as rebuildPinboard,
-  resize as resizePinboard, fitAll as fitPinboard, draw as drawPinboard,
-} from './pinboard.js';
+import { initBlackboard, openBlackboard, closeBlackboard } from './blackboard.js';
 
 import {
   resize, initLayout, draw,
@@ -234,28 +229,6 @@ function applyStylesFirstPass(payload, { hardByproducts = true } = {}) {
   return p;
 }
 
-// ── Pinboard toggle ───────────────────────────────────────────────────────────
-
-let pinboardMode = false;
-
-function togglePinboard() {
-  pinboardMode = !pinboardMode;
-  const btn = document.getElementById('btn-pinboard');
-  if (pinboardMode) {
-    btn.classList.add('pinboard-active');
-    enterPinboard();
-  } else {
-    btn.classList.remove('pinboard-active');
-    exitPinboard();
-    // Restore graph
-    const { initLayout, draw, resize } = graphModule;
-    resize(); initLayout(); draw();
-  }
-}
-
-// Store graph module ref for restoration
-let graphModule = null;
-
 // ── Lazy machines/alts render ─────────────────────────────────────────────────
 // renderMachines + renderAlts touch 107 alt chips — skipped at boot and only
 // run when the Machines & Alts tab is first opened, or marked dirty by a
@@ -418,9 +391,7 @@ function handleSolve() {
 function handleSave() {
   readUI();
   const key = SC.name.replace(/\s+/g, '_').toLowerCase();
-  // Embed pins into the scenario payload
-  const payload = { ...SC, pinboard: PINS };
-  saveScenario(key, payload)
+  saveScenario(key, { ...SC })
     .then(() => {
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
@@ -436,47 +407,41 @@ function handleSave() {
 function handleReset() {
   resetSC();
   setResult(null);
-  setPins(null);
   _machinesDirty = true;
   fillUI({ skipMachines: true });
   renderResultsBar();
   renderBuildCost();
-  updatePinBadge();
   document.getElementById('btn-issues').style.display = 'none';
-  if (pinboardMode) { pinboardMode = false; exitPinboard(); document.getElementById('btn-pinboard').classList.remove('pinboard-active'); }
   initLayout();
 }
 
 
 // ── Load saved scenarios ──────────────────────────────────────────────────────
 
+// Load a saved scenario (and its cached plan, when it matches) into the solver
+function openScenario(key) {
+  return fetchScenario(key).then(data => {
+    const { _last_solve: last, pinboard: _oldPinboard, ...scenario } = data;
+    Object.assign(SC, scenario);
+    if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
+    if (scenario.machines_first == null) SC.machines_first = false;
+    if (!scenario.sloop_search) SC.sloop_search = 'dive';
+    // Cached plan from the last solve of exactly these settings
+    setResult(last ? last.result : null);
+    setSolveStyles(last ? last.styles : []);
+    _machinesDirty = true;
+    fillUI({ skipMachines: true });
+    updateIssuesBadge(RESULT);
+    renderResultsBar();
+    renderBuildCost();
+    initLayout();
+  });
+}
+
 function loadSaved() {
   fetchScenarios()
     .then(saved => {
-      renderSaved(
-        saved,
-        key => fetchScenario(key).then(data => {
-          const { _last_solve: last, ...scenario } = data;
-          Object.assign(SC, scenario);
-          if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
-          if (scenario.machines_first == null) SC.machines_first = false;
-          if (!scenario.sloop_search) SC.sloop_search = 'dive';
-          if (scenario.pinboard) setPins(scenario.pinboard);
-          else setPins(null);
-          // Cached plan from the last solve of exactly these settings
-          setResult(last ? last.result : null);
-          setSolveStyles(last ? last.styles : []);
-          _machinesDirty = true;
-          fillUI({ skipMachines: true });
-          updatePinBadge();
-          updateIssuesBadge(RESULT);
-          renderResultsBar();
-          renderBuildCost();
-          if (pinboardMode) rebuildPinboard();
-          else initLayout();
-        }),
-        key => deleteScenario(key).then(loadSaved),
-      );
+      renderSaved(saved, openScenario, key => deleteScenario(key).then(loadSaved));
     })
     .catch(() => {
       const el = document.getElementById('savedlist');
@@ -493,7 +458,7 @@ function loadSaved() {
 // Topbar
 document.getElementById('sb-toggle')    .addEventListener('click', toggleSidebar);
 document.getElementById('btn-analysis') .addEventListener('click', openAnalysis);
-document.getElementById('btn-pinboard') .addEventListener('click', togglePinboard);
+document.getElementById('btn-blackboard').addEventListener('click', openBlackboard);
 document.getElementById('btn-issues')   .addEventListener('click', openWarn);
 
 // Rail
@@ -556,7 +521,7 @@ window.addEventListener('keydown', e => {
   switch (e.key.toLowerCase()) {
     case 'r': e.preventDefault(); handleSolve(); break;
     case 's': e.preventDefault(); handleSave();  break;
-    case 'p': e.preventDefault(); togglePinboard(); break;
+    case 'p': e.preventDefault(); openBlackboard(); break;
     case 'q': {
       e.preventDefault();
       const inp = document.getElementById('tb-rl-input');
@@ -595,9 +560,8 @@ Promise.all([fetchBoot()])
     initRecipeLookup();
     initSolveStyles();
     initGraphEvents();
-    initPinboardEvents();
-    graphModule = { initLayout, draw, resize };
-    updatePinBadge();
+    // Clicking a factory on the Blackboard opens it here
+    initBlackboard({ onOpenFactory: key => { closeBlackboard(); openScenario(key); } });
     fillUI({ skipMachines: true });   // skip machines/alts — rendered lazily on first tab open
     resize();
     draw();

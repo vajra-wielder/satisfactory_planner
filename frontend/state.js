@@ -87,48 +87,6 @@ export function itemName(key) {
   return ITEM_DISPLAY[key] || key.replace(/_/g, ' ');
 }
 
-// ── Pinboard state ────────────────────────────────────────
-// pinned_recipes: array of recipe keys that are pinned
-// pin_groups: array of { id, title, note, x, y, w, h, color }
-// pin_arrows: array of { id, fromGroup, toNode, color }
-// (pin node positions are tracked inside pinboard.js itself,
-//  but persisted here so they round-trip through YAML)
-export let PINS = {
-  pinned_recipes: [],   // string[]
-  pin_groups: [],       // { id, title, note, x, y, w, h, color }
-  pin_arrows: [],       // { id, fromGroup, toNode }
-  node_positions: {},   // { recipeKey: {x, y} }
-};
-
-export function setPins(p) {
-  if (!p) return;
-  PINS.pinned_recipes  = p.pinned_recipes  || [];
-  PINS.pin_groups      = p.pin_groups      || [];
-  PINS.pin_arrows      = p.pin_arrows      || [];
-  PINS.node_positions  = p.node_positions  || {};
-}
-
-export function addPin(key) {
-  if (!PINS.pinned_recipes.includes(key)) {
-    PINS.pinned_recipes.push(key);
-  }
-}
-
-export function removePin(key) {
-  PINS.pinned_recipes = PINS.pinned_recipes.filter(k => k !== key);
-  delete PINS.node_positions[key];
-  // Remove arrows pointing to this node
-  PINS.pin_arrows = PINS.pin_arrows.filter(a => a.toNode !== key);
-}
-
-export function isPinned(key) {
-  return PINS.pinned_recipes.includes(key);
-}
-
-export function pinCount() {
-  return PINS.pinned_recipes.length;
-}
-
 // ── Unlocked alternate recipes ────────────────────────────
 // Permanent hard-drive unlocks — persisted server-side in unlocked_alts.yaml.
 // Populated from /api/unlocked-alts on boot and after any save.

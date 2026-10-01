@@ -2858,3 +2858,14 @@ recipes:
       Iron_Plate: 4.0
     outputs:
       Portable_Miner: 1.0
+# Items that move in pipes (everything else rides belts)
+fluids: [Alumina_Solution, Crude_Oil, Dark_Matter_Residue, Dissolved_Silica, Excited_Photonic_Matter,
+         Fuel, Heavy_Oil_Residue, Ionized_Fuel, Liquid_Biofuel, Nitric_Acid, Nitrogen_Gas, Rocket_Fuel,
+         Sulfuric_Acid, Turbofuel, Water]
+# Raw resources mined or extracted from nodes (a factory's own supply, not imports)
+node_resources: [Iron_Ore, Copper_Ore, Limestone, Coal, Caterium_Ore, Raw_Quartz, Sulfur, Bauxite,
+                 Uranium_Ore, SAM, Crude_Oil, Nitrogen_Gas, Water]
+# Transport capacity per lane, items (or m³) per minute
+transport:
+  belts: {Mk1: 60, Mk2: 120, Mk3: 270, Mk4: 480, Mk5: 780, Mk6: 1200}
+  pipes: {Mk1: 300, Mk2: 600}

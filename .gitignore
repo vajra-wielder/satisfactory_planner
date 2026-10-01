@@ -14,3 +14,5 @@ venv/
 *.log
 # Cached solve results (per machine, regenerated on demand)
 scenarios/.results/
+# Blackboard layout (your own board: positions, links, tiers)
+data/blackboard.yaml

@@ -25,6 +25,15 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   Plutonium and Ficsonium chains can be planned; power generated shows as net power
 - Last solve of each scenario cached and restored when the scenario is reopened
 
+### Blackboard (logistics)
+- Between factories: every saved scenario is a black box showing only what it
+  imports and exports (from its last plan); link exports to imports and see each
+  link's rate and the belts or pipes it takes at your tiers. Click a factory to
+  open it in the solver.
+- Inside a factory: exact belt splits (e.g. 400 → 395 + 5, or 5 : 3) as a
+  splitter tree with loop-back — splitter and merger counts, each step, belt
+  loads — or a manifold when the outputs only take their share.
+
 ### Recipe Management
 - Recipe data checked against the 1.0 game files (rates, machines, build costs,
   per-recipe power for variable-power machines)

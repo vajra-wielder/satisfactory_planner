@@ -25,6 +25,7 @@ from solver import (
     result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR,
     analyse,
 )
+import logistics
 
 ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
@@ -222,6 +223,45 @@ def _set_dual_cache(s, result_dict: dict, usable=None) -> None:
     with _dual_lock:
         _dual_cache.clear()
         _dual_cache.update(new_cache)
+
+
+# ── Blackboard ────────────────────────────────────────────────────────────────
+# Every saved scenario is a whole factory, a black box on the board showing
+# only what it imports and exports (logistics.factory_io), from its last plan
+# when that plan still matches the scenario. The board's layout — card
+# positions, links between factories, belt and pipe tiers — is one file.
+BOARD_PATH = HERE / "data" / "blackboard.yaml"
+
+def _load_board() -> dict:
+    try:
+        raw = yaml.safe_load(BOARD_PATH.read_text(encoding="utf-8")) if BOARD_PATH.exists() else None
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+def _save_board(layout: dict) -> None:
+    keep = {k: layout[k] for k in ("positions", "links", "belt", "pipe") if k in layout}
+    BOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BOARD_PATH.write_text(yaml.safe_dump(keep, sort_keys=False), encoding="utf-8")
+
+def _blackboard_factories() -> list:
+    out = []
+    for p in sorted(SCENARIOS_DIR.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        result = None
+        entry = _cache_read(_result_key(data.get("name", p.stem)))
+        if entry and entry.get("result"):
+            try:
+                if entry.get("base_sig") == _signature(_build_scenario(data), entry.get("styles") or []):
+                    result = entry["result"]
+            except Exception:
+                pass
+        io = logistics.factory_io(data, result)
+        out.append({"key": p.stem, "name": data.get("name", p.stem), **io})
+    return out
 
 
 # ── Async solve job store ─────────────────────────────────────────────────────
@@ -502,6 +542,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/unlocked-alts":
             self._json(200, {"unlocked": _load_unlocked_alts()})
             return
+
+        if path == "/api/blackboard":
+            self._json(200, {"factories": _blackboard_factories(), "layout": _load_board(),
+                             "fluids": logistics.META["fluids"],
+                             "transport": logistics.META["transport"]})
             return
 
         self._json(404, {"error": "Not found"})
@@ -513,6 +558,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_write(self):
         path = urlparse(self.path).path.rstrip("/")
+
+        if path == "/api/blackboard":
+            data = self._read_json()
+            try:
+                _save_board(data if isinstance(data, dict) else {})
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+            return
 
         if path == "/api/unlocked-alts":
             data = self._read_json()
