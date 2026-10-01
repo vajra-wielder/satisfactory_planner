@@ -133,24 +133,55 @@ export function renderBuildCost() {
 // ══════════════════════════════════════════════════════════
 // SAVED SCENARIOS TAB
 // ══════════════════════════════════════════════════════════
-export function renderSaved(saved, onLoad, onDelete) {
+export function renderSaved(saved, onLoad, onDelete, onRestore) {
   const el = document.getElementById('savedlist');
   if (!saved.length) { el.innerHTML = '<p style="font-size:12px;color:var(--t3)">No saved scenarios.</p>'; return; }
   el.innerHTML = '';
+  const stale = saved.filter(s => !s.fresh).length;
+  const bar = document.createElement('div');
+  bar.className = 'sv-bar';
+  bar.innerHTML = `<button class="bsm ${stale ? 'act' : ''}" id="sv-chain" ${stale ? '' : 'disabled'}
+      title="Solve every factory without a current plan, and everything that takes from them — sources first">↻ Re-solve out of date (${stale})</button>`;
+  el.appendChild(bar);
   saved.forEach(s => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:5px;margin-bottom:5px;padding:6px 8px;background:var(--p3);border-radius:var(--rsm);border:1px solid var(--b)';
+    row.className = 'sv-row';
     row.innerHTML = `
-      <div style="flex:1">
-        <div style="font-size:12px;color:var(--t)">${s.name}${s.alerts?.length ? ` <span class="sv-alert" title="${
-          s.alerts.map(a => `${a.item.replace(/_/g, ' ')}${a.storage ? ' to storage' : ` from ${a.factory_name || a.factory}`}: ${a.rate}/min asked, ${a.left}/min left — its source changed`).join('\n')}">⚠ ${s.alerts.length}</span>` : ''}</div>
-        <div style="font-size:10px;color:var(--t3);margin-top:1px">${(s.resources||[]).slice(0,3).join(', ')}</div>
+      <div style="display:flex;align-items:center;gap:5px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;color:var(--t)">${s.fresh ? '' : '<span class="sv-stale" title="No current plan — solve it, or re-solve out of date">●</span> '}${s.name}${s.alerts?.length ? ` <span class="sv-alert" title="${
+            s.alerts.map(a => `${a.item.replace(/_/g, ' ')}${a.storage ? ' to storage' : ` from ${a.factory_name || a.factory}`}: ${a.rate}/min asked, ${a.left}/min left — its source changed`).join('\n')}">⚠ ${s.alerts.length}</span>` : ''}</div>
+          <div style="font-size:10px;color:var(--t3);margin-top:1px">${(s.resources||[]).slice(0,3).map(r => r.replace(/_/g, ' ')).join(', ')}</div>
+        </div>
+        <button class="bsm">Load</button>
+        <button class="bsm sv-h" title="Earlier versions">⟲</button>
+        <button class="bsm dan">✕</button>
       </div>
-      <button class="bsm">Load</button>
-      <button class="bsm dan">✕</button>
-    `;
-    row.querySelectorAll('button')[0].addEventListener('click', () => onLoad(s.key));
-    row.querySelectorAll('button')[1].addEventListener('click', () => onDelete(s.key));
+      <div class="sv-hist" style="display:none"></div>`;
+    const [load, hist, del] = row.querySelectorAll('button');
+    load.addEventListener('click', () => onLoad(s.key));
+    del.addEventListener('click', () => onDelete(s.key));
+    hist.addEventListener('click', () => {
+      const box = row.querySelector('.sv-hist');
+      if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+      box.style.display = '';
+      box.innerHTML = '<span class="n-hint">Loading…</span>';
+      fetch(`/api/history/${s.key}`).then(r => r.json()).then(d => {
+        if (!d.versions.length) { box.innerHTML = '<span class="n-hint">No earlier versions yet — each save keeps the one it replaces.</span>'; return; }
+        box.innerHTML = d.versions.map(v => {
+          const t = v.id.replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d).*$/, '$1-$2-$3 $4:$5');
+          return `<div class="sv-v"><span>${t}${v.name !== s.name ? ` · ${v.name}` : ''}</span>
+            <span class="n-hint">${v.nodes} supply · ${v.imports} imports</span><button class="bsm" data-v="${v.id}">Restore</button></div>`;
+        }).join('');
+        box.querySelectorAll('[data-v]').forEach(b => b.addEventListener('click', () => {
+          if (confirm(`Restore "${s.name}" to how it was at ${b.parentNode.firstElementChild.textContent}? The current version is kept in its history.`))
+            onRestore(s.key, b.dataset.v);
+        }));
+      });
+    });
     el.appendChild(row);
   });
+  const box = document.createElement('div');
+  box.id = 'sv-chain-box';
+  el.appendChild(box);
 }

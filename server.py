@@ -28,6 +28,7 @@ from solver import (
 import logistics
 import network
 import supply
+import savefile
 
 ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
@@ -121,7 +122,7 @@ def _build_boot_bytes():
         "purity":       supply.PURITY,
         "miner_tiers":  supply.MINER_TIERS,
         "max_shards":   supply.MAX_SHARDS,
-        "progress":     supply.load_progress(),
+        "progress":     _progress(),
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
@@ -202,15 +203,15 @@ def _cache_write(key: str, entry: dict) -> None:
     except Exception:
         import traceback; traceback.print_exc()
 
-def _cache_lookup(key: str, sig: str, owed: dict):
+def _cache_lookup(key: str, sig: str, owed: dict, supply: dict):
     """The cache entry for these settings whose plan also serves what's owed now."""
     with _cache_lock:
         hit = _mem_cache.get(sig)
-        if hit is not None and _owed_ok(hit, owed):
+        if hit is not None and _owed_ok(hit, owed, supply):
             _mem_cache.move_to_end(sig)
             return hit
     entry = _cache_read(key)
-    if entry and entry.get("result") and entry.get("sig") == sig and _owed_ok(entry, owed):
+    if entry and entry.get("result") and entry.get("sig") == sig and _owed_ok(entry, owed, supply):
         return entry
     return None
 
@@ -313,21 +314,37 @@ def _owed(key: str, claims: dict, s: Scenario, storage=None) -> dict:
     return out
 
 def _with_owed(s: Scenario, owed: dict) -> Scenario:
+    """What's owed out of a factory's own supply (ore, oil, water sent on) comes
+    off that supply; anything else it must make, at least that much."""
     if not owed:
         return s
-    mins = dict(s.min_produce)
+    mins, avail = dict(s.min_produce), dict(s.available_resources)
     for it, r in owed.items():
-        mins[it] = max(mins.get(it, 0.0), r)
-    return _dc_replace(s, min_produce=mins)
+        if it in avail:
+            if it not in s.unlimited_resources:
+                avail[it] = max(0.0, avail[it] - r)
+        else:
+            mins[it] = max(mins.get(it, 0.0), r)
+    return _dc_replace(s, min_produce=mins, available_resources=avail)
 
-def _owed_ok(entry: dict, owed: dict) -> bool:
+def _owed_short(result: dict, owed: dict, supply: dict) -> dict:
+    """How far a plan falls short of what's owed: made items it makes too few
+    of; supplied items it uses too much of to leave what's owed."""
+    made, used = logistics.made(result), logistics.drawn(result)
+    out = {}
+    for k, v in owed.items():
+        short = (used.get(k, 0.0) + v - supply[k]) if k in supply else (v - made.get(k, 0.0))
+        if short > v * 1e-6 + 1e-3:
+            out[k] = round(short, 3)
+    return out
+
+def _owed_ok(entry: dict, owed: dict, supply: dict) -> bool:
     was = entry.get("owed") or {}
     if entry.get("owed_dropped"):          # it couldn't make what was owed then: same owed, same answer
         return was == owed
     if any(v > owed.get(k, 0.0) + 1e-6 for k, v in was.items()):
         return False                       # solved owing more than now: there may be a better plan
-    made = logistics.made(entry.get("result") or {})
-    return all(made.get(k, 0.0) >= v * (1 - 1e-6) - 1e-3 for k, v in owed.items())
+    return not _owed_short(entry.get("result") or {}, owed, supply)
 
 def _save_key(name: str) -> str:
     return "_".join(str(name).split()).lower()   # as the frontend saves it (handleSave)
@@ -354,7 +371,7 @@ def _entry_fresh(entry: dict, key: str, data: dict, claims: dict = None) -> bool
         return False
     if claims is None:
         claims = _claims(_scenario_files())
-    return _owed_ok(entry, _owed(key, claims, base))
+    return _owed_ok(entry, _owed(key, claims, base), base.available_resources)
 
 def _network_sites(keys) -> list:
     """Each factory for network planning: its scenario, what its plan makes (held),
@@ -404,7 +421,8 @@ def _blackboard_factories() -> list:
                     "sources": [f for f in data.get("from_factories") or [] if f.get("factory")],
                     "storage": {t["item"]: float(t.get("rate") or 0) for t in data.get("to_storage") or [] if t.get("item")},
                     "taken": {it: round(sum(by.values()), 3) for it, by in claims.get(key, {}).items()},
-                    "taken_by": claims.get(key, {})})
+                    "taken_by": claims.get(key, {}),
+                    "power": _power(data, result)})
     return out
 
 def _factory_outputs() -> dict:
@@ -415,7 +433,8 @@ def _factory_outputs() -> dict:
     facs, made, nodes = [], {}, {}
     for key, data, result in saved:
         io = logistics.factory_io(data, result and {k: v for k, v in result.items() if k != "_stale"})
-        made[key] = {it: r for it, r in {**io["surplus"], **io["exports"]}.items() if r}
+        # power goes over the grid, not to another factory or into storage
+        made[key] = {it: r for it, r in {**io["surplus"], **io["exports"]}.items() if r and it != "Power"}
         facs.append({"key": key, "name": data.get("name", key), "solved": io["solved"],
                      "stale": bool(result and result.get("_stale")), "made": made[key]})
         for i in supply.nodes_of(data):
@@ -433,7 +452,54 @@ def _factory_outputs() -> dict:
                     alerts.setdefault(src if who == STORAGE else who, []).append(
                         {"item": it, "factory": src, "factory_name": names.get(src, src), "storage": who == STORAGE,
                          "rate": round(r, 3), "left": round(max(0.0, left), 3)})
-    return {"factories": facs, "claims": claims, "nodes": nodes, "alerts": alerts}
+    pins = [{"x": n["at"][0], "y": n["at"][1], "count": int(n.get("count") or 1), "factory": key}
+            for key, data, _ in saved for n in data.get("resource_nodes") or [] if n.get("at")]
+    return {"factories": facs, "claims": claims, "nodes": nodes, "alerts": alerts, "pins": pins,
+            "pool": _pool([(k, d) for k, d, _ in saved])}
+
+def _pool(files) -> dict:
+    """Power shards and somersloops: what you own (shared) and what each factory holds."""
+    prog = _progress()
+    return {"shards": {"owned": prog["shards"], "used": {k: supply.shards_used(d) for k, d in files}},
+            "sloops": {"owned": prog["sloops"], "used": {k: int(d.get("somersloops_available") or 0) for k, d in files}}}
+
+def _power(data: dict, result) -> dict:
+    """A factory's power: what its machines draw and its generators make (from
+    its plan), its extractors' draw and its geysers' power (from its nodes)."""
+    use = gen = 0.0
+    for f in (result or {}).get("flows", []):
+        pw = float(f.get("power_mw") or 0)
+        if pw >= 0:
+            use += pw
+        else:
+            gen -= pw
+    return {"machines": round(use, 1), "generators": round(gen, 1),
+            "extractors": supply.extractor_power(data), "geothermal": round(supply.geothermal_mw(data), 1),
+            "cap": float(data["max_power_mw"]) if data.get("max_power_mw") else None,
+            "solved": result is not None}
+
+def _build_list() -> list:
+    """Per saved factory: the machines its plan needs, its extractors, and what
+    they take to build (no belts, pipes or stations)."""
+    saved, _ = _saved_factories(stale_ok=True)
+    out = []
+    for key, data, result in saved:
+        machines: dict = {}
+        for f in (result or {}).get("flows", []):
+            machines[f["machine"]] = machines.get(f["machine"], 0) + int(f.get("machines_final") or 0)
+        ex = supply.extractor_build(data)
+        cost = dict((result or {}).get("build_cost") or {})
+        for e in ex.values():
+            for it, a in e["cost"].items():
+                cost[it] = cost.get(it, 0) + a
+        out.append({"key": key, "name": data.get("name", key), "solved": result is not None,
+                    "stale": bool(result and result.get("_stale")),
+                    "machines": machines, "extractors": {k: v["count"] for k, v in ex.items()},
+                    "materials": cost,
+                    "shards": int((result or {}).get("build_cost_shards") or 0) + supply.shards_used(data)
+                              - int(data.get("power_shards_available") or 0),
+                    "sloops": int((result or {}).get("build_cost_sloops") or 0)})
+    return out
 
 _save_lock = threading.Lock()   # claim check + write as one step, so two saves can't both take the same
 
@@ -485,6 +551,20 @@ def _hold_claims(key: str, data: dict) -> list:
         keep.append(t)
     if data.get("to_storage") is not None:
         data["to_storage"] = keep
+
+    # Shards and somersloops from the shared pool: no more than the other factories leave
+    for kind, field in (("shards", "power_shards_available"), ("sloops", "somersloops_available")):
+        pool = out["pool"][kind]
+        if pool["owned"] is None:
+            continue
+        free = pool["owned"] - sum(v for k, v in pool["used"].items() if k != key)
+        held = supply.shards_used(data) if kind == "shards" else int(data.get(field) or 0)
+        if held > free:
+            own = int(data.get(field) or 0)
+            keep = max(0, own - (held - max(0, free)))   # the factory's own count gives way; extractor shards stay
+            if keep != own:
+                data[field] = keep
+                cut.append({"kind": kind, "asked": own, "rate": keep, "free": max(0, free)})
 
     taken = {i: k for i, k in out["nodes"].items() if k != key}
     rows = []
@@ -549,22 +629,209 @@ def _write_yaml(p, data) -> None:
         raise
 
 
+# ── Re-solve the chain ────────────────────────────────────────────────────────
+# Factories that are out of date, and everything that takes from them, solved
+# sources first: each importer is first held to what its sources make now,
+# then solved. One background job; the steps are reported as they finish.
+_chain: dict = {"running": False, "steps": [], "todo": []}
+_chain_lock = threading.Lock()
+
+def _chain_order(files, keys=None) -> list:
+    """Keys to solve, sources before what takes from them: `keys` (or every
+    factory without a current plan) and everything downstream."""
+    deps = {k: {f.get("factory") for f in d.get("from_factories") or [] if f.get("factory")} for k, d in files}
+    takers = {}
+    for k, ds in deps.items():
+        for d in ds:
+            takers.setdefault(d, set()).add(k)
+    if keys is None:
+        claims = _claims(files)
+        keys = [k for k, d in files if _factory_plan(k, False, claims, d)[1] is None]
+    todo, stack = set(), list(keys)
+    while stack:
+        k = stack.pop()
+        if k in todo or k not in deps:
+            continue
+        todo.add(k)
+        stack.extend(takers.get(k, ()))
+    order = []
+    while todo:   # fewest sources still to solve first (a cycle breaks at its smallest)
+        ready = sorted(todo, key=lambda k: (len(deps[k] & todo), k))
+        order.append(ready[0])
+        todo.discard(ready[0])
+    return order
+
+def _chain_run(order) -> None:
+    for key in order:
+        step = {"key": key, "status": "solving"}
+        with _chain_lock:
+            _chain["steps"].append(step)
+        try:
+            p = SCENARIOS_DIR / f"{key}.yaml"
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            step["name"] = data.get("name", key)
+            before = (_cache_read(_result_key(data.get("name", key))) or {}).get("result") or {}
+            with _save_lock:
+                cut = _hold_claims(key, data)
+                if cut:
+                    _write_yaml(p, data)
+            s = _build_scenario(data)
+            rkey, sig = _result_key(s.name), _signature(s, [])
+            owed = _owed(key, _claims(_scenario_files()), s)
+            hit = _cache_lookup(rkey, sig, owed, s.available_resources)
+            if hit is None:
+                jid = "chain-" + key
+                _run_solve_job(jid, s, ALL_RECIPES, MACHINE_META, (rkey, sig, sig, []), owed, data)
+                with _jobs_lock:
+                    res = _jobs.pop(jid, {}).get("result") or {}
+            else:
+                _cache_store(rkey, sig, sig, [], hit["result"], hit.get("owed"), hit.get("owed_dropped", False))
+                res = _owed_fields(hit["result"], owed, data)
+            step.update({"status": res.get("status", "error"), "cut": cut,
+                         "before": before.get("objective_value"), "after": res.get("objective_value"),
+                         "owed_unmet": res.get("owed_unmet") or {}, "error": res.get("error")})
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            step.update({"status": "error", "error": str(e)})
+    with _chain_lock:
+        _chain["running"] = False
+
+def _chain_start(keys=None) -> dict:
+    with _chain_lock:
+        if _chain["running"]:
+            return {"error": "Already re-solving"}
+        order = _chain_order(_scenario_files(), keys)
+        _chain.update({"running": bool(order), "steps": [], "todo": order})
+    if order:
+        threading.Thread(target=_chain_run, args=(order,), daemon=True).start()
+    return {"todo": order}
+
+
+# ── Apply a network plan ──────────────────────────────────────────────────────
+def _apply_network(flows, alts) -> list:
+    """Write a network plan into the factories: each factory's imports from the
+    others in the plan become what the plan sends it (a typed fixed rate for
+    an item it now imports goes), and the alternates the plan has it run are
+    switched on. Returns the keys changed — re-solve them next."""
+    sites = {f["from"] for f in flows} | {f["to"] for f in flows} | set(alts)
+    into: dict = {}
+    for f in flows:
+        k = (f["from"], f["item"])
+        into.setdefault(f["to"], {})[k] = into.setdefault(f["to"], {}).get(k, 0.0) + float(f["rate"])
+    changed = []
+    with _save_lock:
+        for key, data in _scenario_files():
+            if key not in sites:
+                continue
+            before = json.dumps(data, sort_keys=True, default=str)
+            touched = False
+            if key in into or any(r.get("factory") in sites for r in data.get("from_factories") or []):
+                touched = True
+                keep = [r for r in data.get("from_factories") or [] if r.get("factory") not in sites]
+                new = [{"item": it, "factory": src, "rate": round(r, 3)} for (src, it), r in sorted(into.get(key, {}).items())]
+                data["from_factories"] = keep + new
+                got = {r["item"] for r in new}
+                if data.get("resource_nodes") is not None:
+                    data["resource_nodes"] = [n for n in data["resource_nodes"]
+                                              if not (n.get("extractor") == "fixed" and n.get("resource") in got
+                                                      and n.get("resource") not in logistics._NODE)]
+                elif data.get("available_resources"):   # saved before nodes: imports replace the typed rates
+                    data["resource_nodes"] = [{"resource": r, "extractor": "fixed", "rate": float(v)}
+                                              for r, v in data["available_resources"].items()
+                                              if not (r in got and r not in logistics._NODE)]
+            if alts.get(key):
+                data["alternate_recipes_enabled"] = sorted(set(data.get("alternate_recipes_enabled") or []) | set(alts[key]))
+            if touched:
+                data["available_resources"] = supply.available(data)
+            if json.dumps(data, sort_keys=True, default=str) != before:
+                _history_keep(key)
+                _write_yaml(SCENARIOS_DIR / f"{key}.yaml", data)
+                changed.append(key)
+    return changed
+
+
+# ── History ───────────────────────────────────────────────────────────────────
+# Each save keeps the version it replaces (scenarios/.history/<key>/<time>.yaml,
+# the last _HISTORY_KEEP), so a change can be undone.
+HISTORY_DIR = SCENARIOS_DIR / ".history"
+_HISTORY_KEEP = 20
+
+def _history_keep(key: str) -> None:
+    p = SCENARIOS_DIR / f"{key}.yaml"
+    if not p.exists():
+        return
+    import time as _t
+    d = HISTORY_DIR / key
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = _t.strftime("%Y%m%d-%H%M%S")
+    n, dst = 0, d / f"{stamp}.yaml"
+    while dst.exists():
+        n += 1
+        dst = d / f"{stamp}-{n}.yaml"
+    dst.write_bytes(p.read_bytes())
+    for old in sorted(d.glob("*.yaml"))[:-_HISTORY_KEEP]:
+        old.unlink()
+
+def _history(key: str) -> list:
+    out = []
+    for f in sorted((HISTORY_DIR / key).glob("*.yaml"), reverse=True):
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        out.append({"id": f.stem, "name": data.get("name", key),
+                    "goals": sorted({**(data.get("objective") or {}), **(data.get("must_produce") or {})})[:4],
+                    "imports": len(data.get("from_factories") or []),
+                    "nodes": len(data.get("resource_nodes") or [])})
+    return out
+
+
+# ── Your save and your map ───────────────────────────────────────────────────
+# Nodes a game save already mines (savefile.py) and a map picture to draw the
+# nodes on — both yours, kept in data/ (git-ignored).
+SAVE_NODES_PATH = HERE / "data" / "save_nodes.json"
+MAP_IMAGE_DIR = HERE / "data"
+MAP_SETTINGS_PATH = HERE / "data" / "map_image.json"
+_IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+
+def _save_nodes() -> dict:
+    try:
+        return json.loads(SAVE_NODES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"nodes": []}
+
+def _map_settings() -> dict:
+    try:
+        d = json.loads(MAP_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        d = {}
+    return {"ext": d.get("ext"), "dx": float(d.get("dx") or 0), "dy": float(d.get("dy") or 0),
+            "scale": float(d.get("scale") or 1), "opacity": float(d.get("opacity") or 0.6)}
+
+
 # ── Async solve job store ─────────────────────────────────────────────────────
 import uuid as _uuid
 _jobs: dict = {}   # {job_id: {"status": "pending"|"done"|"error", "result": dict|None}}
 _jobs_lock = threading.Lock()
 
-def _owed_fields(d: dict, owed: dict) -> dict:
-    """The plan with what's owed now beside it, and any it falls short of."""
+def _owed_fields(d: dict, owed: dict, data: dict = None) -> dict:
+    """The plan with what's owed now beside it, and any it falls short of —
+    and, from the scenario, its extractors (power, build) and geysers' power."""
     d = {k: v for k, v in d.items() if k not in ("owed", "owed_unmet")}
+    if data is not None:
+        d.update(_extras(data))
     if owed:
-        have = logistics.made(d)
         d["owed"] = owed
-        d["owed_unmet"] = {k: round(v - have.get(k, 0.0), 3) for k, v in owed.items()
-                           if have.get(k, 0.0) < v * (1 - 1e-6) - 1e-3}
+        d["owed_unmet"] = _owed_short(d, owed, supply.available(data) if data is not None else {})
     return d
 
-def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None, owed=None):
+def _extras(data: dict) -> dict:
+    """What a plan doesn't cover but its scenario does: extractors and geysers."""
+    return {"extractor_power_mw": supply.extractor_power(data),
+            "geothermal_mw": round(supply.geothermal_mw(data), 3),
+            "extractor_build": supply.extractor_build(data)}
+
+def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None, owed=None, data=None):
     """Runs in a background thread; writes result into _jobs when done.
     cache = (key, sig, base_sig, styles) to store the result under.
     owed: what other factories and storage take from it — made at least,
@@ -579,7 +846,7 @@ def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None, owed=N
             result = solve(s, all_recipes, machine_meta)
             d = result_to_dict(result, s, machine_meta)
             run, dropped = s, True
-        d = _owed_fields(d, owed)
+        d = _owed_fields(d, owed, data)
         _set_dual_cache(run, d, getattr(result, "usable", None))
         if cache is not None and d.get("status", "").startswith("Optimal"):
             _cache_store(*cache, d, owed, dropped)
@@ -596,15 +863,33 @@ print(f"🏭 Satisfactory Planner — {len(ALL_RECIPES)} recipes "
 
 # ── Scenario builder ──────────────────────────────────────────────────────────
 
+def _progress() -> dict:
+    """The shared unlocks (supply.load_progress). The first time, the machines
+    every saved factory had switched on become the shared list."""
+    p = supply.load_progress()
+    if p["machines"] is None:
+        ms, every = set(), False
+        for _, d in _scenario_files():
+            em = d.get("enabled_machines") or []
+            every = every or not em
+            ms |= set(em)
+        if every or not ms:
+            ms = set(MACHINE_META) | {r.machine for r in ALL_RECIPES.values()}
+        p = supply.save_progress({"machines": sorted(ms)})
+    return p
+
 def _build_scenario(b: dict) -> Scenario:
     # Inject unlocked alts from disk so they're always available to the solver
-    # without the frontend needing to send them in every request.
+    # without the frontend needing to send them in every request. Machines are
+    # the shared unlocked list; geysers' geothermal power adds to a power cap.
     unlocked = _load_unlocked_alts()
+    prog = _progress()
+    cap = float(b["max_power_mw"]) + supply.geothermal_mw(b) if b.get("max_power_mw") else None
     return Scenario(
         name=b.get("name", "Scenario"),
         description=b.get("description", ""),
         alternate_recipes_enabled=b.get("alternate_recipes_enabled", []) or [],
-        enabled_machines=b.get("enabled_machines", []) or [],
+        enabled_machines=list(prog["machines"] or []),
         available_resources=supply.available(b),
         unlimited_resources=list(b.get("unlimited_resources") or []),
         must_produce={k: float(v) for k, v in (b.get("must_produce") or {}).items()},
@@ -613,7 +898,7 @@ def _build_scenario(b: dict) -> Scenario:
         objective={k: float(v) for k, v in (b.get("objective") or {}).items()},
         power_shards_available=int(b.get("power_shards_available") or 0),
         somersloops_available=int(b.get("somersloops_available") or 0),
-        max_power_mw=float(b["max_power_mw"]) if b.get("max_power_mw") else None,
+        max_power_mw=cap,
         notes=b.get("notes", "") or "",
         unlocked_alt_recipes=unlocked,
         minimize_new_alts=bool(b.get("minimize_new_alts", False)),
@@ -781,7 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if _entry_fresh(entry, name, data):
                         owed = _owed(name, _claims(_scenario_files()), _build_scenario(data))
-                        out["_last_solve"] = {"result": _owed_fields(entry["result"], owed),
+                        out["_last_solve"] = {"result": _owed_fields(entry["result"], owed, data),
                                               "styles": entry.get("styles") or []}
                         _set_dual_cache(_build_scenario(data), entry["result"])
                 except Exception:
@@ -851,7 +1136,43 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/progress":
-            self._json(200, supply.load_progress())
+            self._json(200, _progress())
+            return
+
+        if path == "/api/resolve-chain":
+            with _chain_lock:
+                self._json(200, {"running": _chain["running"], "todo": _chain["todo"], "steps": list(_chain["steps"])})
+            return
+
+        if path.startswith("/api/history/"):
+            self._json(200, {"versions": _history(path[len("/api/history/"):])})
+            return
+
+        if path == "/api/save-nodes":
+            self._json(200, _save_nodes())
+            return
+
+        if path == "/api/map-settings":
+            self._json(200, _map_settings())
+            return
+
+        if path == "/api/map-image":
+            ext = _map_settings()["ext"]
+            f = MAP_IMAGE_DIR / f"map_image.{ext}" if ext else None
+            if not f or not f.exists():
+                self._json(404, {"error": "No map image"})
+                return
+            body = f.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", {v: k for k, v in _IMAGE_TYPES.items()}[ext])
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/api/build-list":
+            self._json(200, {"factories": _build_list()})
             return
 
         if path == "/api/map-nodes":
@@ -880,10 +1201,12 @@ class Handler(BaseHTTPRequestHandler):
         """Each saved factory with its alerts: imports or storage more than
         their source has left (it changed since)."""
         try:
-            alerts = _factory_outputs()["alerts"]
+            out = _factory_outputs()
+            alerts = out["alerts"]
+            fresh = {f["key"]: f["solved"] and not f["stale"] for f in out["factories"]}
         except Exception:
-            alerts = {}
-        return [{**r, "alerts": alerts.get(r["key"], [])} for r in rows]
+            alerts, fresh = {}, {}
+        return [{**r, "alerts": alerts.get(r["key"], []), "fresh": fresh.get(r["key"], False)} for r in rows]
 
     # ── POST / PUT ────────────────────────────────────────────────────────────
 
@@ -906,6 +1229,73 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._json(500, {"error": str(e)})
+            return
+
+        if path == "/api/resolve-chain":
+            b = self._read_json() or {}
+            self._json(200, _chain_start(b.get("keys")))
+            return
+
+        if path == "/api/apply-network":
+            b = self._read_json() or {}
+            try:
+                changed = _apply_network(b.get("flows") or [], b.get("alts") or {})
+                self._json(200, {"changed": changed, **(_chain_start(changed) if changed else {"todo": []})})
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._json(500, {"error": str(e)})
+            return
+
+        if path.startswith("/api/history/") and path.endswith("/restore"):
+            key, vid = path[len("/api/history/"):-len("/restore")].split("/", 1)
+            src = HISTORY_DIR / key / f"{vid}.yaml"
+            if not src.exists():
+                self._json(404, {"error": "No such version"})
+                return
+            with _save_lock:
+                _history_keep(key)
+                (SCENARIOS_DIR / f"{key}.yaml").write_bytes(src.read_bytes())
+                for k in [k for k in _scenario_load_cache if k[0] == key]:
+                    del _scenario_load_cache[k]
+            self._json(200, {"restored": vid})
+            return
+
+        if path == "/api/save-file":
+            # The raw .sav: mark the nodes it already mines
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                ids = savefile.used_nodes(self.rfile.read(length))
+            except Exception as e:
+                self._json(400, {"error": str(e)})
+                return
+            known = supply.map_nodes()
+            import time as _t
+            out = {"file": self.headers.get("X-File-Name", ""), "when": int(_t.time()),
+                   "nodes": [i for i in ids if i in known], "unknown": len([i for i in ids if i not in known])}
+            SAVE_NODES_PATH.write_text(json.dumps(out), encoding="utf-8")
+            self._json(200, out)
+            return
+
+        if path == "/api/map-image":
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+            if ctype not in _IMAGE_TYPES:
+                self._json(400, {"error": "PNG, JPEG or WebP only"})
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            for old in MAP_IMAGE_DIR.glob("map_image.*"):
+                if old.suffix != ".json":
+                    old.unlink()
+            (MAP_IMAGE_DIR / f"map_image.{_IMAGE_TYPES[ctype]}").write_bytes(self.rfile.read(length))
+            st = {**_map_settings(), "ext": _IMAGE_TYPES[ctype]}
+            MAP_SETTINGS_PATH.write_text(json.dumps(st), encoding="utf-8")
+            self._json(200, st)
+            return
+
+        if path == "/api/map-settings":
+            data = self._read_json() or {}
+            st = {**_map_settings(), **{k: data[k] for k in ("dx", "dy", "scale", "opacity") if k in data}}
+            MAP_SETTINGS_PATH.write_text(json.dumps(st), encoding="utf-8")
+            self._json(200, _map_settings())
             return
 
         if path == "/api/progress":
@@ -969,14 +1359,14 @@ class Handler(BaseHTTPRequestHandler):
             owed = _owed(_save_key(s.name), _claims(_scenario_files()), base,
                          storage=(b.get("base_scenario") or b).get("to_storage") or [])
             job_id = _uuid.uuid4().hex
-            hit = _cache_lookup(key, sig, owed)
+            hit = _cache_lookup(key, sig, owed, base.available_resources)
             if hit is not None:
                 # Unchanged inputs: answer at once from the cache, and record it
                 # as this scenario's last solve (it may have come from another
                 # scenario with the same settings)
                 if _cache_read(key) != hit:
                     _cache_store(key, sig, base_sig, styles, hit["result"], hit.get("owed"), hit.get("owed_dropped", False))
-                cached = _owed_fields(hit["result"], owed)
+                cached = _owed_fields(hit["result"], owed, b.get("base_scenario") or b)
                 _set_dual_cache(s, cached)
                 with _jobs_lock:
                     _jobs[job_id] = {"status": "done", "result": cached}
@@ -986,7 +1376,8 @@ class Handler(BaseHTTPRequestHandler):
                 _jobs[job_id] = {"status": "pending", "result": None}
             t = threading.Thread(
                 target=_run_solve_job,
-                args=(job_id, s, ALL_RECIPES, MACHINE_META, (key, sig, base_sig, styles), owed),
+                args=(job_id, s, ALL_RECIPES, MACHINE_META, (key, sig, base_sig, styles), owed,
+                      b.get("base_scenario") or b),
                 daemon=True,
             )
             t.start()
@@ -1003,13 +1394,15 @@ class Handler(BaseHTTPRequestHandler):
             renamed = data.pop("_renamed_from", None)
             with _save_lock:
                 cut = _hold_claims(name, data)
+                _history_keep(name)
                 _write_yaml(p, data)
                 for k in [k for k in _scenario_load_cache if k[0] == name]:
                     del _scenario_load_cache[k]
                 if renamed and renamed != name and self._scenario_path(renamed).exists():
                     _rename(renamed, name, data.get("name", name))
             self._json(200, {"status": "saved", "key": name, "cut": cut,
-                             **{k: data.get(k) for k in ("from_factories", "to_storage", "resource_nodes")}})
+                             **{k: data.get(k) for k in ("from_factories", "to_storage", "resource_nodes",
+                                                         "power_shards_available", "somersloops_available")}})
             return
 
         self._json(404, {"error": "Not found"})

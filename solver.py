@@ -78,12 +78,15 @@ MAX_CLOCK   = 2.5
 # Extra power per shard above the straight line q (see the power-cap note above)
 _SHARD_POWER = SHARD_BOOST * ((MAX_CLOCK ** POWER_EXP - 1.0) / (MAX_CLOCK - 1.0) - 1.0)
 
+POWER_ITEM = "Power"   # what generators put out: MW, an item so a factory can aim for it
+
 SLOOP_SLOTS_BY_MACHINE = {
     "Smelter":1, "Constructor":1,
     "Foundry":2, "Assembler":2, "Refinery":2, "Converter":2,
     "Packager":0,   # the Packager can't take somersloops
     "Manufacturer":4, "Blender":4, "Particle_Accelerator":4, "Quantum_Encoder":4,
     "Miner":0, "Water_Extractor":0, "Oil_Extractor":0, "Nuclear_Power_Plant":0,
+    "Coal_Generator":0, "Fuel_Generator":0,
 }
 
 
@@ -322,6 +325,17 @@ def _pointless_loops(recipes: Dict[str, "Recipe"], targets: Set[str],
         dropped |= new
 
 
+_NODE_RES: Optional[Set[str]] = None
+
+def _node_resources() -> Set[str]:
+    """Items mined from nodes (node_resources in the recipe data)."""
+    global _NODE_RES
+    if _NODE_RES is None:
+        with open(RECIPES_PATH) as f:
+            _NODE_RES = set(yaml.safe_load(f).get("node_resources") or [])
+    return _NODE_RES
+
+
 def prune_recipes(
     scenario: Scenario,
     all_recipes: Dict[str,Recipe],
@@ -393,10 +407,15 @@ def prune_recipes(
         for item in allowed[key].outputs:
             allowed_producers.setdefault(item, []).append(key)
 
+    # What's supplied but isn't mined (parts from another factory) can still be
+    # made here too — an import adds to what the factory makes, it doesn't cap it
+    mined = available_raw & _node_resources()
+
     def demand(skip: Set[str]) -> Set[str]:
         needed: Set[str] = set()
-        visited: Set[str] = set(available_raw)
-        queue = list(target_items)
+        visited: Set[str] = set(mined)
+        # under a power cap, generators can raise it: their fuel chains stay in
+        queue = list(target_items) + ([POWER_ITEM] if scenario.max_power_mw is not None else [])
         while queue:
             item = queue.pop()
             if item in visited:
@@ -1362,7 +1381,8 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
     }
 
     # Classify unexpected surpluses
-    wanted = sink_items | set(scenario.available_resources.keys())
+    # Power (MW, from generators) goes to the grid, never a stray byproduct
+    wanted = sink_items | set(scenario.available_resources.keys()) | {POWER_ITEM}
     has_consumer: Set[str] = set()
     for r in usable.values():
         has_consumer.update(r.inputs.keys())

@@ -15,9 +15,18 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   node and resource-well satellite, with its purity), or type them in. Nodes one
   factory mines are crossed out for the others. Power shards on the extractors
   (0–3 each, +50% clock per shard) decide how much comes out; "Spread" puts a
-  number of shards where they add the most. Miners run at the tier unlocked in
-  Machines & Alts, for every factory. A fixed rate covers anything else
-- From factories: take items another saved factory makes. Pick the item (from
+  number of shards where they add the most. Geysers take geothermal
+  generators; water extractors are pins you drop where there's water. A fixed
+  rate covers anything else
+- Your save: load a .sav to mark the nodes your game already mines, on the map
+  and on the Blackboard's Map tab, so you can plan which to take next. Load a
+  picture of the in-game map to draw the nodes on (nudge it to line up)
+- Shared unlocks, for every factory: the machines, the miner tier (miners always
+  run at it), the best belt and pipe. Power shards and somersloops are owned
+  once — enter how many you have, and each factory takes from that pool (its
+  machines' shards and its extractors'); saving holds it to what's free
+- From factories: take items another saved factory makes — an import adds to
+  what the factory makes of it, it doesn't cap it. Pick the item (from
   everything your other factories' last plans make) and the factory; the rate
   starts at what that factory has left — what it makes less what other
   factories take and store — and can't go above it. Saving checks it again, so
@@ -30,8 +39,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   can't, the plan says how much it falls short
 - Alerts: a factory whose imports or storage are now more than their source
   makes is flagged in the saved list, with a one-click fix on the import
+- Re-solve the chain: everything out of date, or a factory and what takes from
+  it, solved sources first — each importer held to what its sources make now
 - Renaming a factory keeps its links: imports from it, its Blackboard place and
   routes, and its plan follow the new name
+- History: each save keeps the version it replaces (the last 20); restore any
+  from the Saved tab
 - Production minimums, maximums, and exact requirements
 - Least raw resources first, then least machine space (machines weighed by the
   room they take — w × l × h from `size_m` in the recipe data, in Smelter units:
@@ -41,8 +54,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   99%+ of the cap when power is what limits output)
 - Power Shard placement optimised across the whole factory
 - Somersloop placement optimised across the whole factory
-- Nuclear Power Plants: burning fuel rods yields Uranium/Plutonium waste, so full
-  Plutonium and Ficsonium chains can be planned; power generated shows as net power
+- Power plants: Coal (coal, compacted coal, petroleum coke) and Fuel generators
+  (fuel, turbofuel, rocket, ionized and liquid biofuel) and Nuclear plants make
+  Power, in MW — a goal like any item, so a factory can be a power plant. A
+  factory's own generators and geysers add to its power cap. Burning fuel rods
+  yields Uranium/Plutonium waste, so full Plutonium and Ficsonium chains can be
+  planned
 - Last solve of each scenario cached and restored when the scenario is reopened
 
 ### Blackboard (logistics)
@@ -58,6 +75,15 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Flows: a Sankey of everything moving between factories and into storage —
   as set in each factory, or as the network plan would send it.
 - Storage: every item sent to storage, per minute and per hour, by factory.
+- Power: what each factory's machines and extractors draw and its generators
+  and geysers make, the grid's balance, and which factories their cap holds back.
+- Build list: the machines (extractors and generators too) and the materials to
+  build them, per factory or for any you pick — no belts, pipes or stations.
+- Map: whose nodes are whose, what your save already mines, the pure nodes
+  still free.
+- Apply a network plan: what it sends between factories becomes their imports,
+  the alternates it uses are switched on, then they're re-solved in order. A
+  factory's own goals are always made in it.
 - Inside a factory: belt splits with the fewest structures — a manifold for
   outputs that feed machines, an exact splitter tree with loop-back only where
   an output needs an exact rate.
@@ -168,6 +194,16 @@ python app.py
 ```
 
 The application launches as a native desktop window.
+
+---
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -t .   # supply, claims, owed, chain, solver (seconds)
+node --test tests/splits.test.mjs           # belt splits
+python -m tests.stress                      # every scenario over a sloop/shard grid (a minute)
+```
 
 ---
 

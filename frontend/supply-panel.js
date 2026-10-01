@@ -24,7 +24,7 @@
 import { SC, RESULT, EXTRACTORS, PURITY, MINER_TIERS, MAX_SHARDS, PROGRESS, ALL_ITEMS, itemName } from './state.js';
 import { makeAC } from './sidebar.js';
 import { evalExpr } from './kv-panel.js';
-import { fetchFactoryOutputs } from './api.js';
+import { fetchFactoryOutputs, saveProgress } from './api.js';
 import { openMapPicker, mapNode, loadMap } from './map-picker.js';
 
 const $ = id => document.getElementById(id);
@@ -49,6 +49,10 @@ const canon = ex => (/^Miner_Mk\d$/.test(ex) ? 'Miner' : ex);
 const baseRate = ex => (ex === 'Miner' ? MINER_TIERS[PROGRESS.miner] : EXTRACTORS[ex]?.rate);
 const clockOf = s => 100 + 50 * Math.min(MAX_SHARDS, Math.max(0, parseInt(s, 10) || 0));
 const isWell = n => n.extractor === 'Resource_Well';
+const GEO = 'Geothermal_Generator';
+const isGeo = n => n.extractor === GEO;
+const GEO_MW = { impure: 100, normal: 200, pure: 400 };
+export const geoMW = n => (isGeo(n) ? (n.nodes || []).reduce((a, id) => a + (GEO_MW[mapNode(id)?.p] || 0), 0) : 0);
 
 export function nodeRate(n) {
   const e = EXTRACTORS[n.extractor];
@@ -173,13 +177,13 @@ const madeItems = () => {
   (OUTPUTS?.factories || []).forEach(f => { if (f.key !== ownKey()) Object.keys(f.made).forEach(i => s.add(i)); });
   return [...s].sort((a, b) => itemName(a).localeCompare(itemName(b)));
 };
-const ownItems = () => Object.keys(ownMade()).sort((a, b) => itemName(a).localeCompare(itemName(b)));
+const ownItems = () => Object.keys(ownMade()).filter(i => i !== 'Power').sort((a, b) => itemName(a).localeCompare(itemName(b)));
 // Map nodes other factories mine: id → factory name
 const nodesTaken = () => Object.fromEntries(Object.entries(OUTPUTS?.nodes || {})
   .filter(([, k]) => k !== ownKey()).map(([id, k]) => [id, facName(k)]));
 
 export function refreshOutputs() {
-  return fetchFactoryOutputs().then(d => { OUTPUTS = d; renderNodes(); renderFrom(); renderStorage(); }).catch(() => {});
+  return fetchFactoryOutputs().then(d => { OUTPUTS = d; renderNodes(); renderFrom(); renderStorage(); renderPool(); }).catch(() => {});
 }
 
 // ── Load / sync ───────────────────────────────────────────
@@ -193,6 +197,7 @@ export function loadSupply() {
     document.addEventListener('progress-changed', () => { syncSupply(); renderNodes(); });
   }
   UNLIM = new Set(SC.unlimited_resources || []);
+  wirePool();
   if (Array.isArray(SC.resource_nodes)) NODES = SC.resource_nodes.map(n => {
     const r = { ...n, extractor: canon(n.extractor) };
     if (r.clock != null && r.shards == null) r.shards = Math.min(MAX_SHARDS, Math.max(0, Math.round((r.clock - 100) / 50)));
@@ -214,6 +219,7 @@ export function loadSupply() {
 
 export function syncSupply() {
   SC.resource_nodes = NODES.filter(n => n.resource).map(n => {
+    if (isGeo(n)) return { resource: 'Geyser', extractor: GEO, nodes: [...n.nodes] };
     if (!EXTRACTORS[n.extractor]) return { resource: n.resource, extractor: 'fixed', rate: parseFloat(n.rate) || 0 };
     if (n.nodes?.length) return isWell(n)
       ? { resource: n.resource, extractor: n.extractor, nodes: [...n.nodes], shards: parseInt(n.shards, 10) || 0 }
@@ -221,13 +227,14 @@ export function syncSupply() {
           node_shards: Object.fromEntries(n.nodes.map(id => [id, parseInt(n.node_shards?.[id] ?? n.shards, 10) || 0])) };
     const r = { resource: n.resource, extractor: n.extractor, count: parseInt(n.count ?? 1, 10) || 0, shards: parseInt(n.shards, 10) || 0 };
     if (EXTRACTORS[n.extractor].purity) r.purity = n.purity || 'normal';
+    if (n.at) r.at = [...n.at];          // a water-extractor pin on the map
     return r;
   });
   SC.from_factories = FROM.filter(f => f.item && f.factory)
     .map(f => ({ item: f.item, factory: f.factory, rate: parseFloat(f.rate) || 0 }));
   SC.to_storage = STO.filter(t => t.item).map(t => ({ item: t.item, rate: parseFloat(t.rate) || 0 }));
   const av = {};
-  NODES.forEach(n => { if (n.resource) av[n.resource] = (av[n.resource] || 0) + nodeRate(n); });
+  NODES.forEach(n => { if (n.resource && !isGeo(n)) av[n.resource] = (av[n.resource] || 0) + nodeRate(n); });
   SC.from_factories.forEach(f => { av[f.item] = (av[f.item] || 0) + f.rate; });
   Object.keys(av).forEach(k => { av[k] = +av[k].toFixed(6); });
   SC.available_resources = av;
@@ -257,7 +264,22 @@ function renderNodes(focus = -1) {
     const unl = UNLIM.has(n.resource);
     const map = n.nodes?.length > 0;
     const clash = map ? n.nodes.filter(id => taken[id]) : [];
-    if (map) {
+    if (map && isGeo(n)) {
+      row.innerHTML = `
+        <div class="nrow-1">
+          <div class="n-map-res">Geothermal</div>
+          <div class="n-map-ex">Generator × ${n.nodes.length}</div>
+          <span></span>
+          <button class="bi n-x" title="Remove">✕</button>
+        </div>
+        <div class="nrow-2">
+          <span class="n-mix">${purityMix(n.nodes)} geyser${n.nodes.length > 1 ? 's' : ''}</span>
+          <button class="bsm n-edit" title="Edit on the map">map</button>
+          <span class="n-rate" title="Geysers swing between half and 1.5× this; the average is counted. It adds to the power cap.">≈ ${fmt(geoMW(n))} MW</span>
+          ${clash.length ? `<span class="n-sh n-warn">${clash.length} used by ${[...new Set(clash.map(id => taken[id]))].join(', ')}</span>` : ''}
+        </div>`;
+      row.querySelector('.n-edit').addEventListener('click', () => pickOnMap('Geyser'));
+    } else if (map) {
       const sh = rowShards(n);
       row.innerHTML = `
         <div class="nrow-1">
@@ -289,6 +311,7 @@ function renderNodes(focus = -1) {
           ${e.purity ? `<select class="n-pu">${Object.keys(PURITY).map(p => opt(p, p[0].toUpperCase() + p.slice(1), p === (n.purity || 'normal'))).join('')}</select>` : ''}
           <label>× <input type="number" class="n-ct" min="0" step="1" value="${n.count ?? 1}" title="How many"/></label>
           <select class="n-sh-sel" title="Power shards on each">${shardOpts(n.shards)}</select>
+          ${n.at ? `<button class="bsm n-edit" title="A pin on the map at ${n.at.join(', ')} m">📍 map</button>` : ''}
           <span class="n-rate">${unl ? '∞' : `= ${fmt(nodeRate(n))}/min`}</span>`
         : `<input type="text" inputmode="decimal" class="n-rate-in" placeholder="/min" value="${n.rate ?? ''}"/><span class="n-rate">/min</span>`}
         </div>`;
@@ -311,6 +334,7 @@ function renderNodes(focus = -1) {
         else { n.count ??= 1; n.shards ??= 0; n.purity ??= 'normal'; }
         syncSupply(); renderNodes();
       });
+      row.querySelector('.n-edit')?.addEventListener('click', () => pickOnMap('Water'));
       const repaint = () => { syncSupply(); row.querySelector('.n-rate').textContent = unl ? '∞' : `= ${fmt(nodeRate(n))}/min`; renderShardTotal(); };
       row.querySelector('.n-pu')?.addEventListener('change', ev => { n.purity = ev.target.value; repaint(); });
       row.querySelector('.n-ct')?.addEventListener('input', ev => { n.count = ev.target.value; repaint(); });
@@ -324,7 +348,7 @@ function renderNodes(focus = -1) {
       if (unl) row.querySelectorAll('.nrow-2 input, .nrow-2 select').forEach(x => { x.disabled = true; });
       if (i === focus) requestAnimationFrame(() => ri.focus());
     }
-    row.querySelector('.binf').addEventListener('click', () => {
+    row.querySelector('.binf')?.addEventListener('click', () => {
       if (!n.resource) return;
       UNLIM.has(n.resource) ? UNLIM.delete(n.resource) : UNLIM.add(n.resource);
       syncSupply(); renderNodes();
@@ -336,12 +360,68 @@ function renderNodes(focus = -1) {
   renderTotals();
 }
 
+const extractorShards = () => NODES.reduce((s, r) => s + (UNLIM.has(r.resource) ? 0 : rowShards(r)), 0);
+
 function renderShardTotal() {
   const el = $('sh-total');
   if (el) {
-    const n = NODES.reduce((s, r) => s + (UNLIM.has(r.resource) ? 0 : rowShards(r)), 0);
+    const n = extractorShards();
     el.textContent = n ? `${n} on extractors` : '';
   }
+  renderPool();
+}
+
+// ── Shards and somersloops: owned once, shared by every factory ──
+// Free for this factory = owned − what the other saved factories hold
+// (shards: their machines' and extractors'), less this factory's extractor shards.
+function poolFree(kind) {
+  const p = OUTPUTS?.pool?.[kind];
+  const owned = PROGRESS[kind];
+  if (owned == null) return null;
+  const others = Object.entries(p?.used || {}).filter(([k]) => k !== ownKey()).reduce((s, [, v]) => s + v, 0);
+  return owned - others - (kind === 'shards' ? extractorShards() : 0);
+}
+
+export function renderPool() {
+  const own = { shards: $('own-sh'), sloops: $('own-sl') };
+  if (own.shards && document.activeElement !== own.shards) own.shards.value = PROGRESS.shards ?? '';
+  if (own.sloops && document.activeElement !== own.sloops) own.sloops.value = PROGRESS.sloops ?? '';
+  [['shards', 'pool-sh', 'sc-sh', 'For its machines'], ['sloops', 'pool-sl', 'sc-sl', 'Max 106']].forEach(([kind, hint, input, plain]) => {
+    const el = $(hint), inp = $(input);
+    if (!el || !inp) return;
+    const free = poolFree(kind);
+    if (free == null) { el.textContent = plain; el.classList.remove('n-warn'); inp.removeAttribute('max'); return; }
+    const want = parseInt(inp.value, 10) || 0;
+    el.textContent = `${Math.max(0, free)} free of ${PROGRESS[kind]}`;
+    el.title = kind === 'shards' ? 'Owned, less what the other factories hold (machines and extractors) and this factory\'s extractors' : 'Owned, less what the other factories hold';
+    el.classList.toggle('n-warn', want > free);
+    inp.max = Math.max(0, free);
+  });
+  const geo = $('geo-note');
+  if (geo) {
+    const mw = NODES.reduce((a, n) => a + geoMW(n), 0);
+    geo.textContent = mw ? `+ ${fmt(mw)} geothermal` : '';
+  }
+}
+
+let poolWired = false;
+function wirePool() {
+  if (poolWired) return;
+  poolWired = true;
+  [['own-sh', 'shards'], ['own-sl', 'sloops']].forEach(([id, kind]) => $(id)?.addEventListener('change', e => {
+    const v = e.target.value === '' ? null : Math.max(0, parseInt(e.target.value, 10) || 0);
+    PROGRESS[kind] = v;
+    saveProgress({ [kind]: v }).catch(() => {});
+    renderPool();
+  }));
+  [['sc-sh', 'shards'], ['sc-sl', 'sloops']].forEach(([id, kind]) => {
+    const inp = $(id);
+    inp?.addEventListener('input', renderPool);
+    inp?.addEventListener('blur', () => {      // no more than the pool has free
+      const free = poolFree(kind);
+      if (free != null && (parseInt(inp.value, 10) || 0) > free) { inp.value = Math.max(0, free); renderPool(); }
+    });
+  });
 }
 
 export function addNode() {
@@ -350,29 +430,36 @@ export function addNode() {
 }
 
 // Map rows: one per resource for miners and oil extractors, one per well
+// Map rows: one per resource for miners and oil extractors, one per well, one
+// for the geothermal generators; water pins are water-extractor rows with a place
 export function pickOnMap(resource = null) {
   const picked = new Set(), shards = {};
   NODES.filter(n => n.nodes?.length).forEach(n => n.nodes.forEach(id => {
     picked.add(id);
+    if (isGeo(n)) return;
     if (isWell(n)) shards[mapNode(id)?.w || id] = parseInt(n.shards, 10) || 0;
     else shards[id] = parseInt(n.node_shards?.[id] ?? n.shards, 10) || 0;
   }));
+  const pins = NODES.filter(n => n.at).map(n => ({ x: n.at[0], y: n.at[1], count: parseInt(n.count ?? 1, 10) || 1, shards: parseInt(n.shards, 10) || 0 }));
   openMapPicker({
-    resource, picked, shards, taken: nodesTaken(), minerRate: MINER_TIERS[PROGRESS.miner],
-    onApply: (ids, sh) => {
-      const kept = NODES.filter(n => !n.nodes?.length);
-      const byRes = {}, wells = {};
+    resource, picked, shards, pins, taken: nodesTaken(), minerRate: MINER_TIERS[PROGRESS.miner],
+    onApply: (ids, sh, newPins) => {
+      const kept = NODES.filter(n => !n.nodes?.length && !n.at);
+      const byRes = {}, wells = {}, geysers = [];
       [...ids].forEach(id => {
         const m = mapNode(id);
         if (!m) return;
-        if (m.w) (wells[m.w] = wells[m.w] || { resource: m.r, nodes: [] }).nodes.push(id);
+        if (m.r === 'Geyser') geysers.push(id);
+        else if (m.w) (wells[m.w] = wells[m.w] || { resource: m.r, nodes: [] }).nodes.push(id);
         else (byRes[m.r] = byRes[m.r] || []).push(id);
       });
       const rows = [
         ...Object.entries(byRes).map(([r, list]) => ({ resource: r, extractor: r === 'Crude_Oil' ? 'Oil_Extractor' : 'Miner',
           nodes: list, node_shards: Object.fromEntries(list.map(id => [id, sh[id] || 0])) })),
         ...Object.entries(wells).map(([w, x]) => ({ resource: x.resource, extractor: 'Resource_Well', nodes: x.nodes, shards: sh[w] || 0 })),
+        ...newPins.map(p => ({ resource: 'Water', extractor: 'Water_Extractor', count: p.count, shards: p.shards || 0, at: [p.x, p.y] })),
       ].sort((a, b) => itemName(a.resource).localeCompare(itemName(b.resource)));
+      if (geysers.length) rows.push({ resource: 'Geyser', extractor: GEO, nodes: geysers });
       NODES = [...rows, ...kept];
       syncSupply(); renderNodes();
     },
@@ -401,6 +488,7 @@ function renderFrom(focus = -1) {
   if (CUT.length) {
     c.insertAdjacentHTML('beforeend', `<p class="n-hint n-warn">Saved with less than asked — already taken: ${
       CUT.map(x => x.kind === 'node' ? `a ${itemName(x.item || '')} node (mined by ${facName(x.factory)})`
+        : x.kind === 'shards' || x.kind === 'sloops' ? `${x.kind === 'shards' ? 'power shards' : 'somersloops'} ${x.asked} → ${x.rate} (${x.free} free)`
         : `${itemName(x.item)}${x.kind === 'storage' ? ' to storage' : ` from ${facName(x.factory)}`} ${fmt(x.asked)} → ${fmt(x.rate)}`).join('; ')}.</p>`);
   }
   if (OUTPUTS && !madeItems().length && !FROM.length)
@@ -576,12 +664,17 @@ function renderSentOut() {
   const made = ownMade();
   const unmet = RESULT?.owed_unmet || {};
   const items = Object.keys(out).sort((a, b) => itemName(a).localeCompare(itemName(b)));
-  el.innerHTML = items.length ? `<div class="n-sent-t">Sent out <span>— solving makes at least this</span></div>` + items.map(it => {
+  const takers = new Set(Object.values(OUTPUTS?.claims[ownKey()] || {}).flatMap(by => Object.keys(by)).filter(k => k !== STORAGE && k !== ownKey()));
+  const again = takers.size && OUTPUTS?.factories.some(f => f.key === ownKey())
+    ? `<button class="bsm" id="chain-down" title="Solve this factory, then everything that takes from it, in order">↻ Re-solve this and the ${takers.size} that take from it</button>` : '';
+  el.innerHTML = (items.length ? `<div class="n-sent-t">Sent out <span>— solving makes at least this</span></div>` + items.map(it => {
     const total = out[it].reduce((s, [, v]) => s + v, 0);
     const short = unmet[it] ?? (made[it] != null ? total - made[it] : 0);
     return `<div class="n-sent ${short > 1e-3 ? 'n-warn' : ''}"><span>${itemName(it)} <b>${fmt(total)}</b></span>
       <span>${out[it].map(([n, v]) => `${n} ${fmt(v)}`).join(' · ')}${short > 1e-3 ? ` — ${fmt(short)} short` : ''}</span></div>`;
-  }).join('') : '';
+  }).join('') : '') + again + '<div id="chain-side"></div>';
+  $('chain-down')?.addEventListener('click', () =>
+    document.dispatchEvent(new CustomEvent('resolve-chain', { detail: { keys: [ownKey()] } })));
 }
 
 // The server capped some claims on save (another factory got there first)

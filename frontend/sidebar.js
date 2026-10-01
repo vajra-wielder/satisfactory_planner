@@ -12,7 +12,7 @@
  * always have a single, traceable update path.
  */
 
-import { SC, ALL_ITEMS, itemName, setScenario } from './state.js';
+import { SC, ALL_ITEMS, itemName, setScenario, PROGRESS } from './state.js';
 import { loadAllKv, syncAllKv }                  from './kv-panel.js';
 import { loadSupply, syncSupply }                from './supply-panel.js';
 import { renderMachines, updMachBadge,
@@ -242,6 +242,8 @@ export function readUI() {
     machines_first:         !!document.getElementById('ssc-machines-first')?.classList.contains('on'),
     sloop_search:           document.querySelector('#sl-mode button.on')?.dataset.mode || 'dive',
   });
+
+  SC.enabled_machines = [...(PROGRESS.machines || [])];   // shared, for every factory
 
   // Flush all KV panels into SC (each panel writes its own SC field)
   syncAllKv();

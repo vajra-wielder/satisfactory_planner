@@ -20,7 +20,8 @@ crosses each route, in three stages, each locked before the next:
 
 What a factory declared as supplied but isn't mined (an import standing in for
 another factory) has to come over a route — unless no factory in the network
-can make it, then it stays an outside supply.
+can make it, then it stays an outside supply. A factory's own goals are made in
+it: they're never shipped to it.
 
 Headroom, per factory with a goal: the most of it the network could make with
 every other factory's outputs held, less what it makes now — what the
@@ -92,7 +93,10 @@ class _Net:
                 have = {it for r in allowed[src].values() for it in r.outputs} | \
                        set(by[src]["scenario"].available_resources)
                 use = {it for r in allowed[dst].values() for it in r.inputs} | set(by[dst]["held"])
-                for it in sorted(have & use):
+                # a factory's goals are made in it: never shipped to it from another
+                dsc = by[dst]["scenario"]
+                own_goals = set(dsc.objective) | set(dsc.must_produce) | set(dsc.min_produce)
+                for it in sorted((have & use) - own_goals):
                     c = _unit_cost(it, rt, belt, pipe)
                     if c is not None:
                         arcs.append((ri, src, dst, it, s.NumVar(0, inf, ""), c))

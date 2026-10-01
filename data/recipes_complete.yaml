@@ -120,6 +120,27 @@ machine_meta:
       Supercomputer: 10
       Cable: 200
       Alclad_Aluminum_Sheet: 100
+  Coal_Generator:
+    # size from the 1.0 build footprint (approximate height)
+    size_m: [10, 26, 36]
+    # A generator: 75 MW at 100%, burning 4,500 MJ of fuel a minute.
+    base_power_mw: -75.0
+    sloop_slots: 0
+    build_cost:
+      Reinforced_Iron_Plate: 20
+      Rotor: 10
+      Cable: 30
+  Fuel_Generator:
+    size_m: [20, 20, 27]
+    # A generator: 250 MW at 100%, burning 15,000 MJ of fuel a minute.
+    base_power_mw: -250.0
+    sloop_slots: 0
+    build_cost:
+      Motor: 15
+      Encased_Industrial_Beam: 15
+      Copper_Sheet: 30
+      Rubber: 50
+      Quickwire: 50
 recipes:
   Iron_Plate:
     display: Iron Plate
@@ -2760,6 +2781,7 @@ recipes:
       Water: 240.0
     outputs:
       Nuclear_Waste: 10.0
+      Power: 2500.0
   Plutonium_Power:
     display: Nuclear Power (Plutonium)
     machine: Nuclear_Power_Plant
@@ -2769,6 +2791,7 @@ recipes:
       Water: 240.0
     outputs:
       Plutonium_Waste: 1.0
+      Power: 2500.0
   Ficsonium_Power:
     display: Nuclear Power (Ficsonium)
     machine: Nuclear_Power_Plant
@@ -2776,7 +2799,75 @@ recipes:
     inputs:
       Ficsonium_Fuel_Rod: 1.0
       Water: 240.0
-    outputs: {}
+    outputs:
+      Power: 2500.0
+  Coal_Coal_Generator:
+    display: Coal Generator (Coal)
+    machine: Coal_Generator
+    alternate: false
+    inputs:
+      Coal: 15.0
+      Water: 45.0
+    outputs:
+      Power: 75.0
+  Compacted_Coal_Coal_Generator:
+    display: Coal Generator (Compacted Coal)
+    machine: Coal_Generator
+    alternate: false
+    inputs:
+      Compacted_Coal: 7.142857
+      Water: 45.0
+    outputs:
+      Power: 75.0
+  Petroleum_Coke_Coal_Generator:
+    display: Coal Generator (Petroleum Coke)
+    machine: Coal_Generator
+    alternate: false
+    inputs:
+      Petroleum_Coke: 25.0
+      Water: 45.0
+    outputs:
+      Power: 75.0
+  Fuel_Fuel_Generator:
+    display: Fuel Generator (Fuel)
+    machine: Fuel_Generator
+    alternate: false
+    inputs:
+      Fuel: 20.0
+    outputs:
+      Power: 250.0
+  Turbofuel_Fuel_Generator:
+    display: Fuel Generator (Turbofuel)
+    machine: Fuel_Generator
+    alternate: false
+    inputs:
+      Turbofuel: 7.5
+    outputs:
+      Power: 250.0
+  Rocket_Fuel_Fuel_Generator:
+    display: Fuel Generator (Rocket Fuel)
+    machine: Fuel_Generator
+    alternate: false
+    inputs:
+      Rocket_Fuel: 4.166667
+    outputs:
+      Power: 250.0
+  Ionized_Fuel_Fuel_Generator:
+    display: Fuel Generator (Ionized Fuel)
+    machine: Fuel_Generator
+    alternate: false
+    inputs:
+      Ionized_Fuel: 3.0
+    outputs:
+      Power: 250.0
+  Liquid_Biofuel_Fuel_Generator:
+    display: Fuel Generator (Liquid Biofuel)
+    machine: Fuel_Generator
+    alternate: false
+    inputs:
+      Liquid_Biofuel: 20.0
+    outputs:
+      Power: 250.0
   Alt_Charcoal:
     display: 'Alternate: Charcoal'
     machine: Constructor

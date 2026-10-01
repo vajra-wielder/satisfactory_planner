@@ -35,7 +35,7 @@ function _toggleUnlocked(key) {
 export function renderMachines() {
   const p  = document.getElementById('machpanel');
   p.innerHTML = '';
-  const en = new Set(SC.enabled_machines.length ? SC.enabled_machines : ALL_MACHINES);
+  const en = new Set(PROGRESS.machines || ALL_MACHINES);
 
   MTIERS.forEach(tier => {
     const wrap = document.createElement('div');
@@ -108,18 +108,19 @@ function renderMinerUnlock(p) {
 }
 
 // Persist enabled set back into SC and refresh
+// Machines are unlocked once, for every factory
 function _saveEnabledMachines(en) {
-  // Empty array = "all enabled" (server default), avoids bloating saved scenarios
-  SC.enabled_machines = [...en].length === ALL_MACHINES.length ? [] : [...en];
+  PROGRESS.machines = [...en].sort();
+  SC.enabled_machines = [...PROGRESS.machines];
+  saveProgress({ machines: PROGRESS.machines }).catch(() => {});
   renderMachines();
   updMachBadge();
 }
 
 export function updMachBadge() {
   const el = document.getElementById('mb');
-  if (el) el.textContent = SC.enabled_machines.length
-    ? `${SC.enabled_machines.length}/${ALL_MACHINES.length}`
-    : 'All';
+  const n = (PROGRESS.machines || ALL_MACHINES).filter(m => ALL_MACHINES.includes(m)).length;
+  if (el) el.textContent = n === ALL_MACHINES.length ? 'All' : `${n}/${ALL_MACHINES.length}`;
 }
 
 // ══════════════════════════════════════════════════════════

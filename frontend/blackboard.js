@@ -14,7 +14,10 @@
  * machines, a balancer only where an exact rate is needed (splits.js).
  */
 
-import { itemName, RECIPES } from './state.js';
+import { itemName, RECIPES, PROGRESS } from './state.js';
+import { saveProgress, fetchFactoryOutputs } from './api.js';
+import { mountMapView } from './map-picker.js';
+import { onChain, chainHTML } from './chain.js';
 import { recommend, tierFor } from './splits.js';
 
 let DATA = null;          // { factories, fluids, transport }
@@ -36,8 +39,9 @@ export function initBlackboard({ onOpenFactory: open }) {
   $('btn-close-bb').addEventListener('click', closeBlackboard);
   document.querySelectorAll('#bb-tabs button').forEach(b =>
     b.addEventListener('click', () => showTab(b.dataset.tab)));
-  $('bb-belt').addEventListener('change', e => { LAYOUT.belt = e.target.value; renderSplit(); save(); });
-  $('bb-pipe').addEventListener('change', e => { LAYOUT.pipe = e.target.value; save(); });
+  // Belt and pipe tiers are unlocked once, for every factory
+  $('bb-belt').addEventListener('change', e => { LAYOUT.belt = PROGRESS.belt = e.target.value; saveProgress({ belt: PROGRESS.belt }); NET = null; renderSplit(); });
+  $('bb-pipe').addEventListener('change', e => { LAYOUT.pipe = PROGRESS.pipe = e.target.value; saveProgress({ pipe: PROGRESS.pipe }); NET = null; });
   $('bb-plan').addEventListener('click', planNetwork);
   document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
     FLOW_SRC = b.dataset.src;
@@ -57,8 +61,9 @@ export function openBlackboard() {
   $('bb-modal').classList.add('show');
   fetch('/api/blackboard').then(r => r.json()).then(d => {
     DATA = d;
+    BUILD = null;
     FLUIDS = new Set(d.fluids || []);
-    LAYOUT = { positions: {}, routes: [], belt: 'Mk5', pipe: 'Mk2', ...(d.layout || {}) };
+    LAYOUT = { positions: {}, routes: [], ...(d.layout || {}), belt: PROGRESS.belt, pipe: PROGRESS.pipe };
     LAYOUT.routes = (LAYOUT.routes || []).filter(r => factory(r.a) && factory(r.b));
     // A factory's "From factories" imports join it to where they come from
     let added = false;
@@ -73,8 +78,7 @@ export function openBlackboard() {
     fillTierSelect('bb-pipe', d.transport.pipes, LAYOUT.pipe);
     renderFactories();
     renderSplit();
-    if (TAB === 'flows') renderFlows();
-    if (TAB === 'storage') renderStorage();
+    if (TAB !== 'factories' && TAB !== 'splits') showTab(TAB);
   });
 }
 
@@ -84,8 +88,11 @@ let TAB = 'factories';
 function showTab(tab) {
   TAB = tab;
   document.querySelectorAll('#bb-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  ['factories', 'flows', 'storage', 'splits'].forEach(t => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
+  ['factories', 'flows', 'storage', 'power', 'build', 'map', 'splits'].forEach(t => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
   if (tab === 'factories') drawRoutes();
+  if (tab === 'power') renderPower();
+  if (tab === 'build') renderBuild();
+  if (tab === 'map') renderMapTab();
   if (tab === 'flows') renderFlows();
   if (tab === 'storage') renderStorage();
 }
@@ -276,7 +283,9 @@ function renderNet() {
   let h = `<div class="bb-net-t">Network plan <span class="bb-x" id="bb-net-close" title="Close">✕</span></div>
     <p class="bb-hint">Fractional machines — a planning view. Solve each factory on its own for its exact build.</p>`;
   if (NET.unsolved?.length) h += `<p class="bb-warn">Not solved, so held at their declared outputs: ${NET.unsolved.join(', ')}.</p>`;
-  h += `<div class="bb-kpi"><b>${fmt(NET.throughput)}/min</b> moving between factories · <b>${fmt(NET.stacks)}</b> stacks/min</div>`;
+  h += `<div class="bb-kpi"><b>${fmt(NET.throughput)}/min</b> moving between factories · <b>${fmt(NET.stacks)}</b> stacks/min</div>
+    <button class="bsm act" id="bb-apply" style="margin-top:6px" title="Write this plan into the factories, then re-solve them in order">Apply to the factories…</button>
+    <div id="bb-chain"></div>`;
   NET.routes.forEach(rt => {
     h += `<div class="bb-net-s">${name(rt.a)} ⇄ ${name(rt.b)} · ${MODES[rt.mode]}${rt.mode === 'belt' ? '' : `, ${rt.trip_min} min trip`}
       — <b>${fmt(rt.load)} ${LOAD_UNIT[rt.mode]}</b></div>`;
@@ -305,6 +314,7 @@ function renderNet() {
   });
   panel.innerHTML = h;
   $('bb-net-close').addEventListener('click', () => { panel.style.display = 'none'; });
+  $('bb-apply').addEventListener('click', applyNet);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -480,4 +490,137 @@ function renderStorage() {
     </table>
     <p class="bb-hint" style="margin-top:10px">Stored items are held out of every factory's "From factories" — solving a factory makes at least what it stores.</p>`;
   el.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
+}
+
+// ══════════════════════════════════════════════════════════
+// POWER — what each factory draws and makes, and the grid
+// ══════════════════════════════════════════════════════════
+
+function renderPower() {
+  const el = $('bb-power');
+  if (!DATA) return;
+  let made = 0, used = 0;
+  const rows = DATA.factories.map(f => {
+    const p = f.power || {};
+    const draw = (p.machines || 0) + (p.extractors || 0), make = (p.generators || 0) + (p.geothermal || 0);
+    used += draw; made += make;
+    // the plan's own net against its cap (the cap counts machines and generators; geysers raise it)
+    const net = (p.machines || 0) - (p.generators || 0);
+    const capped = p.cap != null && p.solved && net >= 0.99 * (p.cap + (p.geothermal || 0)) - 1e-6;
+    const plan = v => (p.solved ? fmt(v || 0) : '—');   // machines and generators need a current plan
+    return `<tr><td><span class="bb-name" data-key="${f.key}" style="font-weight:400">${f.name}</span>${p.solved ? '' : ' <span class="bb-hint">(not solved)</span>'}</td>
+      <td class="num">${plan(p.machines)}</td><td class="num">${fmt(p.extractors || 0)}</td>
+      <td class="num">${plan(p.generators)}</td><td class="num">${fmt(p.geothermal || 0)}</td>
+      <td class="num ${make - draw < -1e-6 ? 'bb-warn' : 'bb-ok'}">${make - draw >= 0 ? '+' : ''}${fmt(make - draw)}</td>
+      <td class="num">${p.cap == null ? '—' : fmt(p.cap)}</td>
+      <td>${capped ? '<span class="bb-warn" title="Its plan uses all its power cap: more power would let it make more">cap limits it</span>' : ''}</td></tr>`;
+  }).join('');
+  const bal = made - used;
+  el.innerHTML = `<div class="bb-kpi" style="margin-bottom:10px">Grid: <b>${fmt(made)} MW</b> made · <b>${fmt(used)} MW</b> used ·
+      <span class="${bal < 0 ? 'bb-warn' : 'bb-ok'}"><b>${bal >= 0 ? fmt(bal) + ' MW spare' : fmt(-bal) + ' MW short'}</b></span></div>
+    <table class="st-tab"><tr><th>Factory</th><th style="text-align:right">Machines</th><th style="text-align:right">Extractors</th>
+      <th style="text-align:right">Generators</th><th style="text-align:right">Geothermal</th><th style="text-align:right">Net MW</th><th style="text-align:right">Cap</th><th></th></tr>${rows}</table>
+    <p class="bb-hint" style="margin-top:10px">Machines and generators come from each factory's plan; extractors and geothermal from its nodes.
+      Geysers swing between half and one and a half times their average — the average is counted. A factory's power cap is what the grid gives it;
+      its own generators and geysers add to it.</p>`;
+  el.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
+}
+
+// ══════════════════════════════════════════════════════════
+// BUILD LIST — machines and materials to have ready
+// ══════════════════════════════════════════════════════════
+
+let BUILD = null, BUILD_PICK = null;
+const machName = m => m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1');
+
+function renderBuild() {
+  const el = $('bb-build');
+  if (!BUILD) {
+    el.innerHTML = '<p class="bb-hint">Loading…</p>';
+    fetch('/api/build-list').then(r => r.json()).then(d => { BUILD = d.factories; renderBuild(); });
+    return;
+  }
+  BUILD_PICK = BUILD_PICK || new Set(BUILD.filter(f => f.solved).map(f => f.key));
+  const pick = BUILD.filter(f => BUILD_PICK.has(f.key));
+  const sum = field => {
+    const out = {};
+    pick.forEach(f => Object.entries(f[field] || {}).forEach(([k, v]) => {
+      (out[k] = out[k] || { total: 0, by: [] }).total += v;
+      out[k].by.push(`${f.name} ${fmt(v)}`);
+    }));
+    return Object.entries(out).sort((a, b) => b[1].total - a[1].total);
+  };
+  const machines = [...sum('machines'), ...sum('extractors')];
+  const mats = sum('materials');
+  const shards = pick.reduce((s, f) => s + f.shards, 0), sloops = pick.reduce((s, f) => s + f.sloops, 0);
+  const table = (rows, name) => rows.map(([k, x]) => `<tr><td>${name(k)}</td><td class="num">${fmt(x.total)}</td>
+    <td class="st-by">${pick.length > 1 ? x.by.join(' · ') : ''}</td></tr>`).join('');
+  el.innerHTML = `
+    <div class="bl-pick">${BUILD.map(f => `<label title="${f.solved ? (f.stale ? 'Its last plan — it changed since' : '') : 'Not solved: nothing to count yet'}">
+      <input type="checkbox" data-key="${f.key}" ${BUILD_PICK.has(f.key) ? 'checked' : ''} ${f.solved ? '' : 'disabled'}/> ${f.name}${f.stale ? ' <span class="bb-hint">(old plan)</span>' : ''}</label>`).join('')}
+      <button class="bsm" id="bl-copy" title="Copy the list as text">Copy</button></div>
+    <div class="bl-cols">
+      <table class="st-tab"><tr><th>Machines</th><th style="text-align:right">Count</th><th></th></tr>${table(machines, machName)}
+        ${shards ? `<tr><td>💎 Power shards</td><td class="num">${shards}</td><td></td></tr>` : ''}
+        ${sloops ? `<tr><td>🔮 Somersloops</td><td class="num">${sloops}</td><td></td></tr>` : ''}</table>
+      <table class="st-tab"><tr><th>Materials</th><th style="text-align:right">Amount</th><th></th></tr>${table(mats, itemName)}</table>
+    </div>
+    <p class="bb-hint" style="margin-top:10px">Every machine its plan builds, with its extractors and generators — belts, pipes, splitters, stations and foundations aren't counted.</p>`;
+  el.querySelectorAll('.bl-pick input').forEach(c => c.addEventListener('change', () => {
+    c.checked ? BUILD_PICK.add(c.dataset.key) : BUILD_PICK.delete(c.dataset.key);
+    renderBuild();
+  }));
+  $('bl-copy').addEventListener('click', () => {
+    const lines = [`Build list: ${pick.map(f => f.name).join(', ')}`, '', 'Machines',
+      ...machines.map(([k, x]) => `  ${machName(k)}: ${fmt(x.total)}`),
+      ...(shards ? [`  Power shards: ${shards}`] : []), ...(sloops ? [`  Somersloops: ${sloops}`] : []),
+      '', 'Materials', ...mats.map(([k, x]) => `  ${itemName(k)}: ${fmt(x.total)}`)];
+    navigator.clipboard?.writeText(lines.join('\n'));
+    $('bl-copy').textContent = 'Copied';
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// MAP — every factory's nodes, what your save mines, what's free
+// ══════════════════════════════════════════════════════════
+
+function renderMapTab() {
+  const el = $('bb-map');
+  el.innerHTML = '<p class="bb-hint" style="padding:14px">Loading the map…</p>';
+  fetchFactoryOutputs().then(o => mountMapView(el, {
+    owners: o.nodes || {}, factories: o.factories.map(f => ({ key: f.key, name: f.name })),
+    pins: o.pins || [], onOpen: onOpenFactory,
+  }));
+}
+
+// Write the plan into the factories: what each takes from the others becomes
+// its imports, the alternates it now runs are switched on; then re-solve them
+// in order, so each gets its exact build.
+function applyNet() {
+  const name = k => factory(k)?.name || k;
+  const flows = NET.routes.flatMap(rt => rt.items.map(i => ({ from: i.from, to: i.to, item: i.item, rate: i.rate })));
+  const alts = {};
+  NET.factories.forEach(f => {
+    const a = Object.keys(f.recipes.added).filter(k => RECIPES[k]?.alternate);
+    if (a.length) alts[f.key] = a;
+  });
+  const lines = [];
+  flows.forEach(f => lines.push(`${name(f.to)} takes ${fmt(f.rate)}/min ${itemName(f.item)} from ${name(f.from)}`));
+  Object.entries(alts).forEach(([k, a]) => lines.push(`${name(k)} switches on ${a.map(recipeName).join(', ')}`));
+  if (!lines.length) { alert('Nothing to change.'); return; }
+  if (!confirm(`Apply the network plan?\n\n${lines.join('\n')}\n\nEach factory's imports from the others are replaced by these; then they're re-solved, sources first. Each save keeps the version it replaces (Saved → ⟲).`)) return;
+  fetch('/api/apply-network', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flows, alts }) })
+    .then(r => r.json()).then(d => {
+      if (d.error) { $('bb-chain').innerHTML = `<p class="bb-warn">${d.error}</p>`; return; }
+      document.dispatchEvent(new CustomEvent('resolve-chain-watch'));
+      let seen = false;     // this run, not an earlier one
+      const off = onChain(st => {
+        const el = $('bb-chain');
+        if (!el) { off(); return; }
+        if (st.running) seen = true;
+        if (!seen) return;
+        el.innerHTML = chainHTML(st);
+        if (!st.running) { off(); openBlackboard(); }
+      });
+    });
 }

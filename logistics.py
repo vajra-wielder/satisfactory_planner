@@ -71,3 +71,14 @@ def made(result: dict) -> Dict[str, float]:
         if v > 1e-4 and k not in out:
             out[k] = v
     return out
+
+
+def drawn(result: dict) -> Dict[str, float]:
+    """What a plan uses of each item net of what it makes, per minute (> 0 only)."""
+    out: Dict[str, float] = {}
+    for f in result.get("flows", []):
+        for it, q in (f.get("inputs") or {}).items():
+            out[it] = out.get(it, 0.0) + q
+        for it, q in (f.get("outputs") or {}).items():
+            out[it] = out.get(it, 0.0) - q
+    return {k: v for k, v in out.items() if v > 1e-6}

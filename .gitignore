@@ -18,3 +18,6 @@ scenarios/.results/
 data/blackboard.yaml
 # What you have unlocked (miner tier) — yours, like the board
 data/progress.yaml
+data/save_nodes.json
+data/map_image.*
+scenarios/.history/

@@ -54,7 +54,8 @@ export function setRecipes(obj) { RECIPES = obj; }
 
 // Extractors (rate per node at 100%, normal purity) and what's unlocked — from /api/boot
 export let EXTRACTORS = {}, PURITY = {}, MINER_TIERS = {}, MAX_SHARDS = 3;
-export const PROGRESS = { miner: 'Mk3' };   // for every factory: miners run at this tier
+// Shared unlocks, for every factory: miner tier, machines, belt/pipe tier, shards/sloops owned
+export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2', shards: null, sloops: null };
 export function setExtractors(b) {
   EXTRACTORS = b.extractors || {}; PURITY = b.purity || {};
   MINER_TIERS = b.miner_tiers || {}; MAX_SHARDS = b.max_shards ?? 3;
@@ -68,7 +69,7 @@ export const MCOL = {
   Assembler: '#7f6fdd', Manufacturer: '#c07d10', Refinery: '#5a9e22',
   Blender: '#2b8bd4', Particle_Accelerator: '#e040fb',
   Quantum_Encoder: '#f472b6', Converter: '#34d399', Packager: '#94a3b8',
-  Nuclear_Power_Plant: '#84cc16',
+  Nuclear_Power_Plant: '#84cc16', Coal_Generator: '#a16207', Fuel_Generator: '#dc2626',
 };
 export const mCol = (m) => MCOL[m] || '#6b7280';
 
@@ -77,7 +78,7 @@ export const MABBR = {
   Manufacturer: 'MFR', Refinery: 'REF', Blender: 'BLD', Miner: 'MNR',
   Water_Extractor: 'H₂O', Oil_Extractor: 'OIL', Particle_Accelerator: 'PA',
   Quantum_Encoder: 'QE', Converter: 'CNV', Packager: 'PKG',
-  Nuclear_Power_Plant: 'NUC',
+  Nuclear_Power_Plant: 'NUC', Coal_Generator: 'CGN', Fuel_Generator: 'FGN',
 };
 
 // Item display name helper — populated from /api/item-display on boot
@@ -117,6 +118,6 @@ export const MTIERS = [
   { label: 'Tier 3-4 · Mid',      ms: ['Foundry', 'Manufacturer', 'Refinery'] },
   { label: 'Tier 5-7 · Advanced', ms: ['Blender', 'Packager'] },
   { label: 'Phase 4-5 · Endgame', ms: ['Particle_Accelerator', 'Quantum_Encoder', 'Converter'] },
-  { label: 'Power',               ms: ['Nuclear_Power_Plant'] },
+  { label: 'Power',               ms: ['Coal_Generator', 'Fuel_Generator', 'Nuclear_Power_Plant'] },
 ];
 export const ALL_MACHINES = MTIERS.flatMap(t => t.ms);

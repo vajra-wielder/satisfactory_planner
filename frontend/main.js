@@ -10,7 +10,7 @@
  */
 
 import {
-  SC, RESULT, RECIPES,
+  SC, RESULT, RECIPES, PROGRESS,
   setResult, resetSC, setAllItems, setRecipes, buildItemDisplay, setExtractors,
   nextSolveSeq, solveSeq,
 } from './state.js';
@@ -32,6 +32,7 @@ import {
 // Panels are imported here only so their modules are loaded eagerly;
 // all interaction goes through sidebar.js re-exports above.
 
+import { startChain, watchChain, onChain, chainHTML } from './chain.js';
 import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards,
          refreshOutputs, applyCut, onResult } from './supply-panel.js';
 
@@ -406,6 +407,11 @@ function handleSave() {
   saveScenario(key, body)
     .then(res => {
       LOADED_KEY = key; LOADED_NAME = SC.name;
+      if (res?.cut?.some(c => c.kind === 'shards' || c.kind === 'sloops')) {   // the shared pool ran short
+        SC.power_shards_available = res.power_shards_available ?? SC.power_shards_available;
+        SC.somersloops_available = res.somersloops_available ?? SC.somersloops_available;
+        fillUI({ skipMachines: true });
+      }
       if (res?.cut?.length) applyCut(res);   // over what the sources have left
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
@@ -439,6 +445,7 @@ function openScenario(key) {
   return fetchScenario(key).then(data => {
     const { _last_solve: last, pinboard: _oldPinboard, ...scenario } = data;
     LOADED_KEY = key; LOADED_NAME = scenario.name;
+    scenario.enabled_machines = [...(PROGRESS.machines || [])];   // shared
     Object.assign(SC, scenario);
     if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
     SC.resource_nodes = scenario.resource_nodes ?? null;              // null: rates from before nodes
@@ -462,7 +469,13 @@ function openScenario(key) {
 function loadSaved() {
   fetchScenarios()
     .then(saved => {
-      renderSaved(saved, openScenario, key => deleteScenario(key).then(loadSaved));
+      renderSaved(saved, openScenario, key => deleteScenario(key).then(loadSaved), (key, v) =>
+        fetch(`/api/history/${key}/${v}/restore`, { method: 'POST' }).then(() => {
+          loadSaved(); refreshOutputs();
+          if (key === LOADED_KEY) openScenario(key);
+        }));
+      document.getElementById('sv-chain')?.addEventListener('click', () => startChain());
+      watchChain();
     })
     .catch(() => {
       const el = document.getElementById('savedlist');
@@ -470,6 +483,21 @@ function loadSaved() {
     });
 }
 
+
+// Re-solving in order: progress in the Saved tab and the sidebar; when it
+// ends, the lists refresh and the open factory shows its new plan
+let _chainWasRunning = false;
+onChain(st => {
+  const html = chainHTML(st);
+  ['sv-chain-box', 'chain-side'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = html; });
+  if (_chainWasRunning && !st.running) {
+    loadSaved(); refreshOutputs();
+    if (LOADED_KEY && st.steps.some(x => x.key === LOADED_KEY)) openScenario(LOADED_KEY);
+  }
+  _chainWasRunning = st.running;
+});
+document.addEventListener('resolve-chain', e => startChain(e.detail?.keys || null));
+document.addEventListener('resolve-chain-watch', () => watchChain());
 
 // ── DOM wiring ────────────────────────────────────────────────────────────────
 
