@@ -582,7 +582,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 #bb-board { position: relative; flex: 1; overflow: auto; user-select: none; background:
   radial-gradient(circle, var(--b) 1px, transparent 1px) 0 0 / 22px 22px; }
 #bb-links { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
-.bb-link { fill: none; stroke: var(--acc); stroke-width: 2; opacity: .8; }
+.bb-link { fill: none; stroke: var(--acc); stroke-width: 2.5; opacity: .7; }
 .bb-link.fluid { stroke: #38bdf8; }
 .bb-link-tmp { fill: none; stroke: var(--t2); stroke-width: 2; stroke-dasharray: 5 4; }
 .bb-link-label { position: absolute; transform: translate(-50%, -50%); font-size: 10px; color: var(--t2);
@@ -603,11 +603,25 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bb-row.ok .bb-item { color: var(--ok); }
 .bb-row.short .bb-item { color: var(--warn); }
 .bb-rate { font-family: var(--mono); color: var(--t3); }
-.bb-port { position: absolute; top: 50%; width: 9px; height: 9px; margin-top: -5px; border-radius: 50%;
-  background: var(--b2); border: 1px solid var(--t3); }
-.bb-port.in { left: -5px; }
-.bb-port.out { right: -5px; cursor: crosshair; }
-.bb-port.out:hover { background: var(--acc); }
+.bb-route-h { margin-left: auto; cursor: crosshair; color: var(--t3); font-size: 13px; padding: 0 2px; }
+.bb-route-h:hover { color: var(--acc); }
+.bb-head-row .bb-tag + .bb-route-h { margin-left: 4px; }
+.bb-mode, .bb-trip { font-size: 10px !important; width: auto !important; padding: 1px 3px !important; }
+.bb-trip { width: 46px !important; }
+.bb-route-load { margin-top: 2px; color: var(--acc); font-family: var(--mono); }
+#bb-net { width: 380px; flex-shrink: 0; overflow: auto; border-left: 1px solid var(--b); padding: 10px 12px;
+  font-size: 11px; color: var(--t2); line-height: 1.55; background: var(--p1, #0e1117); }
+.bb-net-t { font-size: 12px; font-weight: 600; color: var(--acc); display: flex; justify-content: space-between; }
+.bb-net-s { margin-top: 10px; font-weight: 600; color: var(--t); }
+.bb-net-b { color: var(--t2); margin-top: 2px; }
+.bb-kpi { margin-top: 6px; font-family: var(--mono); color: var(--t2); }
+.bb-tab { width: 100%; border-collapse: collapse; margin-top: 3px; font-size: 10.5px; }
+.bb-tab th { text-align: right; color: var(--t3); font-weight: 400; }
+.bb-tab td { padding: 1px 0; }
+.bb-tab td + td, .bb-tab th + th { text-align: right; font-family: var(--mono); padding-left: 6px; }
+.bb-ok { color: var(--ok); }
+.bb-out-row label { display: flex; align-items: center; gap: 3px; font-size: 10px; white-space: nowrap; }
+.bb-out-row label input { width: auto; }
 #bb-splits { overflow: auto; padding: 14px; gap: 14px; flex-direction: row; align-items: flex-start; }
 .bb-form { width: 240px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; font-size: 11px; color: var(--t3); }
 .bb-out-row { display: flex; gap: 4px; }
@@ -868,10 +882,13 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
       <div class="bb-bar">
         Belt <select id="bb-belt"></select>
         Pipe <select id="bb-pipe"></select>
-        <button id="bb-autolink" class="bsm">Link matching items</button>
-        <span>Drag an export's dot onto another factory's import · click a factory's name to open it</span>
+        <button id="bb-plan" class="bsm" style="border-color:var(--acc);color:var(--acc)">Plan network</button>
+        <span>Drag a factory's ⇄ onto another to add a route · click a factory's name to open it</span>
       </div>
-      <div id="bb-board"><svg id="bb-links"></svg></div>
+      <div style="position:relative;flex:1;display:flex;min-height:0">
+        <div id="bb-board"><svg id="bb-links"></svg></div>
+        <div id="bb-net" style="display:none"></div>
+      </div>
     </div>
     <div id="bb-splits" class="bb-pane" style="display:none">
       <div class="bb-form">

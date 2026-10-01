@@ -27,12 +27,15 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 
 ### Blackboard (logistics)
 - Between factories: every saved scenario is a black box showing only what it
-  imports and exports (from its last plan); link exports to imports and see each
-  link's rate and the belts or pipes it takes at your tiers. Click a factory to
-  open it in the solver.
-- Inside a factory: exact belt splits (e.g. 400 → 395 + 5, or 5 : 3) as a
-  splitter tree with loop-back — splitter and merger counts, each step, belt
-  loads — or a manifold when the outputs only take their share.
+  imports and exports (from its last plan). Join factories with routes (belt,
+  train, truck or drone, with trip times) and plan the network: which recipe
+  runs where, what crosses each route (items, stacks and cars / drones / lanes),
+  what each factory draws, and how much more each goal the leftovers could make.
+  Least resources first, then least transport, then least change from each
+  factory's own plan, then least space. Click a factory to open it.
+- Inside a factory: belt splits with the fewest structures — a manifold for
+  outputs that feed machines, an exact splitter tree with loop-back only where
+  an output needs an exact rate.
 
 ### Recipe Management
 - Recipe data checked against the 1.0 game files (rates, machines, build costs,

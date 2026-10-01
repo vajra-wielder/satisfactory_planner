@@ -112,3 +112,42 @@ export function tierFor(rate, tiers) {
   const t = Object.entries(tiers).sort((x, y) => x[1] - y[1]).find(([, c]) => c >= rate - 1e-9);
   return t ? t[0] : null;
 }
+
+/**
+ * The design with the fewest structures that still gives every output its rate.
+ * outputs: [{ rate, machines }] — machines: true when the output feeds machines
+ * that take only their share (they limit themselves), false when it must get an
+ * exact rate on its own (a belt to elsewhere, a train station, storage).
+ *
+ * Machine-fed outputs are manifolded off the belt first: each takes its share
+ * and backs up. What stays on the main line is then exactly the input minus
+ * their demand — so one exact output needs no balancer at all. A balancer is
+ * only built for two or more exact outputs, or one that doesn't take all that's
+ * left. Returns { manifold: [rates], mainLine, exact: exactSplit result | null,
+ * leftover, splitters, mergers, notes: [] } or null.
+ */
+export function recommend(input, outputs) {
+  const fed = outputs.filter(o => o.rate > 0 && o.machines).map(o => o.rate);
+  const exact = outputs.filter(o => o.rate > 0 && !o.machines).map(o => o.rate);
+  const need = fed.reduce((s, r) => s + r, 0) + exact.reduce((s, r) => s + r, 0);
+  if (!(input > 0) || !(fed.length + exact.length) || need > input + 1e-9) return null;
+  const main = input - fed.reduce((s, r) => s + r, 0);   // left on the main line after the manifold
+  const notes = [];
+  let ex = null, splitters = fed.length, mergers = 0, leftover = 0;
+  if (!exact.length) {
+    // nothing needs an exact share: the belt can end in the last machine branch
+    splitters = Math.max(0, fed.length - 1);
+    if (main > 1e-9) notes.push(`${+main.toFixed(3)}/min more than the machines take: the belt backs up and the supply slows to match.`);
+  } else if (exact.length === 1 && Math.abs(main - exact[0]) < 1e-9) {
+    notes.push('The main line after the manifold carries exactly the remaining output — no balancer needed.');
+  } else {
+    ex = exactSplit(main, exact);
+    if (!ex) return { manifold: fed, mainLine: main, exact: null, leftover: 0, splitters, mergers, notes,
+                      impractical: true };
+    splitters += ex.splitters;
+    mergers += ex.mergers;
+    leftover = ex.outputs.find(o => o.rest)?.rate || 0;
+    if (leftover) notes.push(`${+leftover.toFixed(3)}/min is left over — it leaves on its own belt (a sink, storage or overflow).`);
+  }
+  return { manifold: fed, mainLine: main, exact: ex, leftover, splitters, mergers, notes };
+}

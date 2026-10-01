@@ -26,6 +26,7 @@ from solver import (
     analyse,
 )
 import logistics
+import network
 
 ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
@@ -240,25 +241,54 @@ def _load_board() -> dict:
         return {}
 
 def _save_board(layout: dict) -> None:
-    keep = {k: layout[k] for k in ("positions", "links", "belt", "pipe") if k in layout}
+    keep = {k: layout[k] for k in ("positions", "routes", "belt", "pipe") if k in layout}
     BOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
     BOARD_PATH.write_text(yaml.safe_dump(keep, sort_keys=False), encoding="utf-8")
+
+def _factory_plan(key: str):
+    """(scenario data, its current cached plan or None) for a saved factory."""
+    p = SCENARIOS_DIR / f"{key}.yaml"
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    entry = _cache_read(_result_key(data.get("name", key)))
+    if entry and entry.get("result"):
+        try:
+            if entry.get("base_sig") == _signature(_build_scenario(data), entry.get("styles") or []):
+                return data, entry["result"]
+        except Exception:
+            pass
+    return data, None
+
+def _network_sites(keys) -> list:
+    """Each factory for network planning: its scenario, what its plan makes (held),
+    the recipes it runs, and what it draws from its supply."""
+    sites = []
+    for key in keys:
+        data, result = _factory_plan(key)
+        sc = _build_scenario(data)
+        held, own, drawn = {}, {}, {}
+        if result:
+            held = {k: v for k, v in (result.get("sink_nodes") or {}).items() if v > 1e-6}
+            for f in result.get("flows", []):
+                own[f["recipe_key"]] = own.get(f["recipe_key"], 0.0) + f["machines_float"]
+                for it, q in f["inputs"].items():
+                    drawn[it] = drawn.get(it, 0.0) + q
+                for it, q in f["outputs"].items():
+                    drawn[it] = drawn.get(it, 0.0) - q
+        else:
+            held = {**{k: float(v) for k, v in sc.min_produce.items()},
+                    **{k: float(v) for k, v in sc.must_produce.items()}}
+        sites.append({"key": key, "name": data.get("name", key), "scenario": sc, "held": held,
+                      "own": own, "own_draw": {k: v for k, v in drawn.items() if v > 1e-6},
+                      "solved": result is not None})
+    return sites
 
 def _blackboard_factories() -> list:
     out = []
     for p in sorted(SCENARIOS_DIR.glob("*.yaml")):
         try:
-            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            data, result = _factory_plan(p.stem)
         except Exception:
             continue
-        result = None
-        entry = _cache_read(_result_key(data.get("name", p.stem)))
-        if entry and entry.get("result"):
-            try:
-                if entry.get("base_sig") == _signature(_build_scenario(data), entry.get("styles") or []):
-                    result = entry["result"]
-            except Exception:
-                pass
         io = logistics.factory_io(data, result)
         out.append({"key": p.stem, "name": data.get("name", p.stem), **io})
     return out
@@ -558,6 +588,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_write(self):
         path = urlparse(self.path).path.rstrip("/")
+
+        if path == "/api/network":
+            b = self._read_json() or {}
+            routes = [r for r in (b.get("routes") or []) if r.get("a") and r.get("b")]
+            keys = sorted({k for r in routes for k in (r["a"], r["b"])})
+            try:
+                sites = _network_sites(keys)
+                out = network.plan_network(sites, routes, ALL_RECIPES,
+                                           b.get("belt") or "Mk5", b.get("pipe") or "Mk2")
+                out["unsolved"] = [s["name"] for s in sites if not s["solved"]]
+                self._json(200, out)
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._json(500, {"error": str(e)})
+            return
 
         if path == "/api/blackboard":
             data = self._read_json()
