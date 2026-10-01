@@ -33,6 +33,9 @@ export const deleteScenario   = (key)     => apiFetch(`/api/scenarios/${key}`, '
 // What every saved factory makes, and who already takes it (From factories)
 export const fetchFactoryOutputs = () => apiFetch('/api/factory-outputs');
 
+export const saveProgress = (p) => apiFetch('/api/progress', 'POST', p);
+export const fetchMapNodes = () => apiFetch('/api/map-nodes');
+
 // ── Solver (async job polling) ────────────────────────────
 // Server returns a job_id immediately; we poll until done or aborted.
 export async function solveScenario(payload, signal) {

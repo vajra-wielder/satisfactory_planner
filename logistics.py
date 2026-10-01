@@ -62,3 +62,12 @@ def factory_io(scenario: dict, result: Optional[dict]) -> dict:
                                            **(result.get("error_sinks") or {})}.items()
                if v > 1e-4 and k not in exports}
     return {"solved": True, "imports": imports, "exports": exports, "surplus": surplus}
+
+
+def made(result: dict) -> Dict[str, float]:
+    """Everything a plan puts out, per minute: its goal outputs and its surplus."""
+    out = {k: v for k, v in (result.get("sink_nodes") or {}).items() if v > 1e-4}
+    for k, v in {**(result.get("surplus_intermediates") or {}), **(result.get("error_sinks") or {})}.items():
+        if v > 1e-4 and k not in out:
+            out[k] = v
+    return out

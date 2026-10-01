@@ -32,7 +32,8 @@ import {
 // Panels are imported here only so their modules are loaded eagerly;
 // all interaction goes through sidebar.js re-exports above.
 
-import { addNode, addFrom, refreshOutputs, applyCut } from './supply-panel.js';
+import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards,
+         refreshOutputs, applyCut, onResult } from './supply-panel.js';
 
 import {
   openWarn, closeWarn,
@@ -356,6 +357,7 @@ function handleSolve() {
     .then(result => {
       if (mySeq !== solveSeq) return;
       setResult(result);
+      onResult();
       updateIssuesBadge(result);
       const hasIssues = result.conflict_hints?.length > 0
         || result.warnings?.length > 0
@@ -390,12 +392,21 @@ function handleSolve() {
 
 // ── Save ──────────────────────────────────────────────────────────────────────
 
+// The saved factory open now (to tell a rename from a new factory)
+let LOADED_KEY = null, LOADED_NAME = null;
+
 function handleSave() {
   readUI();
   const key = SC.name.replace(/\s+/g, '_').toLowerCase();
-  saveScenario(key, { ...SC })
+  // Saved under a new name: rename it (its links follow), or keep both
+  const body = { ...SC };
+  if (LOADED_KEY && LOADED_KEY !== key &&
+      confirm(`Rename "${LOADED_NAME}" to "${SC.name}"?\n\nOK renames it — other factories' imports from it, its Blackboard place and its plan follow.\nCancel saves a copy and keeps "${LOADED_NAME}".`))
+    body._renamed_from = LOADED_KEY;
+  saveScenario(key, body)
     .then(res => {
-      if (res?.cut?.length) applyCut(res.from_factories, res.cut);   // over what the sources have left
+      LOADED_KEY = key; LOADED_NAME = SC.name;
+      if (res?.cut?.length) applyCut(res);   // over what the sources have left
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
       setTimeout(() => { b.textContent = '💾 Save'; }, 2200);
@@ -410,6 +421,7 @@ function handleSave() {
 
 function handleReset() {
   resetSC();
+  LOADED_KEY = LOADED_NAME = null;
   setResult(null);
   _machinesDirty = true;
   fillUI({ skipMachines: true });
@@ -426,14 +438,17 @@ function handleReset() {
 function openScenario(key) {
   return fetchScenario(key).then(data => {
     const { _last_solve: last, pinboard: _oldPinboard, ...scenario } = data;
+    LOADED_KEY = key; LOADED_NAME = scenario.name;
     Object.assign(SC, scenario);
     if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
     SC.resource_nodes = scenario.resource_nodes ?? null;              // null: rates from before nodes
     SC.from_factories = scenario.from_factories || [];
+    SC.to_storage = scenario.to_storage || [];
     if (scenario.machines_first == null) SC.machines_first = false;
     if (!scenario.sloop_search) SC.sloop_search = 'dive';
     // Cached plan from the last solve of exactly these settings
     setResult(last ? last.result : null);
+    onResult();
     setSolveStyles(last ? last.styles : []);
     _machinesDirty = true;
     fillUI({ skipMachines: true });
@@ -480,6 +495,14 @@ document.getElementById('rail-solve')   .addEventListener('click', handleSolve);
 // KV add-row buttons
 document.getElementById('add-res') .addEventListener('click', addNode);
 document.getElementById('add-from').addEventListener('click', addFrom);
+document.getElementById('add-leftovers').addEventListener('click', addLeftovers);
+document.getElementById('add-sto').addEventListener('click', addStorage);
+document.getElementById('btn-map-pick').addEventListener('click', () => pickOnMap());
+document.getElementById('btn-spread').addEventListener('click', () => {
+  const n = parseInt(document.getElementById('sh-spread').value, 10) || 0;
+  SC.extractor_shards = n;
+  spreadShards(n);
+});
 document.getElementById('add-obj') .addEventListener('click', () => addKv('obj'));
 document.getElementById('add-must').addEventListener('click', () => addKv('must'));
 document.getElementById('add-min') .addEventListener('click', () => addKv('min'));
@@ -554,7 +577,7 @@ ge.querySelector('p').textContent = 'Loading game data...';
 Promise.all([fetchBoot()])
   .then(([boot]) => {
     const { items, recipes, item_display: display, unlocked_alts } = boot;
-    setExtractors(boot.extractors, boot.purity, boot.max_clock);
+    setExtractors(boot);
     setAllItems(items);
     setRecipes(recipes);
     buildItemDisplay(display);

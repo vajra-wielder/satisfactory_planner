@@ -9,8 +9,9 @@ export const DEF_SC = () => ({
   alternate_recipes_enabled: [],
   enabled_machines: [],
   available_resources: {},   // derived from resource_nodes + from_factories
-  resource_nodes: [],        // [{resource, extractor, purity, clock, count} | {resource, extractor: 'fixed', rate}]
+  resource_nodes: [],        // see supply.py: map rows {nodes, node_shards}, typed rows {purity, count, shards}, fixed {rate}
   from_factories: [],        // [{item, factory, rate}] — taken from other saved factories
+  to_storage: [],            // [{item, rate}] — sent to storage, out of what it makes
   must_produce: {},
   min_produce: {},
   max_produce: {},
@@ -51,9 +52,14 @@ export function setAllItems(arr) { ALL_ITEMS = arr; }
 export let RECIPES = {};
 export function setRecipes(obj) { RECIPES = obj; }
 
-// Extractors (rate per node at 100%, normal purity) — from /api/boot
-export let EXTRACTORS = {}, PURITY = {}, MAX_CLOCK = 250;
-export function setExtractors(ex, pu, mc) { EXTRACTORS = ex || {}; PURITY = pu || {}; MAX_CLOCK = mc || 250; }
+// Extractors (rate per node at 100%, normal purity) and what's unlocked — from /api/boot
+export let EXTRACTORS = {}, PURITY = {}, MINER_TIERS = {}, MAX_SHARDS = 3;
+export const PROGRESS = { miner: 'Mk3' };   // for every factory: miners run at this tier
+export function setExtractors(b) {
+  EXTRACTORS = b.extractors || {}; PURITY = b.purity || {};
+  MINER_TIERS = b.miner_tiers || {}; MAX_SHARDS = b.max_shards ?? 3;
+  Object.assign(PROGRESS, b.progress || {});
+}
 
 // Machine colour map — populated after recipes are loaded
 export const MCOL = {

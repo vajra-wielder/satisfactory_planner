@@ -142,7 +142,8 @@ export function renderSaved(saved, onLoad, onDelete) {
     row.style.cssText = 'display:flex;align-items:center;gap:5px;margin-bottom:5px;padding:6px 8px;background:var(--p3);border-radius:var(--rsm);border:1px solid var(--b)';
     row.innerHTML = `
       <div style="flex:1">
-        <div style="font-size:12px;color:var(--t)">${s.name}</div>
+        <div style="font-size:12px;color:var(--t)">${s.name}${s.alerts?.length ? ` <span class="sv-alert" title="${
+          s.alerts.map(a => `${a.item.replace(/_/g, ' ')}${a.storage ? ' to storage' : ` from ${a.factory_name || a.factory}`}: ${a.rate}/min asked, ${a.left}/min left — its source changed`).join('\n')}">⚠ ${s.alerts.length}</span>` : ''}</div>
         <div style="font-size:10px;color:var(--t3);margin-top:1px">${(s.resources||[]).slice(0,3).join(', ')}</div>
       </div>
       <button class="bsm">Load</button>

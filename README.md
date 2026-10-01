@@ -11,13 +11,27 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 ### Factory Optimization
 - Exact mixed-integer solver (OR-Tools + SCIP), proven optimal
 - Weighted multi-item objectives
-- Resources as nodes: resource, extractor (Miner Mk.1–3, Oil / Water Extractor,
-  Resource Well satellites), purity, count and clock give the rate — or a fixed
-  rate for anything else
+- Resources as nodes: pick the nodes a factory mines on the 1.0 world map (every
+  node and resource-well satellite, with its purity), or type them in. Nodes one
+  factory mines are crossed out for the others. Power shards on the extractors
+  (0–3 each, +50% clock per shard) decide how much comes out; "Spread" puts a
+  number of shards where they add the most. Miners run at the tier unlocked in
+  Machines & Alts, for every factory. A fixed rate covers anything else
 - From factories: take items another saved factory makes. Pick the item (from
   everything your other factories' last plans make) and the factory; the rate
   starts at what that factory has left — what it makes less what other
-  factories take — and can't go above it
+  factories take and store — and can't go above it. Saving checks it again, so
+  the same output can't be claimed twice. "All leftovers" imports everything
+  the other factories have left over
+- To storage: send part of what a factory makes to storage (a Dimensional
+  Depot, a stockpile); no other factory can take that share
+- Sent out: what other factories and storage take from a factory. Solving it
+  makes at least that much (a cached plan that already does is reused); if it
+  can't, the plan says how much it falls short
+- Alerts: a factory whose imports or storage are now more than their source
+  makes is flagged in the saved list, with a one-click fix on the import
+- Renaming a factory keeps its links: imports from it, its Blackboard place and
+  routes, and its plan follow the new name
 - Production minimums, maximums, and exact requirements
 - Least raw resources first, then least machine space (machines weighed by the
   room they take — w × l × h from `size_m` in the recipe data, in Smelter units:
@@ -41,6 +55,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   what each factory draws, and how much more each goal the leftovers could make.
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
+- Flows: a Sankey of everything moving between factories and into storage —
+  as set in each factory, or as the network plan would send it.
+- Storage: every item sent to storage, per minute and per hour, by factory.
 - Inside a factory: belt splits with the fewest structures — a manifold for
   outputs that feed machines, an exact splitter tree with loop-back only where
   an output needs an exact rate.
@@ -158,8 +175,9 @@ The application launches as a native desktop window.
 
 A scenario may contain:
 
-- Resource Nodes (or fixed rates)
+- Resource Nodes (map nodes, typed nodes or fixed rates) and extractor shards
 - Imports From Other Factories
+- Items Sent to Storage
 - Objective Outputs
 - Exact Production Targets
 - Minimum Production Targets

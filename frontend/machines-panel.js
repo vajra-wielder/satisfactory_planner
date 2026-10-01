@@ -10,8 +10,9 @@
 
 import {
   SC, RECIPES,
-  mCol, MABBR, itemName, MTIERS, ALL_MACHINES,
+  mCol, MABBR, itemName, MTIERS, ALL_MACHINES, MINER_TIERS, PROGRESS,
 } from './state.js';
+import { saveProgress } from './api.js';
 
 // ── Unlock state — managed locally, injected from main.js ─
 // Keeps machines-panel.js independent of new state.js exports
@@ -76,6 +77,34 @@ export function renderMachines() {
     wrap.appendChild(chips);
     p.appendChild(wrap);
   });
+  renderMinerUnlock(p);
+}
+
+// Miner tier unlocked — for every factory; miners always run at the highest
+function renderMinerUnlock(p) {
+  const wrap = document.createElement('div');
+  wrap.style.marginBottom = '8px';
+  wrap.innerHTML = `<div style="font-size:10px;color:var(--t3);margin:2px 0 4px">Miner unlocked
+    <span style="color:var(--t4)">— every factory mines at this tier</span></div>`;
+  const chips = document.createElement('div');
+  chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;padding-left:2px';
+  Object.keys(MINER_TIERS).forEach(t => {
+    const on = PROGRESS.miner === t, c = mCol('Miner');
+    const chip = document.createElement('div');
+    chip.className = 'mchip';
+    chip.dataset.miner = t;
+    chip.style.cssText = `border-color:${on ? c : 'var(--b)'};background:${on ? c + '22' : 'var(--p3)'};color:${on ? c : 'var(--t3)'}`;
+    chip.textContent = `Miner ${t.replace('Mk', 'Mk.')} · ${MINER_TIERS[t]}/min`;
+    chip.addEventListener('click', () => {
+      PROGRESS.miner = t;
+      saveProgress({ miner: t }).catch(() => {});
+      renderMachines();
+      document.dispatchEvent(new CustomEvent('progress-changed'));
+    });
+    chips.appendChild(chip);
+  });
+  wrap.appendChild(chips);
+  p.appendChild(wrap);
 }
 
 // Persist enabled set back into SC and refresh

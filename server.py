@@ -119,7 +119,9 @@ def _build_boot_bytes():
         "unlocked_alts": _load_unlocked_alts(),
         "extractors":   supply.EXTRACTORS,
         "purity":       supply.PURITY,
-        "max_clock":    supply.MAX_CLOCK,
+        "miner_tiers":  supply.MINER_TIERS,
+        "max_shards":   supply.MAX_SHARDS,
+        "progress":     supply.load_progress(),
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
@@ -141,7 +143,7 @@ _scenario_load_cache: dict = {}   # {(name, mtime): dict}
 # themselves — editing either invalidates every cached plan.
 import hashlib
 from collections import OrderedDict
-from dataclasses import asdict
+from dataclasses import asdict, replace as _dc_replace
 RESULTS_DIR = SCENARIOS_DIR / ".results"
 _CODE_SIG = hashlib.sha256(
     (HERE / "solver.py").read_bytes() + (HERE / "data" / "recipes_complete.yaml").read_bytes()
@@ -200,23 +202,30 @@ def _cache_write(key: str, entry: dict) -> None:
     except Exception:
         import traceback; traceback.print_exc()
 
-def _cache_lookup(key: str, sig: str):
+def _cache_lookup(key: str, sig: str, owed: dict):
+    """The cache entry for these settings whose plan also serves what's owed now."""
     with _cache_lock:
-        if sig in _mem_cache:
+        hit = _mem_cache.get(sig)
+        if hit is not None and _owed_ok(hit, owed):
             _mem_cache.move_to_end(sig)
-            return _mem_cache[sig]
+            return hit
     entry = _cache_read(key)
-    if entry and entry.get("sig") == sig:
-        return entry.get("result")
+    if entry and entry.get("result") and entry.get("sig") == sig and _owed_ok(entry, owed):
+        return entry
     return None
 
-def _cache_store(key: str, sig: str, base_sig: str, styles, result: dict) -> None:
+def _cache_store(key: str, sig: str, base_sig: str, styles, result: dict,
+                 owed: dict = None, dropped: bool = False) -> None:
+    """sig / base_sig are of the settings as given (styled / before styles),
+    without what's owed — owed is kept beside them (see _owed_ok)."""
+    entry = {"sig": sig, "base_sig": base_sig, "styles": list(styles), "result": result,
+             "owed": owed or {}, **({"owed_dropped": True} if dropped else {})}
     with _cache_lock:
-        _mem_cache[sig] = result
+        _mem_cache[sig] = entry
         _mem_cache.move_to_end(sig)
         while len(_mem_cache) > _MEM_CACHE_SIZE:
             _mem_cache.popitem(last=False)
-    _cache_write(key, {"sig": sig, "base_sig": base_sig, "styles": list(styles), "result": result})
+    _cache_write(key, entry)
 
 def _set_dual_cache(s, result_dict: dict, usable=None) -> None:
     new_cache = {
@@ -249,21 +258,103 @@ def _save_board(layout: dict) -> None:
     BOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
     BOARD_PATH.write_text(yaml.safe_dump(keep, sort_keys=False), encoding="utf-8")
 
-def _factory_plan(key: str, stale_ok: bool = False):
+# What a factory owes: other factories' "From factories" imports from it and its
+# own "To storage" are claims on its outputs. Solving it makes at least those
+# (min_produce), so what's promised keeps being made. A cached plan stays
+# good when it was solved owing no more than now and still makes what's owed —
+# so a new claim it already covers needs no re-solve.
+STORAGE = "@storage"   # the taker for what a factory sends to storage
+
+def _scenario_files() -> list:
+    """[(key, scenario data)] for every saved scenario."""
+    out = []
+    for p in sorted(SCENARIOS_DIR.glob("*.yaml")):
+        try:
+            out.append((p.stem, yaml.safe_load(p.read_text(encoding="utf-8")) or {}))
+        except Exception:
+            continue
+    return out
+
+def _claims(files) -> dict:
+    """{source factory: {item: {taker: rate}}}: every From factories row, and
+    every factory's To storage (taker STORAGE)."""
+    out: dict = {}
+    def add(src, it, who, r):
+        r = max(0.0, float(r or 0))
+        if r > 1e-9:
+            by = out.setdefault(src, {}).setdefault(it, {})
+            by[who] = by.get(who, 0.0) + r
+    for key, data in files:
+        for f in data.get("from_factories") or []:
+            if f.get("factory") and f.get("item"):
+                add(f["factory"], f["item"], key, f.get("rate"))
+        for t in data.get("to_storage") or []:
+            if t.get("item"):
+                add(key, t["item"], STORAGE, t.get("rate"))
+    return out
+
+def _owed(key: str, claims: dict, s: Scenario, storage=None) -> dict:
+    """What factory `key` must make for others, as its solve can hold it:
+    an exact (must_produce) amount stays as it is, an at-most caps it.
+    storage: its To storage as being solved now, in place of the saved one."""
+    owed: dict = {}
+    for it, by in (claims.get(key) or {}).items():
+        for who, r in by.items():
+            if who != key and not (who == STORAGE and storage is not None):
+                owed[it] = owed.get(it, 0.0) + r
+    for t in storage or []:
+        if t.get("item"):
+            owed[t["item"]] = owed.get(t["item"], 0.0) + max(0.0, float(t.get("rate") or 0))
+    out = {}
+    for it, r in owed.items():
+        if it in s.must_produce or r <= 1e-6:
+            continue
+        out[it] = round(min(r, s.max_produce[it]) if it in s.max_produce else r, 6)
+    return out
+
+def _with_owed(s: Scenario, owed: dict) -> Scenario:
+    if not owed:
+        return s
+    mins = dict(s.min_produce)
+    for it, r in owed.items():
+        mins[it] = max(mins.get(it, 0.0), r)
+    return _dc_replace(s, min_produce=mins)
+
+def _owed_ok(entry: dict, owed: dict) -> bool:
+    was = entry.get("owed") or {}
+    if entry.get("owed_dropped"):          # it couldn't make what was owed then: same owed, same answer
+        return was == owed
+    if any(v > owed.get(k, 0.0) + 1e-6 for k, v in was.items()):
+        return False                       # solved owing more than now: there may be a better plan
+    made = logistics.made(entry.get("result") or {})
+    return all(made.get(k, 0.0) >= v * (1 - 1e-6) - 1e-3 for k, v in owed.items())
+
+def _save_key(name: str) -> str:
+    return "_".join(str(name).split()).lower()   # as the frontend saves it (handleSave)
+
+def _factory_plan(key: str, stale_ok: bool = False, claims: dict = None, data: dict = None):
     """(scenario data, its current cached plan or None) for a saved factory.
     stale_ok: fall back to its last plan even when the scenario changed since."""
-    p = SCENARIOS_DIR / f"{key}.yaml"
-    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if data is None:
+        data = yaml.safe_load((SCENARIOS_DIR / f"{key}.yaml").read_text(encoding="utf-8")) or {}
     entry = _cache_read(_result_key(data.get("name", key)))
     if entry and entry.get("result"):
         try:
-            if entry.get("base_sig") == _signature(_build_scenario(data), entry.get("styles") or []):
+            if _entry_fresh(entry, key, data, claims):
                 return data, entry["result"]
         except Exception:
             pass
         if stale_ok:
             return data, {**entry["result"], "_stale": True}
     return data, None
+
+def _entry_fresh(entry: dict, key: str, data: dict, claims: dict = None) -> bool:
+    base = _build_scenario(data)
+    if entry.get("base_sig") != _signature(base, entry.get("styles") or []):
+        return False
+    if claims is None:
+        claims = _claims(_scenario_files())
+    return _owed_ok(entry, _owed(key, claims, base))
 
 def _network_sites(keys) -> list:
     """Each factory for network planning: its scenario, what its plan makes (held),
@@ -275,6 +366,9 @@ def _network_sites(keys) -> list:
         held, own, drawn = {}, {}, {}
         if result:
             held = {k: v for k, v in (result.get("sink_nodes") or {}).items() if v > 1e-6}
+            for t in data.get("to_storage") or []:      # what it stores it must keep making
+                if t.get("item"):
+                    held[t["item"]] = max(held.get(t["item"], 0.0), float(t.get("rate") or 0))
             for f in result.get("flows", []):
                 own[f["recipe_key"]] = own.get(f["recipe_key"], 0.0) + f["machines_float"]
                 for it, q in f["inputs"].items():
@@ -290,82 +384,169 @@ def _network_sites(keys) -> list:
     return sites
 
 def _saved_factories(stale_ok: bool = False):
-    """[(key, scenario data, plan or None)] for every saved scenario."""
+    """([(key, scenario data, plan or None)], claims) for every saved scenario."""
+    files = _scenario_files()
+    claims = _claims(files)
     out = []
-    for p in sorted(SCENARIOS_DIR.glob("*.yaml")):
+    for key, data in files:
         try:
-            out.append((p.stem, *_factory_plan(p.stem, stale_ok)))
+            out.append((key, *_factory_plan(key, stale_ok, claims, data)))
         except Exception:
             continue
-    return out
-
-def _claims(saved) -> dict:
-    """{source factory: {item: {taking factory: rate}}} from every from_factories."""
-    out: dict = {}
-    for key, data, _ in saved:
-        for f in data.get("from_factories") or []:
-            if f.get("factory") and f.get("item"):
-                by = out.setdefault(f["factory"], {}).setdefault(f["item"], {})
-                by[key] = by.get(key, 0.0) + float(f.get("rate") or 0)
-    return out
+    return out, claims
 
 def _blackboard_factories() -> list:
-    saved = _saved_factories()
-    claims = _claims(saved)
+    saved, claims = _saved_factories()
     out = []
     for key, data, result in saved:
         io = logistics.factory_io(data, result)
         out.append({"key": key, "name": data.get("name", key), **io,
                     "sources": [f for f in data.get("from_factories") or [] if f.get("factory")],
-                    "taken": {it: round(sum(by.values()), 3) for it, by in claims.get(key, {}).items()}})
+                    "storage": {t["item"]: float(t.get("rate") or 0) for t in data.get("to_storage") or [] if t.get("item")},
+                    "taken": {it: round(sum(by.values()), 3) for it, by in claims.get(key, {}).items()},
+                    "taken_by": claims.get(key, {})})
     return out
 
 def _factory_outputs() -> dict:
-    """What each saved factory makes (exports and surplus, from its last plan —
-    stale: the scenario changed since), and who already takes it."""
-    saved = _saved_factories(stale_ok=True)
-    facs = []
+    """What each saved factory makes (from its last plan — stale: the scenario
+    changed since), who already takes it, which map nodes each mines, and
+    alerts: imports or storage more than their source has left."""
+    saved, claims = _saved_factories(stale_ok=True)
+    facs, made, nodes = [], {}, {}
     for key, data, result in saved:
         io = logistics.factory_io(data, result and {k: v for k, v in result.items() if k != "_stale"})
-        made = {it: r for it, r in {**io["surplus"], **io["exports"]}.items() if r}
+        made[key] = {it: r for it, r in {**io["surplus"], **io["exports"]}.items() if r}
         facs.append({"key": key, "name": data.get("name", key), "solved": io["solved"],
-                     "stale": bool(result and result.get("_stale")), "made": made})
-    return {"factories": facs, "claims": _claims(saved)}
+                     "stale": bool(result and result.get("_stale")), "made": made[key]})
+        for i in supply.nodes_of(data):
+            nodes[i] = key
+    alerts: dict = {}
+    names = {f["key"]: f["name"] for f in facs}
+    for src, items in claims.items():
+        for it, by in items.items():
+            have = made.get(src, {}).get(it)
+            if have is None:
+                continue
+            for who, r in by.items():
+                left = have - sum(v for k, v in by.items() if k != who)
+                if r > left + 1e-3:
+                    alerts.setdefault(src if who == STORAGE else who, []).append(
+                        {"item": it, "factory": src, "factory_name": names.get(src, src), "storage": who == STORAGE,
+                         "rate": round(r, 3), "left": round(max(0.0, left), 3)})
+    return {"factories": facs, "claims": claims, "nodes": nodes, "alerts": alerts}
 
 _save_lock = threading.Lock()   # claim check + write as one step, so two saves can't both take the same
 
-def _hold_imports(key: str, data: dict) -> list:
-    """Cap a scenario's From factories at what each source has left: what it
-    makes, less what the other saved factories already take, less this
-    scenario's earlier rows for the same item. Drops rows from itself.
-    Edits data in place; returns [{item, factory, asked, rate}] for each cut."""
-    rows = data.get("from_factories")
-    if not rows:
-        return []
+def _hold_claims(key: str, data: dict) -> list:
+    """Hold a scenario to what's free when it's saved: each import at what its
+    source has left (what it makes, less what the other saved factories take),
+    its storage at what it makes less what others take from it, its map nodes
+    to ones no other factory mines. Earlier rows come first. Drops imports from
+    itself. Edits data in place; returns [{kind, item|node, factory, asked, rate}]
+    for each cut."""
     out = _factory_outputs()
     made = {f["key"]: f["made"] for f in out["factories"]}
+    claims = out["claims"]
+    cut = []
+
+    def room(src, it, but):
+        return made[src][it] - sum(v for k, v in claims.get(src, {}).get(it, {}).items() if k not in but)
+
     left: dict = {}
-    for fac, items in out["claims"].items():
-        for it, by in items.items():
-            if it in made.get(fac, {}):
-                left[(fac, it)] = made[fac][it] - sum(v for k, v in by.items() if k != key)
-    cut, keep = [], []
-    for r in rows:
+    keep = []
+    for r in data.get("from_factories") or []:
         if r.get("factory") == key:
             continue
-        k = (r.get("factory"), r.get("item"))
+        src, it = r.get("factory"), r.get("item")
         asked = max(0.0, float(r.get("rate") or 0))
-        if k[0] in made and k[1] in made[k[0]]:   # unknown sources (not solved, "max") aren't capped
-            room = max(0.0, left.get(k, made[k[0]][k[1]]))
-            rate = min(asked, room)
-            left[k] = room - rate
+        if it in made.get(src, {}):                 # unknown sources (not solved, "max") aren't capped
+            k = (src, it)
+            free = max(0.0, left.get(k, room(src, it, {key})))
+            rate = min(asked, free)
+            left[k] = free - rate
             if asked - rate > 1e-6:
-                cut.append({"item": k[1], "factory": k[0], "asked": asked, "rate": round(rate, 6)})
+                cut.append({"kind": "import", "item": it, "factory": src, "asked": asked, "rate": round(rate, 6)})
             r = {**r, "rate": round(rate, 6)}
         keep.append(r)
-    data["from_factories"] = keep
-    data["available_resources"] = supply.available(data)
+    if data.get("from_factories") is not None:
+        data["from_factories"] = keep
+
+    keep = []
+    for t in data.get("to_storage") or []:
+        it, asked = t.get("item"), max(0.0, float(t.get("rate") or 0))
+        if it in made.get(key, {}):
+            k = (key, it)
+            free = max(0.0, left.get(k, room(key, it, {key, STORAGE})))
+            rate = min(asked, free)
+            left[k] = free - rate
+            if asked - rate > 1e-6:
+                cut.append({"kind": "storage", "item": it, "factory": key, "asked": asked, "rate": round(rate, 6)})
+            t = {**t, "rate": round(rate, 6)}
+        keep.append(t)
+    if data.get("to_storage") is not None:
+        data["to_storage"] = keep
+
+    taken = {i: k for i, k in out["nodes"].items() if k != key}
+    rows = []
+    for n in data.get("resource_nodes") or []:
+        if n.get("nodes"):
+            gone = [i for i in n["nodes"] if i in taken]
+            for i in gone:
+                cut.append({"kind": "node", "node": i, "item": n.get("resource"), "factory": taken[i]})
+            n = {**n, "nodes": [i for i in n["nodes"] if i not in taken]}
+            if not n["nodes"]:
+                continue
+        rows.append(n)
+    if data.get("resource_nodes") is not None:
+        data["resource_nodes"] = rows
+    if data.get("resource_nodes") is not None or data.get("from_factories") is not None:
+        data["available_resources"] = supply.available(data)
     return cut
+
+def _rename(old: str, new: str, new_name: str) -> None:
+    """Saving a factory under a new name: its links follow it — other factories'
+    imports from it, its place and routes on the Blackboard, its cached plan."""
+    old_p = SCENARIOS_DIR / f"{old}.yaml"
+    try:
+        old_name = (yaml.safe_load(old_p.read_text(encoding="utf-8")) or {}).get("name", old)
+    except Exception:
+        return
+    for key, data in _scenario_files():
+        rows = data.get("from_factories") or []
+        if key not in (old, new) and any(r.get("factory") == old for r in rows):
+            data["from_factories"] = [{**r, "factory": new} if r.get("factory") == old else r for r in rows]
+            _write_yaml(SCENARIOS_DIR / f"{key}.yaml", data)
+    board = _load_board()
+    if board:
+        pos = board.get("positions") or {}
+        if old in pos:
+            pos[new] = pos.pop(old)
+        for r in board.get("routes") or []:
+            for end in ("a", "b"):
+                if r.get(end) == old:
+                    r[end] = new
+        _save_board(board)
+    for src, dst in zip(_cache_paths(_result_key(old_name)), _cache_paths(_result_key(new_name))):
+        if src.exists() and not dst.exists():
+            os.replace(src, dst)
+    old_p.unlink(missing_ok=True)
+    for k in [k for k in _scenario_load_cache if k[0] == old]:
+        del _scenario_load_cache[k]
+
+def _write_yaml(p, data) -> None:
+    """Write to a temp file beside the target, then atomically rename —
+    no truncated file if the process is killed mid-write."""
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=p.parent, prefix=f".{p.stem}_", suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp_path, p)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # ── Async solve job store ─────────────────────────────────────────────────────
@@ -373,15 +554,35 @@ import uuid as _uuid
 _jobs: dict = {}   # {job_id: {"status": "pending"|"done"|"error", "result": dict|None}}
 _jobs_lock = threading.Lock()
 
-def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None):
+def _owed_fields(d: dict, owed: dict) -> dict:
+    """The plan with what's owed now beside it, and any it falls short of."""
+    d = {k: v for k, v in d.items() if k not in ("owed", "owed_unmet")}
+    if owed:
+        have = logistics.made(d)
+        d["owed"] = owed
+        d["owed_unmet"] = {k: round(v - have.get(k, 0.0), 3) for k, v in owed.items()
+                           if have.get(k, 0.0) < v * (1 - 1e-6) - 1e-3}
+    return d
+
+def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None, owed=None):
     """Runs in a background thread; writes result into _jobs when done.
-    cache = (key, sig, base_sig, styles) to store the result under."""
+    cache = (key, sig, base_sig, styles) to store the result under.
+    owed: what other factories and storage take from it — made at least,
+    unless it can't be, then solved without and reported as owed_unmet."""
     try:
-        result = solve(s, all_recipes, machine_meta)
-        d      = result_to_dict(result, s, machine_meta)
-        _set_dual_cache(s, d, getattr(result, "usable", None))
+        owed = owed or {}
+        run = _with_owed(s, owed)
+        result = solve(run, all_recipes, machine_meta)
+        d = result_to_dict(result, run, machine_meta)
+        dropped = False
+        if owed and not d.get("status", "").startswith("Optimal"):
+            result = solve(s, all_recipes, machine_meta)
+            d = result_to_dict(result, s, machine_meta)
+            run, dropped = s, True
+        d = _owed_fields(d, owed)
+        _set_dual_cache(run, d, getattr(result, "usable", None))
         if cache is not None and d.get("status", "").startswith("Optimal"):
-            _cache_store(*cache, d)
+            _cache_store(*cache, d, owed, dropped)
         with _jobs_lock:
             _jobs[job_id] = {"status": "done", "result": d}
     except Exception as e:
@@ -540,7 +741,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self._scenario_path(n).exists()
             )
             if fingerprint in _scenario_list_cache:
-                self._json(200, _scenario_list_cache[fingerprint])
+                self._json(200, self._with_alerts(_scenario_list_cache[fingerprint]))
                 return
             out = []
             for name in names:
@@ -554,7 +755,7 @@ class Handler(BaseHTTPRequestHandler):
                     out.append({"key": name, "name": name, "error": str(e)})
             _scenario_list_cache.clear()   # only keep the latest fingerprint
             _scenario_list_cache[fingerprint] = out
-            self._json(200, out)
+            self._json(200, self._with_alerts(out))
             return
 
         if path.startswith("/api/scenarios/"):
@@ -578,8 +779,10 @@ class Handler(BaseHTTPRequestHandler):
             entry = _cache_read(_result_key(data.get("name", name)))
             if entry and entry.get("result"):
                 try:
-                    if entry.get("base_sig") == _signature(_build_scenario(data), entry.get("styles") or []):
-                        out["_last_solve"] = {"result": entry["result"], "styles": entry.get("styles") or []}
+                    if _entry_fresh(entry, name, data):
+                        owed = _owed(name, _claims(_scenario_files()), _build_scenario(data))
+                        out["_last_solve"] = {"result": _owed_fields(entry["result"], owed),
+                                              "styles": entry.get("styles") or []}
                         _set_dual_cache(_build_scenario(data), entry["result"])
                 except Exception:
                     pass
@@ -647,6 +850,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"unlocked": _load_unlocked_alts()})
             return
 
+        if path == "/api/progress":
+            self._json(200, supply.load_progress())
+            return
+
+        if path == "/api/map-nodes":
+            body = supply.MAP_PATH.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if path == "/api/factory-outputs":
             self._json(200, _factory_outputs())
             return
@@ -658,6 +874,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._json(404, {"error": "Not found"})
+
+    @staticmethod
+    def _with_alerts(rows):
+        """Each saved factory with its alerts: imports or storage more than
+        their source has left (it changed since)."""
+        try:
+            alerts = _factory_outputs()["alerts"]
+        except Exception:
+            alerts = {}
+        return [{**r, "alerts": alerts.get(r["key"], [])} for r in rows]
 
     # ── POST / PUT ────────────────────────────────────────────────────────────
 
@@ -680,6 +906,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._json(500, {"error": str(e)})
+            return
+
+        if path == "/api/progress":
+            data = self._read_json()
+            self._json(200, supply.save_progress(data if isinstance(data, dict) else {}))
             return
 
         if path == "/api/blackboard":
@@ -734,15 +965,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             key, sig = _result_key(s.name), _signature(s, styles)
             base_sig = _signature(base, styles)
+            # What other factories take from this one, and what it stores (as sent now)
+            owed = _owed(_save_key(s.name), _claims(_scenario_files()), base,
+                         storage=(b.get("base_scenario") or b).get("to_storage") or [])
             job_id = _uuid.uuid4().hex
-            cached = _cache_lookup(key, sig)
-            if cached is not None:
+            hit = _cache_lookup(key, sig, owed)
+            if hit is not None:
                 # Unchanged inputs: answer at once from the cache, and record it
                 # as this scenario's last solve (it may have come from another
                 # scenario with the same settings)
-                entry = _cache_read(key)
-                if not entry or entry.get("sig") != sig:
-                    _cache_store(key, sig, base_sig, styles, cached)
+                if _cache_read(key) != hit:
+                    _cache_store(key, sig, base_sig, styles, hit["result"], hit.get("owed"), hit.get("owed_dropped", False))
+                cached = _owed_fields(hit["result"], owed)
                 _set_dual_cache(s, cached)
                 with _jobs_lock:
                     _jobs[job_id] = {"status": "done", "result": cached}
@@ -752,7 +986,7 @@ class Handler(BaseHTTPRequestHandler):
                 _jobs[job_id] = {"status": "pending", "result": None}
             t = threading.Thread(
                 target=_run_solve_job,
-                args=(job_id, s, ALL_RECIPES, MACHINE_META, (key, sig, base_sig, styles)),
+                args=(job_id, s, ALL_RECIPES, MACHINE_META, (key, sig, base_sig, styles), owed),
                 daemon=True,
             )
             t.start()
@@ -763,35 +997,22 @@ class Handler(BaseHTTPRequestHandler):
             name = path[len("/api/scenarios/"):]
             data = self._read_json()
             p    = self._scenario_path(name)
+            if not isinstance(data, dict):
+                self._json(400, {"error": "No data"})
+                return
+            renamed = data.pop("_renamed_from", None)
             with _save_lock:
-                cut = _hold_imports(name, data) if isinstance(data, dict) else []
-                self._write_scenario(name, p, data)
+                cut = _hold_claims(name, data)
+                _write_yaml(p, data)
+                for k in [k for k in _scenario_load_cache if k[0] == name]:
+                    del _scenario_load_cache[k]
+                if renamed and renamed != name and self._scenario_path(renamed).exists():
+                    _rename(renamed, name, data.get("name", name))
             self._json(200, {"status": "saved", "key": name, "cut": cut,
-                             "from_factories": data.get("from_factories") if isinstance(data, dict) else None})
+                             **{k: data.get(k) for k in ("from_factories", "to_storage", "resource_nodes")}})
             return
 
         self._json(404, {"error": "Not found"})
-
-    def _write_scenario(self, name, p, data):
-        # Write to a temp file beside the target, then atomically rename.
-        # Prevents a truncated file if the process is killed mid-write.
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=p.parent, prefix=f".{p.stem}_", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(tmp_fd, "w") as f:
-                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-            os.replace(tmp_path, p)  # atomic on POSIX; near-atomic on Windows
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-        # Invalidate per-scenario cache so next load re-reads the file
-        stale = [k for k in _scenario_load_cache if k[0] == name]
-        for k in stale:
-            del _scenario_load_cache[k]
 
     # ── DELETE ────────────────────────────────────────────────────────────────
 
