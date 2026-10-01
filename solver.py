@@ -18,7 +18,8 @@ SLOOP ACCOUNTING:
 
 POWER FORMULA:
   P = base_mw × clock^log2(2.5) × (1 + sloops_per_machine / max_slots)^2, per machine.
-  Power is reported, not optimised; max_power_mw is informational.
+  Power isn't minimised. max_power_mw is a hard cap the plan is built to
+  fit, as close under it as it can get (see _power_bound and solve).
 
 PRUNING:
   Recipe tree is computed once (forward grounding + backward demand).
@@ -29,7 +30,7 @@ ANALYSIS:
   off the continuous relaxation of the same planning model.
 """
 
-import math, yaml, json
+import math, time, yaml, json
 from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -40,6 +41,9 @@ RECIPES_PATH  = ROOT / "data" / "recipes_complete.yaml"
 SCENARIOS_DIR = ROOT / "scenarios"
 
 POWER_EXP   = math.log2(2.5)   # ≈1.3219 — 1.0 overclock power curve (250% → 3.36× power)
+_POWER_ROUNDS = 4      # re-solves that move a power-capped plan closer to the cap
+_POWER_CLOSE  = 0.002  # … stopping once within 0.2% of it
+_POWER_TIME_S = 5.0    # … or once the solve has taken this long
 # Min New Alts: the goal may drop by at most this share to use fewer alts you
 # haven't unlocked yet (each costs a hard drive, however much it runs).
 _NEW_ALT_TOL = 0.01
@@ -62,8 +66,18 @@ def machine_space(meta: Dict, machine: str) -> int:
         return _DEFAULT_SPACE_UNITS
     return max(1, int(round(v / unit)))
 
+# Power cap. Per machine, power = base × clock^POWER_EXP. A linear upper
+# bound the model can use: at ≤100% clock^1.32 ≤ clock (exact at 100%), and
+# above it each shard (+50% clock) adds at most the chord's slope over
+# 100–250% — exact at 250%. So per recipe and sloop level:
+#     power ≤ base × sloop_mult × (q + _SHARD_POWER × shards)
+# The layouts never run a machine beyond 100% + 50% per shard it holds, so
+# the bound holds for every plan; it runs a little high for machines clocked
+# in between, which solve() takes back by re-solving closer to the cap.
 SHARD_BOOST = 0.5
 MAX_CLOCK   = 2.5
+# Extra power per shard above the straight line q (see the power-cap note above)
+_SHARD_POWER = SHARD_BOOST * ((MAX_CLOCK ** POWER_EXP - 1.0) / (MAX_CLOCK - 1.0) - 1.0)
 
 SLOOP_SLOTS_BY_MACHINE = {
     "Smelter":1, "Constructor":1,
@@ -158,6 +172,7 @@ class SolveResult:
     saturation_points: Dict[str,object] = field(default_factory=dict)
     usable: Optional[Dict[str,"Recipe"]] = field(default=None, repr=False)
     certified: Optional[float] = None   # goal ≥ this fraction of the best possible (proven)
+    power_bound_mw: Optional[float] = None   # the model's bound on power (with a cap)
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -508,6 +523,7 @@ class _Plan:
     goal_bound: Optional[float] = None   # proven upper bound on the goal (stage 1)
     goal_pre: Optional[float] = None     # stage-1 goal before Min New Alts traded some away
     lean_proven: bool = True   # resource and machine stages proven (within their gaps)
+    power_bound: Optional[float] = None   # the model's (upper-bound) power, with a cap
 
     def machines(self) -> int:
         return sum(p.n for ps in self.parts.values() for p in ps)
@@ -606,6 +622,10 @@ class _Model:
         if SH > 0:
             self.budget_ct["shards"] = self.ct(
                 -INF, float(SH), {key: 1.0 for key in self.var if key[0] == "s"})
+        self.power: Dict[Key, float] = {}
+        if scenario.max_power_mw is not None:
+            self.power = _power_bound(usable, self.var)
+            self.budget_ct["power"] = self.ct(-INF, float(scenario.max_power_mw), self.power)
 
         self.goal: Dict[Key, float] = {}
         for it, w in scenario.objective.items():
@@ -691,7 +711,8 @@ class _Model:
         return _Plan(parts, self.value(self.goal), proven,
                      goal_bound=getattr(self, "goal_bound", None),
                      goal_pre=getattr(self, "goal_pre", None),
-                     lean_proven=getattr(self, "lean_proven", True))
+                     lean_proven=getattr(self, "lean_proven", True),
+                     power_bound=self.value(self.power) if self.power else None)
 
 
 def _recipe_bounds(scenario: Scenario, usable: Dict[str, Recipe]) -> Dict[str, float]:
@@ -1055,6 +1076,22 @@ def _layout_groups(q: float, n: int, shards: int) -> List[Tuple[int, float, int]
     return [(c, clk, s) for c, clk, s in groups if c > 0]
 
 
+def _power_bound(usable: Dict[str, Recipe], var: Dict[Key, object]) -> Dict[Key, float]:
+    """Linear upper bound on power (MW) over the model's columns (see _SHARD_POWER).
+    Generators (negative power) scale exactly with clock, so they're just q."""
+    out: Dict[Key, float] = {}
+    for kind, k, l in var:
+        r = usable.get(k)
+        if r is None or kind not in ("q", "s"):
+            continue
+        per = r.base_power_mw * _sloop_power_mult(r, l)
+        if kind == "q":
+            out[(kind, k, l)] = per
+        elif per > 0:
+            out[(kind, k, l)] = per * _SHARD_POWER
+    return out
+
+
 def _layout_label(groups: List[Tuple[int, float, int]]) -> str:
     parts = []
     for c, clk, s in groups:
@@ -1106,6 +1143,45 @@ def _layout_options(r: Recipe, qv: float, level: int, chosen_n: int) -> List[Lay
 # ── Main solve ────────────────────────────────────────────────────────────────
 def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
           machine_meta: Optional[Dict] = None) -> SolveResult:
+    """Plan the factory. With a power cap, the plan is fit under it as closely
+    as the model allows: the model's power is an upper bound (see
+    _SHARD_POWER), so the first plan can sit a little under the cap. The
+    re-solves raise the model's cap by that slack, keeping a plan only if its
+    real power still fits the cap and it makes at least as much."""
+    t0 = time.time()
+    result = _solve_once(scenario, all_recipes, machine_meta)
+    cap = scenario.max_power_mw
+    if cap is None or cap <= 0 or not result.status.startswith("Optimal"):
+        return result
+    # Search the model's cap between one whose plan fits (lo) and one whose
+    # plan overshoots or gains nothing (hi); keep the best plan that fits.
+    lo, hi = cap, None
+    for _ in range(_POWER_ROUNDS):
+        used, bound = result.total_power_mw, result.power_bound_mw
+        if used <= 0 or bound is None or used >= cap * (1 - _POWER_CLOSE) \
+                or time.time() - t0 > _POWER_TIME_S:
+            break
+        if bound < lo * (1 - _POWER_CLOSE):
+            break                      # power isn't what limits this plan
+        guess = lo * cap / used        # where the bound's slack says the cap could go
+        trial_cap = guess if hi is None else (lo + min(hi, guess)) / 2
+        trial = _solve_once(_dc_replace(scenario, max_power_mw=trial_cap), all_recipes, machine_meta)
+        if trial.status.startswith("Optimal") and trial.total_power_mw <= cap + 1e-6 \
+                and trial.objective_value > result.objective_value * (1 + 1e-6) + 1e-9:
+            result, lo = trial, trial_cap
+        else:
+            hi = trial_cap
+    # Overshoot against the real cap (re-solves measured it against theirs)
+    over = result.total_power_mw - cap
+    if over > 0.5:
+        result.cap_overshoot["power_over"] = round(over, 1)
+    else:
+        result.cap_overshoot.pop("power_over", None)
+    return result
+
+
+def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
+                machine_meta: Optional[Dict] = None) -> SolveResult:
     warnings:       List[str] = []
     conflict_hints: List[str] = []
     cap_overshoot:  Dict[str,float] = {}
@@ -1341,6 +1417,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
         shadow_prices=shadow_prices,
         saturation_points=saturation_points,
         certified=None if certified is None else round(certified, 6),
+        power_bound_mw=None if plan is None or plan.power_bound is None else round(plan.power_bound, 2),
         usable=usable,
     )
     return result
@@ -1361,7 +1438,7 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
       saturation_points[r] supply of r beyond which more r stops helping —
                            exact: the least r that reaches the best goal with r
                            unlimited (None when more r never stops helping)
-      limits[b]            goal gained per extra power shard
+      limits[b]            goal gained per extra power shard / MW of power cap
       alt_ranking          per alternate the plan uses: the output it provides,
                            the resources and machines it saves
       alt_groups           alternates that cover for each other ("either") or
@@ -1476,7 +1553,10 @@ def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
         w = 1.0 / len(finite) / sc.available_resources[it]
         for key, c in lp.net.get(it, {}).items():
             score[key] = score.get(key, 0.0) - c * w
+    # Downstream cost is the same output with supply — and the power cap — lifted
     caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
+    if "power" in lp.budget_ct:
+        caps.append(lp.budget_ct["power"])
 
     def switched_off(off, fn):
         cols = [lp.var[("q", k, l)] for k in off for l in lp.levels[k]]
@@ -1632,6 +1712,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "status":                result.status,
         "objective_value":       result.objective_value,
         "total_power_mw":        result.total_power_mw,
+        "max_power_mw":          scenario.max_power_mw,
         "total_machines":        result.total_machines,
         # Room the machines take (Σ machines × w·l·h), what the planner minimises
         "total_space":           sum(f.machines_final * machine_space(machine_meta, f.machine)

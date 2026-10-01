@@ -78,8 +78,10 @@ export function renderResultsBar() {
   if (RESULT.total_space != null) h += st('Space · smelters', _fmtSpace(RESULT.total_space)) + sep;
   // Net power: negative when generators (nuclear plants) make more than the factory uses
   const pw = RESULT.total_power_mw ?? 0;
+  const capMw = RESULT.max_power_mw;
   h += pw < 0 ? st('Power made', `${(-pw).toFixed(0)} MW`, 'var(--ok)')
-              : st('Power', `${pw.toFixed(0)} MW`, 'var(--warn)');
+     : capMw ? st(`Power · ${(100 * pw / capMw).toFixed(1)}% of cap`, `${pw.toFixed(0)} / ${capMw.toFixed(0)} MW`, 'var(--warn)')
+             : st('Power', `${pw.toFixed(0)} MW`, 'var(--warn)');
   if (resLabel) h += sep + st('Resources', resLabel, bindingCount > 0 ? 'var(--err)' : 'var(--t3)');
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');

@@ -197,6 +197,7 @@ function renderAnalysis() {
   const limits = RESULT.analysis?.limits || {};
   const LIMIT_LABEL = {
     shards:   ['Power shards', 'extra shard', `${RESULT.shards_used || 0} of ${SC.power_shards_available ?? 0} used`],
+    power:    ['Power cap', 'extra MW', `${(RESULT.total_power_mw || 0).toFixed(0)} of ${RESULT.max_power_mw ?? '—'} MW`],
   };
   const limitRows = Object.entries(limits).filter(([k]) => LIMIT_LABEL[k]);
   if (limitRows.length) {

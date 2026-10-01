@@ -17,6 +17,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   room they take — w × l × h from `size_m` in the recipe data, in Smelter units:
   a Smelter is 1, a Manufacturer 9), then fewest recipes
 - Mark abundant resources (e.g. Water) unlimited: uncapped and free
+- Power cap: the plan is built to fit under it, as close as it can get (typically
+  99%+ of the cap when power is what limits output)
 - Power Shard placement optimised across the whole factory
 - Somersloop placement optimised across the whole factory
 - Nuclear Power Plants: burning fuel rods yields Uranium/Plutonium waste, so full
