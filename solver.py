@@ -1522,20 +1522,16 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 # all; "short" = not at your supply (output counts as all at stake), but with
 # more resources they could.
 #
-# Alternates rarely act alone, so related pairs (sharing an item) are also
-# switched off together and compared with the two apart:
-#   either   — losing both costs more than the two losses added up: either one
-#              covers for the other (two ways to the same saving).
-#   together — losing both costs less: they pay off only as a package (one
-#              feeds the other, e.g. a step-skipping chain).
-# Judged on output first; on resources only when output doesn't move for any
-# of the three switch-offs; on machines only when neither does (step-skippers
-# like Cast Screw) — each compares cleanly only with the ones above it still.
-# Pairs of one kind and measure chain into groups, each measured as a whole.
-_SYN_REL = 0.15                                         # of the pair's value …
-_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 0.5}   # … and at least
-#           (% output, % resources, Smelter units of machine space)
+# Alternates rarely act alone; see _alt_value for how groups that work
+# together (necessary or commutative synergy) are found.
+# A member alone is worth "about nothing" at ≤15% of the group's value; a
+# group is commutative when worth 15% more than its members alone, summed.
+# A group must also be worth at least _SYN_ABS (% output, % resources,
+# Smelter units of space) to count.
+_SYN_REL = 0.15
+_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 0.5}
 _MAX_PAIRS = 800
+_ALL_PAIRS_UPTO = 30    # up to this many alternates, every pair is tested
 _MEASURES = ("output", "resources", "machines")
 
 
@@ -1622,6 +1618,14 @@ def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
             m["machines"] = c[1] - cost0[1]
         return m
 
+    seen: Dict[frozenset, Optional[Dict[str, Optional[float]]]] = {}
+    def measured(keys) -> Optional[Dict[str, Optional[float]]]:
+        """measure(), remembered per set (synergy re-measures subsets)."""
+        f = frozenset(keys)
+        if f not in seen:
+            seen[f] = measure(tuple(sorted(f)))
+        return seen[f]
+
     def rounded(m) -> Dict[str, object]:
         r: Dict[str, object] = {k: None if m is None or m[k] is None
                                 else round(m[k], 3 if k != "machines" else 2) for k in _MEASURES}
@@ -1635,56 +1639,110 @@ def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
     out["alt_ranking"].sort(key=lambda x: (not x["required"],
                                            *[-(x[m] or 0.0) for m in _MEASURES], x["key"]))
 
-    # ── pairs ──
-    items_of = {k: set(usable[k].inputs) | set(usable[k].outputs) for k in alts}
+    # ── synergy ──
+    # Each alternate's value alone, inside a group S, is what it gives with the
+    # rest of S absent: v(S) − v(S∖{i}), where v(T) is what the plan loses
+    # without all of T. (Its ranking number, v({i}), is what the plan loses
+    # without it with everything else present — for two that only work
+    # together, each looks as big as the pair.)
+    #   necessary    every member alone is worth (about) nothing, the group is
+    #   commutative  the group is worth clearly more than its members alone, summed
+    # Pairs are found first; pairs sharing a member chain into larger groups.
+    # A group is then cut to its core: a member goes when the group's synergy
+    # (its value beyond the members alone, summed) holds without it — so every
+    # member left is one the synergy needs. Pairs outside the core still count.
     free = [k for k in alts if single[k] is not None]
-    pairs = [(a, b) for i, a in enumerate(free) for b in free[i + 1:]
-             if items_of[a] & items_of[b]][:_MAX_PAIRS]
-    links: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
-    for a, b in pairs:
-        joint = measure((a, b), need_cost=False)
-        if joint is None:                        # each alone can go, both can't
-            links.setdefault(("either", "output"), []).append((a, b))
-            continue
-        # With a pair short at your supply, output is all at stake either way —
-        # only resources and machines tell the pair apart
-        short = joint.get("short") or single[a].get("short") or single[b].get("short")
-        for m in (_MEASURES[1:] if short else _MEASURES):
-            if m != "output" and joint.get(m) is None:
-                c = measure((a, b))
-                if c is None:
-                    links.setdefault(("either", m), []).append((a, b))
-                    break
-                joint.update(c)
-            j, sa, sb = joint[m], single[a][m], single[b][m]
-            inter = j - sa - sb
-            thr = max(_SYN_ABS[m], _SYN_REL * max(abs(j), abs(sa + sb)))
-            if abs(inter) > thr:
-                links.setdefault(("either" if inter > 0 else "together", m), []).append((a, b))
-                break
-            # The next measure only compares cleanly if this one didn't move
-            if max(abs(j), abs(sa), abs(sb)) > _SYN_ABS[m]:
-                break
+    if len(free) <= _ALL_PAIRS_UPTO:
+        pairs = [(a, b) for i, a in enumerate(free) for b in free[i + 1:]]
+    else:                          # big plans: related alternates (sharing an item)
+        items_of = {k: set(usable[k].inputs) | set(usable[k].outputs) for k in free}
+        pairs = [(a, b) for i, a in enumerate(free) for b in free[i + 1:]
+                 if items_of[a] & items_of[b]][:_MAX_PAIRS]
+    any_short = lambda keys: any(single[k].get("short") for k in keys)
 
-    for (kind, by), edges in links.items():
-        parent = {k: k for k in alts}
+    def measure_for(v: Dict[str, Optional[float]], keys) -> Optional[str]:
+        """The first measure the group moves: output, else resources, else space
+        (output tells nothing when the group is short at your supply)."""
+        for m in (_MEASURES[1:] if any_short(keys) or v.get("short") else _MEASURES):
+            if v.get(m) is not None and v[m] > _SYN_ABS[m]:
+                return m
+        return None
+
+    def kind_of(m: str, value: float, alone: List[float]) -> Optional[str]:
+        if all(x <= _SYN_REL * value for x in alone):
+            return "necessary"
+        if value > sum(max(x, 0.0) for x in alone) * (1 + _SYN_REL) + _SYN_ABS[m]:
+            return "commutative"
+        return None
+
+    def entry(kind, m, keys, value, alone) -> dict:
+        return {"kind": kind, "by": m, "keys": list(keys), "value": round(value, 3),
+                "alone": {k: round(x, 3) for k, x in zip(keys, alone)}}
+
+    found: Dict[str, List[dict]] = {}          # measure → synergistic pairs
+    for a, b in pairs:
+        joint = measured((a, b))
+        if joint is None:                      # can't lose both (but each alone): no synergy
+            continue
+        m = measure_for(joint, (a, b))
+        if m is None:
+            continue
+        alone = [joint[m] - single[b][m], joint[m] - single[a][m]]
+        kind = kind_of(m, joint[m], alone)
+        if kind:
+            found.setdefault(m, []).append(entry(kind, m, (a, b), joint[m], alone))
+
+    for m, pair_entries in found.items():
+        parent: Dict[str, str] = {}
         def find(x):
+            parent.setdefault(x, x)
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
-        for a, b in edges:
-            parent[find(a)] = find(b)
-        groups: Dict[str, List[str]] = {}
-        for k in sorted({k for p in edges for k in p}):
-            groups.setdefault(find(k), []).append(k)
-        for keys in groups.values():
-            g = measure(tuple(keys))
-            out["alt_groups"].append({
-                "kind": kind, "by": by, "keys": keys, "required": g is None, **rounded(g),
-                **{f"apart_{m}": round(sum(single[k][m] for k in keys), 3) for m in _MEASURES}})
-    out["alt_groups"].sort(key=lambda g: (not g["required"],
-                                          *[-(g[m] or 0.0) for m in _MEASURES]))
+        for e in pair_entries:
+            parent[find(e["keys"][0])] = find(e["keys"][1])
+        comps: Dict[str, List[str]] = {}
+        for k in sorted(parent):
+            comps.setdefault(find(k), []).append(k)
+        def split(keys) -> Optional[Tuple[float, List[float], float]]:
+            """(group value, members alone, synergy) in measure m."""
+            whole = measured(keys)
+            if whole is None or whole.get(m) is None:
+                return None
+            alone = []
+            for k in keys:
+                rest = measured([x for x in keys if x != k]) if len(keys) > 1 else {m: 0.0}
+                if rest is None or rest.get(m) is None:
+                    return None
+                alone.append(whole[m] - rest[m])
+            return whole[m], alone, whole[m] - sum(max(x, 0.0) for x in alone)
+
+        for keys in comps.values():
+            mine = [e for e in pair_entries if e["keys"][0] in keys]
+            if len(keys) == 2:
+                out["alt_groups"].extend(mine)
+                continue
+            core, got = list(keys), split(keys)
+            while got is not None and len(core) > 2:
+                cut = None                     # the member whose loss keeps most synergy
+                for k in core:
+                    sub = [x for x in core if x != k]
+                    g2 = split(sub)
+                    if g2 is not None and g2[2] >= got[2] * (1 - _SYN_REL) \
+                            and (cut is None or g2[2] > cut[1][2]):
+                        cut = (sub, g2)
+                if cut is None:
+                    break
+                core, got = cut
+            kind = got and kind_of(m, got[0], got[1])
+            if kind:
+                out["alt_groups"].append(entry(kind, m, core, got[0], got[1]))
+            # Pairs not touching the core are separate synergies
+            out["alt_groups"].extend(e for e in mine
+                                     if not kind or not set(e["keys"]) & set(core))
+    order = {m: i for i, m in enumerate(_MEASURES)}
+    out["alt_groups"].sort(key=lambda g: (order[g["by"]], g["kind"] != "necessary", -g["value"]))
     return out
 
 

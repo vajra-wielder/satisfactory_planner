@@ -322,13 +322,9 @@ function renderAnalysis() {
     const rankBody = el.querySelector('.an-section:last-child .an-body');
     rankBody.innerHTML = `
       <p style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:8px">
-        What each alternate is worth to this plan (fractional machines, sloops held in place) —
-        either <b style="color:var(--t2)">upstream</b>: the share of your output it provides
-        with your supply, or, when output doesn't depend on it,
-        <b style="color:var(--t2)">downstream</b>: the resources it saves for the same output.
-        Then the machine space it saves, in Smelter units (a Smelter = 1).
-        <b style="color:#f87171">Required</b> = the goals can't be met without it;
-        <b style="color:#fb923c">Short</b> = not at your supply.
+        What this plan loses without each alternate: its share of your output, or — when
+        output doesn't depend on it — the extra resources the same output would need
+        (each resource weighed by your supply). Then the space it saves, in Smelter units.
       </p>
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
         <span style="font-size:10px;color:var(--t3)">Sort by</span>
@@ -358,35 +354,35 @@ function renderAnalysis() {
 let _rankSort = 'value';   // 'value' (output, then resources) or 'machines'
 
 // The one number that says what an alternate does: output it provides
-// (upstream), else resources it saves (downstream); then machines it saves.
+// (upstream), else resources it saves (downstream); then the space it saves.
 function _valueCells(v) {
-  if (v.required) return `<span style="color:#f87171;font-family:var(--mono);font-size:11px">required</span>`;
   const mono = (txt, col, tip) =>
     `<span style="font-family:var(--mono);font-size:11px;color:${col}" title="${tip}">${txt}</span>`;
+  if (v.required) return '';                       // the badge says it all
   let main;
   if (v.short)
-    main = mono(`short · +${v.resources.toFixed(1)}% res`, '#fb923c',
-                'Without it your supply can\'t meet the fixed outputs; this much more would');
+    main = mono(`+${v.resources.toFixed(1)}% resources`, '#fb923c',
+                'More resources the fixed outputs would need without it');
   else if (v.output > 0.05)
-    main = mono(`${v.output.toFixed(1)}% output`, 'var(--ok)', 'Share of your output it provides');
+    main = mono(`${v.output.toFixed(1)}% of output`, 'var(--ok)', 'Share of your output it provides');
   else if (v.resources > 0.05)
-    main = mono(`−${v.resources.toFixed(1)}% res`, 'var(--ok)',
+    main = mono(`saves ${v.resources.toFixed(1)}% resources`, 'var(--ok)',
                 'Without it the same output needs this much more of your resources');
   else
-    main = mono('—', 'var(--t3)', 'No effect: other recipes cover for it');
+    main = '';
   const m = v.machines ?? 0;          // machine space, Smelter units
-  const mach = Math.abs(m) < 0.5 ? ''
-    : mono(`${m > 0 ? '−' : '+'}${_fmtSpace(Math.abs(m))}`, m > 0 ? 'var(--ok)' : 'var(--t3)',
-           m > 0 ? 'Machine space it saves' : 'Extra machine space it takes');
-  return `${main}${mach ? `<span style="margin-left:8px">${mach}</span>` : ''}`;
+  const space = Math.abs(m) < 0.5 ? ''
+    : mono(m > 0 ? `saves ${m.toFixed(1)} space` : `costs ${(-m).toFixed(1)} space`,
+           m > 0 ? 'var(--ok)' : 'var(--t3)', 'Machine space, in Smelter units');
+  return [main, space].filter(Boolean).join('<span style="margin-left:8px"></span>');
 }
 
 function _renderRanking(analysis) {
   const out = document.getElementById('an-rank-results');
   if (!out) return;
   const BADGE = {
-    required: { label: 'REQUIRED',       bg: 'rgba(239,68,68,.18)',  color: '#f87171' },
-    short:    { label: 'SHORT',          bg: 'rgba(251,146,60,.16)', color: '#fb923c' },
+    required: { label: 'REQUIRED',       bg: 'rgba(239,68,68,.18)',  color: '#f87171' },   // can't make the output without it
+    short:    { label: 'SHORT',          bg: 'rgba(251,146,60,.16)', color: '#fb923c' },   // your supply can't, without it
     output:   { label: 'MORE OUTPUT',    bg: 'rgba(52,211,153,.15)', color: '#34d399' },
     res:      { label: 'LESS RESOURCES', bg: 'rgba(52,211,153,.15)', color: '#34d399' },
     mach:     { label: 'LESS SPACE',     bg: 'rgba(59,130,246,.15)', color: '#60a5fa' },
@@ -426,27 +422,27 @@ function _renderRanking(analysis) {
   // ── Synergy ──
   const gEl = document.getElementById('an-groups');
   const groups = analysis.alt_groups || [];
-  if (!gEl || !groups.length) { if (gEl) gEl.innerHTML = ''; return; }
+  if (!gEl) return;
+  if (!groups.length) { gEl.innerHTML = ''; return; }
   const KIND = {
-    together: ['Work together', 'Worth more as a package than apart — one feeds the other.', '#34d399'],
-    either:   ['Either one',    'They cover for each other: drop one and the other takes over; drop all and it costs this.', '#fbbf24'],
+    necessary:   ['Necessary',   'Each does (about) nothing alone; together they do.', '#34d399'],
+    commutative: ['Commutative', 'Together worth more than each alone, summed.',       '#60a5fa'],
   };
-  const fmt = { output: v => `${v.toFixed(1)}% output`, resources: v => `${v.toFixed(1)}% res`,
-                machines: v => _fmtSpace(v) };
+  const unit = { output: '% of output', resources: '% resources', machines: ' space' };
+  const fmt = (by, v) => `${Math.max(0, v).toFixed(1)}${unit[by]}`;
   let h = `<div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Synergy</div>`;
-  ['together', 'either'].forEach(kind => {
+  ['necessary', 'commutative'].forEach(kind => {
     const gs = groups.filter(g => g.kind === kind);
     if (!gs.length) return;
     const [title, blurb, col] = KIND[kind];
     h += `<div style="font-size:11px;font-weight:600;color:${col};margin:8px 0 2px">${title}</div>
           <div style="font-size:10px;color:var(--t3);margin-bottom:6px">${blurb}</div>`;
     gs.forEach(g => {
-      const detail = g.required ? 'required as a set'
-        : `by ${g.by === 'machines' ? 'space' : g.by}: together ${fmt[g.by](g[g.by])} · apart ${fmt[g.by](g['apart_' + g.by])}`;
+      const alone = Object.values(g.alone).map(v => Math.max(0, v).toFixed(1)).join(' + ');
       h += `
         <div style="border:1px solid var(--b);border-radius:var(--rsm);padding:6px 8px;margin-bottom:6px">
           <div style="font-size:11px;color:var(--t2);margin-bottom:3px">${g.keys.map(_altDisplayName).join(' + ')}</div>
-          <div style="font-size:10px;color:var(--t3);font-family:var(--mono)">${detail}</div>
+          <div style="font-size:10px;color:var(--t3);font-family:var(--mono)">${fmt(g.by, g.value)} together · alone ${alone}</div>
         </div>`;
     });
   });
