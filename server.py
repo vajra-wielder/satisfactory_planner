@@ -332,6 +332,41 @@ def _factory_outputs() -> dict:
                      "stale": bool(result and result.get("_stale")), "made": made})
     return {"factories": facs, "claims": _claims(saved)}
 
+_save_lock = threading.Lock()   # claim check + write as one step, so two saves can't both take the same
+
+def _hold_imports(key: str, data: dict) -> list:
+    """Cap a scenario's From factories at what each source has left: what it
+    makes, less what the other saved factories already take, less this
+    scenario's earlier rows for the same item. Drops rows from itself.
+    Edits data in place; returns [{item, factory, asked, rate}] for each cut."""
+    rows = data.get("from_factories")
+    if not rows:
+        return []
+    out = _factory_outputs()
+    made = {f["key"]: f["made"] for f in out["factories"]}
+    left: dict = {}
+    for fac, items in out["claims"].items():
+        for it, by in items.items():
+            if it in made.get(fac, {}):
+                left[(fac, it)] = made[fac][it] - sum(v for k, v in by.items() if k != key)
+    cut, keep = [], []
+    for r in rows:
+        if r.get("factory") == key:
+            continue
+        k = (r.get("factory"), r.get("item"))
+        asked = max(0.0, float(r.get("rate") or 0))
+        if k[0] in made and k[1] in made[k[0]]:   # unknown sources (not solved, "max") aren't capped
+            room = max(0.0, left.get(k, made[k[0]][k[1]]))
+            rate = min(asked, room)
+            left[k] = room - rate
+            if asked - rate > 1e-6:
+                cut.append({"item": k[1], "factory": k[0], "asked": asked, "rate": round(rate, 6)})
+            r = {**r, "rate": round(rate, 6)}
+        keep.append(r)
+    data["from_factories"] = keep
+    data["available_resources"] = supply.available(data)
+    return cut
+
 
 # ── Async solve job store ─────────────────────────────────────────────────────
 import uuid as _uuid
@@ -728,29 +763,35 @@ class Handler(BaseHTTPRequestHandler):
             name = path[len("/api/scenarios/"):]
             data = self._read_json()
             p    = self._scenario_path(name)
-            # Write to a temp file beside the target, then atomically rename.
-            # Prevents a truncated file if the process is killed mid-write.
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=p.parent, prefix=f".{p.stem}_", suffix=".tmp"
-            )
-            try:
-                with os.fdopen(tmp_fd, "w") as f:
-                    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-                os.replace(tmp_path, p)  # atomic on POSIX; near-atomic on Windows
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-            # Invalidate per-scenario cache so next load re-reads the file
-            stale = [k for k in _scenario_load_cache if k[0] == name]
-            for k in stale:
-                del _scenario_load_cache[k]
-            self._json(200, {"status": "saved", "key": name})
+            with _save_lock:
+                cut = _hold_imports(name, data) if isinstance(data, dict) else []
+                self._write_scenario(name, p, data)
+            self._json(200, {"status": "saved", "key": name, "cut": cut,
+                             "from_factories": data.get("from_factories") if isinstance(data, dict) else None})
             return
 
         self._json(404, {"error": "Not found"})
+
+    def _write_scenario(self, name, p, data):
+        # Write to a temp file beside the target, then atomically rename.
+        # Prevents a truncated file if the process is killed mid-write.
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=p.parent, prefix=f".{p.stem}_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            os.replace(tmp_path, p)  # atomic on POSIX; near-atomic on Windows
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        # Invalidate per-scenario cache so next load re-reads the file
+        stale = [k for k in _scenario_load_cache if k[0] == name]
+        for k in stale:
+            del _scenario_load_cache[k]
 
     # ── DELETE ────────────────────────────────────────────────────────────────
 

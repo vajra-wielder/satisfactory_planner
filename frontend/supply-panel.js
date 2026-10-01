@@ -27,6 +27,7 @@ let NODES = [];       // rows, as SC.resource_nodes
 let FROM = [];        // rows, as SC.from_factories
 let UNLIM = new Set();
 let OUTPUTS = null;   // /api/factory-outputs
+let PAINTS = [];
 
 // ── Rates ─────────────────────────────────────────────────
 export function nodeRate(n) {
@@ -55,12 +56,16 @@ const defaultExtractor = res => {
 
 // ── Factory outputs ───────────────────────────────────────
 // Per other factory and item: { made, others (taken by other factories), left }
-function offer(fac, item) {
+// row: this row — the factory's other rows for the same item and source count as taken too
+function offer(fac, item, row = null) {
   const f = OUTPUTS?.factories.find(x => x.key === fac);
   const made = f?.made[item];
   if (made == null) return null;
   const by = { ...(OUTPUTS.claims[fac]?.[item] || {}) };
   delete by[ownKey()];
+  const mine = FROM.filter(r => r !== row && r.factory === fac && r.item === item)
+    .reduce((s, r) => s + (parseFloat(r.rate) || 0), 0);
+  if (mine > 0) by[ownKey()] = mine;
   const others = Object.values(by).reduce((s, v) => s + v, 0);
   return { made, others, by, left: Math.max(0, made - others), stale: f.stale, solved: f.solved };
 }
@@ -214,13 +219,19 @@ function renderFrom(focus = -1) {
   const c = $('kv-from');
   if (!c) return;
   c.innerHTML = '';
+  PAINTS = [];   // every row's note, repainted when any rate changes (they share what's left)
+  if (CUT.length) {
+    const name = k => OUTPUTS?.factories.find(x => x.key === k)?.name || k;
+    c.insertAdjacentHTML('beforeend', `<p class="n-hint n-warn">Saved with less than asked — already taken by other factories: ${
+      CUT.map(x => `${itemName(x.item)} from ${name(x.factory)} ${fmt(x.asked)} → ${fmt(x.rate)}`).join('; ')}.</p>`);
+    CUT = [];
+  }
   if (OUTPUTS && !madeItems().length && !FROM.length)
     c.innerHTML = '<p class="n-hint">Nothing yet — solve and save another factory first.</p>';
   FROM.forEach((f, i) => {
     const row = document.createElement('div');
     row.className = 'nrow';
     const makers = makersOf(f.item);
-    const o = f.factory ? offer(f.factory, f.item) : null;
     row.innerHTML = `
       <div class="nrow-1 nrow-from">
         <div class="acw"><input type="text" class="f-item" placeholder="Item…" value="${f.item ? itemName(f.item) : ''}"/></div>
@@ -234,40 +245,44 @@ function renderFrom(focus = -1) {
       </div>`;
     const note = row.querySelector('.f-note'), rin = row.querySelector('.f-rate');
     const paint = () => {
+      const o = f.factory ? offer(f.factory, f.item, f) : null;
       note.classList.remove('n-warn');
       if (!f.factory || !o) { note.textContent = f.factory && OUTPUTS ? 'not made there now' : ''; if (f.factory && OUTPUTS) note.classList.add('n-warn'); return; }
       const name = k => OUTPUTS.factories.find(x => x.key === k)?.name || k;
-      note.textContent = `${fmt(o.left)} left` + (o.stale ? ' · old plan' : !o.solved ? ' · not solved' : '');
+      const takers = Object.keys(o.by).filter(k => k !== ownKey()).map(name);
+      note.textContent = (o.left < 1e-6 && takers.length ? `all taken by ${takers.join(', ')}` : `up to ${fmt(o.left)}`) + (o.stale ? ' · old plan' : !o.solved ? ' · not solved' : '');
       note.title = [`${name(f.factory)} makes ${fmt(o.made)}/min`
         + (o.stale ? ' (its last plan — it changed since)' : !o.solved ? ' (its declared rate — not solved)' : ''),
-        ...Object.entries(o.by).map(([k, v]) => `${name(k)} takes ${fmt(v)}`)].join('\n');
-      if ((parseFloat(f.rate) || 0) > o.left + 1e-6) { note.classList.add('n-warn'); note.textContent += ' — over'; }
+        ...Object.entries(o.by).map(([k, v]) => `${k === ownKey() ? 'Your other rows take' : `${name(k)} takes`} ${fmt(v)}`)].join('\n');
+      const over = (parseFloat(f.rate) || 0) - o.left;
+      if (over > 1e-6) { note.classList.add('n-warn'); note.textContent = `${fmt(over)} over — ` + note.textContent; }
     };
     const setItem = key => {
       f.item = key;
       const ms = makersOf(key);
       if (!ms.some(m => m.key === f.factory)) f.factory = ms.length === 1 ? ms[0].key : '';
-      if (f.factory) f.rate = +offer(f.factory, key).left.toFixed(3);
+      if (f.factory) f.rate = +offer(f.factory, key, f).left.toFixed(3);
       syncSupply(); renderFrom(ms.length > 1 ? -1 : i);
       if (ms.length > 1) requestAnimationFrame(() => $('kv-from').children[i]?.querySelector('.f-fac')?.focus());
     };
     makeAC(row.querySelector('.f-item'), setItem, null, madeItems);
     row.querySelector('.f-fac').addEventListener('change', ev => {
       f.factory = ev.target.value;
-      const of = offer(f.factory, f.item);
+      const of = offer(f.factory, f.item, f);
       if (of) f.rate = +of.left.toFixed(3);
       syncSupply(); renderFrom();
     });
-    rin.addEventListener('input', () => { f.rate = rin.value; syncSupply(); paint(); });
+    rin.addEventListener('input', () => { f.rate = rin.value; syncSupply(); PAINTS.forEach(p => p()); });
     rin.addEventListener('blur', () => {
       let v = evalExpr(rin.value);
       if (v === null) return;
-      const of = f.factory && offer(f.factory, f.item);
+      const of = f.factory && offer(f.factory, f.item, f);
       if (of) v = Math.min(v, of.left);            // no more than that factory has left
       rin.value = f.rate = parseFloat(Math.max(0, v).toPrecision(6));
-      syncSupply(); paint();
+      syncSupply(); PAINTS.forEach(p => p());
     });
     row.querySelector('.n-x').addEventListener('click', () => { FROM.splice(i, 1); syncSupply(); renderFrom(); });
+    PAINTS.push(paint);
     paint();
     c.appendChild(row);
     if (i === focus) requestAnimationFrame(() => rin.focus());
@@ -279,4 +294,14 @@ export function addFrom() {
   FROM.push({ item: '', factory: '', rate: '' });
   renderFrom();
   requestAnimationFrame(() => $('kv-from').lastElementChild?.querySelector('.f-item')?.focus());
+}
+
+// The server capped some imports on save (another factory took that share
+// first): show the saved rates and say what changed
+let CUT = [];
+export function applyCut(rows, cut) {
+  FROM = (rows || []).map(f => ({ ...f }));
+  CUT = cut || [];
+  syncSupply();
+  refreshOutputs();
 }

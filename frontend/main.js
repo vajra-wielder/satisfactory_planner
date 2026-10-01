@@ -32,7 +32,7 @@ import {
 // Panels are imported here only so their modules are loaded eagerly;
 // all interaction goes through sidebar.js re-exports above.
 
-import { addNode, addFrom, refreshOutputs } from './supply-panel.js';
+import { addNode, addFrom, refreshOutputs, applyCut } from './supply-panel.js';
 
 import {
   openWarn, closeWarn,
@@ -394,7 +394,8 @@ function handleSave() {
   readUI();
   const key = SC.name.replace(/\s+/g, '_').toLowerCase();
   saveScenario(key, { ...SC })
-    .then(() => {
+    .then(res => {
+      if (res?.cut?.length) applyCut(res.from_factories, res.cut);   // over what the sources have left
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
       setTimeout(() => { b.textContent = '💾 Save'; }, 2200);
