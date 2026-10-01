@@ -15,6 +15,7 @@ from typing import Dict, Optional
 import yaml
 
 from solver import RECIPES_PATH
+import supply
 
 
 def _load_meta() -> dict:
@@ -34,8 +35,7 @@ _NODE = set(META["node_resources"])
 def factory_io(scenario: dict, result: Optional[dict]) -> dict:
     """{imports, exports, surplus, solved}: item → rate per minute.
     Without a plan, the scenario's own declared numbers stand in."""
-    supplied = {k: float(v) for k, v in (scenario.get("available_resources") or {}).items()
-                if float(v or 0) > 0}
+    supplied = {k: v for k, v in supply.available(scenario).items() if v > 0}
     goals = (set(scenario.get("objective") or {}) | set(scenario.get("must_produce") or {})
              | set(scenario.get("min_produce") or {}))
     if result is None or not str(result.get("status", "")).startswith("Optimal"):

@@ -14,6 +14,7 @@
 
 import { SC, ALL_ITEMS, itemName, setScenario } from './state.js';
 import { loadAllKv, syncAllKv }                  from './kv-panel.js';
+import { loadSupply, syncSupply }                from './supply-panel.js';
 import { renderMachines, updMachBadge,
          renderAlts,     updAltBadge  }           from './machines-panel.js';
 
@@ -72,17 +73,18 @@ export function activateTab(tab) {
 // ══════════════════════════════════════════════════════════
 // AUTOCOMPLETE  (shared helper — used by kv-panel.js too)
 // ══════════════════════════════════════════════════════════
-export function makeAC(input, onPick, dropParent) {
+export function makeAC(input, onPick, dropParent, source = null) {
   let drop = null, cursor = -1;
   let _lastQ = null, _lastSuggestions = null;
 
   function suggestions(q) {
-    if (q === _lastQ) return _lastSuggestions;
+    if (!source && q === _lastQ) return _lastSuggestions;
     _lastQ = q;
-    if (!q) return (_lastSuggestions = ALL_ITEMS.slice(0, 10));
+    const pool = source ? source() : ALL_ITEMS;
+    if (!q) return (_lastSuggestions = pool.slice(0, source ? 30 : 10));
     const ql = q.toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
     const qd = q.toLowerCase();
-    _lastSuggestions = ALL_ITEMS
+    _lastSuggestions = pool
       .map(key => {
         const kl = key.toLowerCase(), dl = itemName(key).toLowerCase();
         let score = 0;
@@ -217,6 +219,7 @@ export function fillUI({ skipMachines = false } = {}) {
 
   // KV panels
   loadAllKv();
+  loadSupply();
 
   // Machines & alts — skipped at boot; rendered lazily on first tab open
   if (!skipMachines) {
@@ -242,6 +245,7 @@ export function readUI() {
 
   // Flush all KV panels into SC (each panel writes its own SC field)
   syncAllKv();
+  syncSupply();
 }
 
 // Treat empty / null as null, otherwise parse float

@@ -11,7 +11,7 @@
 
 import {
   SC, RESULT, RECIPES,
-  setResult, resetSC, setAllItems, setRecipes, buildItemDisplay,
+  setResult, resetSC, setAllItems, setRecipes, buildItemDisplay, setExtractors,
   nextSolveSeq, solveSeq,
 } from './state.js';
 
@@ -31,6 +31,8 @@ import {
 
 // Panels are imported here only so their modules are loaded eagerly;
 // all interaction goes through sidebar.js re-exports above.
+
+import { addNode, addFrom, refreshOutputs } from './supply-panel.js';
 
 import {
   openWarn, closeWarn,
@@ -397,6 +399,7 @@ function handleSave() {
       b.textContent = 'Saved!';
       setTimeout(() => { b.textContent = '💾 Save'; }, 2200);
       loadSaved();
+      refreshOutputs();
     })
     .catch(err => alert('Save failed: ' + err.message));
 }
@@ -424,6 +427,8 @@ function openScenario(key) {
     const { _last_solve: last, pinboard: _oldPinboard, ...scenario } = data;
     Object.assign(SC, scenario);
     if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
+    SC.resource_nodes = scenario.resource_nodes ?? null;              // null: rates from before nodes
+    SC.from_factories = scenario.from_factories || [];
     if (scenario.machines_first == null) SC.machines_first = false;
     if (!scenario.sloop_search) SC.sloop_search = 'dive';
     // Cached plan from the last solve of exactly these settings
@@ -472,7 +477,8 @@ document.getElementById('rail-solve')   .addEventListener('click', handleSolve);
   document.getElementById('tog-' + id).addEventListener('click', () => toggleSec(id)));
 
 // KV add-row buttons
-document.getElementById('add-res') .addEventListener('click', () => addKv('res'));
+document.getElementById('add-res') .addEventListener('click', addNode);
+document.getElementById('add-from').addEventListener('click', addFrom);
 document.getElementById('add-obj') .addEventListener('click', () => addKv('obj'));
 document.getElementById('add-must').addEventListener('click', () => addKv('must'));
 document.getElementById('add-min') .addEventListener('click', () => addKv('min'));
@@ -547,6 +553,7 @@ ge.querySelector('p').textContent = 'Loading game data...';
 Promise.all([fetchBoot()])
   .then(([boot]) => {
     const { items, recipes, item_display: display, unlocked_alts } = boot;
+    setExtractors(boot.extractors, boot.purity, boot.max_clock);
     setAllItems(items);
     setRecipes(recipes);
     buildItemDisplay(display);

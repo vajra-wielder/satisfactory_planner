@@ -290,6 +290,24 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bi:hover { color: var(--err); background: var(--err-dim); }
 .kvr.kvr-res { grid-template-columns: 1fr 64px 20px 20px; }
 .bi.binf { font-size: 13px; }
+.nrow { border: 1px solid var(--b); border-radius: 5px; padding: 3px; margin-bottom: 4px; }
+.nrow-1 { display: grid; grid-template-columns: 1fr 116px 20px 20px; gap: 3px; align-items: center; }
+.nrow-1.nrow-from { grid-template-columns: 1fr 74px 20px; }
+.nrow-2 { display: flex; flex-wrap: wrap; gap: 3px 5px; align-items: center; margin-top: 3px; font-size: 11px; color: var(--t3); }
+.nrow select { font-size: 11px; min-width: 0; padding: 3px 4px; }
+.nrow-2 select { width: auto; flex: none; }
+.nrow-2 .f-fac { flex: 0 1 55%; }
+.nrow-2 label { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
+.nrow-2 input { padding: 3px 5px; }
+.nrow-2 input[type=number] { width: 44px; font-family: var(--mono); font-size: 11px; }
+.nrow-2 .n-cl { width: 50px !important; }
+.nrow-2 .n-rate-in, .nrow-1 .f-rate { width: 74px; font-family: var(--mono); font-size: 12px; }
+.n-rate { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--t2); white-space: nowrap; }
+.n-sh { width: 100%; text-align: right; font-size: 10px; color: var(--t3); }
+.f-note { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; text-align: right; }
+.n-warn { color: var(--warn) !important; }
+.n-hint { font-size: 11px; color: var(--t3); margin: 3px 0 5px; line-height: 1.4; }
+.n-hint b { color: var(--t2); font-family: var(--mono); font-weight: 500; }
 .bi.binf:hover { color: var(--acc); background: var(--acc-glow); }
 .bi.binf.on { color: var(--acc); background: var(--acc-glow); }
 .arb {
@@ -600,6 +618,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bb-sec { padding: 5px 10px 1px; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--t3); }
 .bb-row { position: relative; display: flex; justify-content: space-between; gap: 6px; padding: 2px 14px; }
 .bb-row.bb-dim { opacity: .65; }
+.bb-sub { padding: 0 14px 2px 22px; font-size: 10px; color: var(--t3); margin-top: -2px; }
 .bb-row.ok .bb-item { color: var(--ok); }
 .bb-row.short .bb-item { color: var(--warn); }
 .bb-rate { font-family: var(--mono); color: var(--t3); }
@@ -731,9 +750,15 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
           Resources / Minute <span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
-          <p style="font-size:11px;color:var(--t3);margin-bottom:5px;line-height:1.4">Hard limits — nothing else enters the system.</p>
+          <p class="n-hint">The nodes this factory mines — nothing else enters but what it takes from other factories.</p>
           <div id="kv-res"></div>
-          <button class="arb" id="add-res">+ Add Resource</button>
+          <button class="arb" id="add-res">+ Add Node</button>
+          <div class="goals-group" style="margin-top:8px">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:4px">From factories <span style="color:var(--t4);font-size:10px">— made by your other saved factories</span></div>
+            <div id="kv-from"></div>
+            <button class="arb" id="add-from">+ Add Import</button>
+          </div>
+          <div id="res-total" class="n-hint"></div>
         </div>
       </div>
       <div class="pc" id="sec-goals">

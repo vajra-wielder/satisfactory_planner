@@ -2,7 +2,9 @@
  * blackboard.js — logistics planning, in two parts.
  *
  * Between factories: every saved scenario is a black box showing only what it
- * imports and exports (from its last plan). Join factories with routes — belt,
+ * imports and exports (from its last plan), where its imports come from and
+ * how much of its outputs others take ("From factories" in each scenario —
+ * those joins are drawn as routes). Join factories with routes — belt,
  * train, truck or drone, each with a trip time — and plan the network: which
  * recipe runs where, what crosses each route and what that takes, what each
  * factory draws, and what the leftovers could still make (network.py).
@@ -52,6 +54,15 @@ export function openBlackboard() {
     FLUIDS = new Set(d.fluids || []);
     LAYOUT = { positions: {}, routes: [], belt: 'Mk5', pipe: 'Mk2', ...(d.layout || {}) };
     LAYOUT.routes = (LAYOUT.routes || []).filter(r => factory(r.a) && factory(r.b));
+    // A factory's "From factories" imports join it to where they come from
+    let added = false;
+    d.factories.forEach(f => (f.sources || []).forEach(src => {
+      if (factory(src.factory) && !routeBetween(src.factory, f.key)) {
+        LAYOUT.routes.push({ a: src.factory, b: f.key, mode: 'train', trip_min: 4 });
+        added = true;
+      }
+    }));
+    if (added) save();
     fillTierSelect('bb-belt', d.transport.belts, LAYOUT.belt);
     fillTierSelect('bb-pipe', d.transport.pipes, LAYOUT.pipe);
     renderFactories();
@@ -85,6 +96,7 @@ function save() {
 // ══════════════════════════════════════════════════════════
 
 const factory = key => DATA?.factories.find(f => f.key === key);
+const routeBetween = (a, b) => LAYOUT.routes.some(r => (r.a === a && r.b === b) || (r.a === b && r.b === a));
 
 function renderFactories() {
   const board = $('bb-board');
@@ -101,11 +113,20 @@ function renderFactories() {
     card.dataset.key = f.key;
     card.style.left = pos.x + 'px';
     card.style.top = pos.y + 'px';
-    const rows = (title, obj, cls = '') => {
+    // In: where it comes from (its "From factories"). Out: how much others take.
+    const from = it => (f.sources || []).filter(x => x.item === it).map(x => factory(x.factory)?.name || x.factory);
+    const note = (it, r, out) => {
+      if (!out) return from(it).length ? `<div class="bb-sub">from ${from(it).join(', ')}</div>` : '';
+      const t = f.taken?.[it];
+      if (!t) return '';
+      const over = r != null && t > r + 1e-6;
+      return `<div class="bb-sub ${over ? 'bb-warn' : ''}">${fmt(t)} taken${over ? ` — ${fmt(t - r)} more than it makes` : r != null && r - t > 1e-3 ? `, ${fmt(r - t)} left` : ''}</div>`;
+    };
+    const rows = (title, obj, cls = '', out = false) => {
       const e = Object.entries(obj);
       return e.length ? `<div class="bb-sec">${title}</div>` + e.map(([it, r]) => `
         <div class="bb-row ${cls}"><span class="bb-item">${itemName(it)}${FLUIDS.has(it) ? ' 💧' : ''}</span>
-        <span class="bb-rate">${r == null ? 'max' : fmt(r) + '/min'}</span></div>`).join('') : '';
+        <span class="bb-rate">${r == null ? 'max' : fmt(r) + '/min'}</span></div>${note(it, r, out)}`).join('') : '';
     };
     card.innerHTML = `
       <div class="bb-head-row">
@@ -113,7 +134,7 @@ function renderFactories() {
         ${f.solved ? '' : '<span class="bb-tag" title="No current plan — showing the scenario\'s own numbers. Solve it for exact rates.">not solved</span>'}
         <span class="bb-route-h" title="Drag onto another factory to add a route">⇄</span>
       </div>
-      ${rows('In', f.imports)}${rows('Out', f.exports)}${rows('Surplus', f.surplus, 'bb-dim')}
+      ${rows('In', f.imports)}${rows('Out', f.exports, '', true)}${rows('Surplus', f.surplus, 'bb-dim', true)}
       ${!Object.keys({ ...f.imports, ...f.exports, ...f.surplus }).length ? '<div class="bb-sec">Self-contained</div>' : ''}`;
     card.querySelector('.bb-name').addEventListener('click', () => onOpenFactory(f.key));
     card.querySelector('.bb-route-h').addEventListener('mousedown', e => startRoute(e, f.key));

@@ -11,7 +11,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 ### Factory Optimization
 - Exact mixed-integer solver (OR-Tools + SCIP), proven optimal
 - Weighted multi-item objectives
-- Resource constraints
+- Resources as nodes: resource, extractor (Miner Mk.1–3, Oil / Water Extractor,
+  Resource Well satellites), purity, count and clock give the rate — or a fixed
+  rate for anything else
+- From factories: take items another saved factory makes. Pick the item (from
+  everything your other factories' last plans make) and the factory; the rate
+  starts at what that factory has left — what it makes less what other
+  factories take — and can't go above it
 - Production minimums, maximums, and exact requirements
 - Least raw resources first, then least machine space (machines weighed by the
   room they take — w × l × h from `size_m` in the recipe data, in Smelter units:
@@ -27,7 +33,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 
 ### Blackboard (logistics)
 - Between factories: every saved scenario is a black box showing only what it
-  imports and exports (from its last plan). Join factories with routes (belt,
+  imports and exports (from its last plan), where its imports come from and
+  how much of each output others take. "From factories" imports are drawn as
+  routes on their own. Join factories with routes (belt,
   train, truck or drone, with trip times) and plan the network: which recipe
   runs where, what crosses each route (items, stacks and cars / drones / lanes),
   what each factory draws, and how much more each goal the leftovers could make.
@@ -150,7 +158,8 @@ The application launches as a native desktop window.
 
 A scenario may contain:
 
-- Available Resources
+- Resource Nodes (or fixed rates)
+- Imports From Other Factories
 - Objective Outputs
 - Exact Production Targets
 - Minimum Production Targets

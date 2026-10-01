@@ -27,6 +27,7 @@ from solver import (
 )
 import logistics
 import network
+import supply
 
 ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
@@ -116,6 +117,9 @@ def _build_boot_bytes():
                          for k, r in ALL_RECIPES.items()},
         "item_display": json.loads(_ITEM_DISPLAY_BYTES),
         "unlocked_alts": _load_unlocked_alts(),
+        "extractors":   supply.EXTRACTORS,
+        "purity":       supply.PURITY,
+        "max_clock":    supply.MAX_CLOCK,
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
@@ -245,8 +249,9 @@ def _save_board(layout: dict) -> None:
     BOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
     BOARD_PATH.write_text(yaml.safe_dump(keep, sort_keys=False), encoding="utf-8")
 
-def _factory_plan(key: str):
-    """(scenario data, its current cached plan or None) for a saved factory."""
+def _factory_plan(key: str, stale_ok: bool = False):
+    """(scenario data, its current cached plan or None) for a saved factory.
+    stale_ok: fall back to its last plan even when the scenario changed since."""
     p = SCENARIOS_DIR / f"{key}.yaml"
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     entry = _cache_read(_result_key(data.get("name", key)))
@@ -256,6 +261,8 @@ def _factory_plan(key: str):
                 return data, entry["result"]
         except Exception:
             pass
+        if stale_ok:
+            return data, {**entry["result"], "_stale": True}
     return data, None
 
 def _network_sites(keys) -> list:
@@ -282,16 +289,48 @@ def _network_sites(keys) -> list:
                       "solved": result is not None})
     return sites
 
-def _blackboard_factories() -> list:
+def _saved_factories(stale_ok: bool = False):
+    """[(key, scenario data, plan or None)] for every saved scenario."""
     out = []
     for p in sorted(SCENARIOS_DIR.glob("*.yaml")):
         try:
-            data, result = _factory_plan(p.stem)
+            out.append((p.stem, *_factory_plan(p.stem, stale_ok)))
         except Exception:
             continue
-        io = logistics.factory_io(data, result)
-        out.append({"key": p.stem, "name": data.get("name", p.stem), **io})
     return out
+
+def _claims(saved) -> dict:
+    """{source factory: {item: {taking factory: rate}}} from every from_factories."""
+    out: dict = {}
+    for key, data, _ in saved:
+        for f in data.get("from_factories") or []:
+            if f.get("factory") and f.get("item"):
+                by = out.setdefault(f["factory"], {}).setdefault(f["item"], {})
+                by[key] = by.get(key, 0.0) + float(f.get("rate") or 0)
+    return out
+
+def _blackboard_factories() -> list:
+    saved = _saved_factories()
+    claims = _claims(saved)
+    out = []
+    for key, data, result in saved:
+        io = logistics.factory_io(data, result)
+        out.append({"key": key, "name": data.get("name", key), **io,
+                    "sources": [f for f in data.get("from_factories") or [] if f.get("factory")],
+                    "taken": {it: round(sum(by.values()), 3) for it, by in claims.get(key, {}).items()}})
+    return out
+
+def _factory_outputs() -> dict:
+    """What each saved factory makes (exports and surplus, from its last plan —
+    stale: the scenario changed since), and who already takes it."""
+    saved = _saved_factories(stale_ok=True)
+    facs = []
+    for key, data, result in saved:
+        io = logistics.factory_io(data, result and {k: v for k, v in result.items() if k != "_stale"})
+        made = {it: r for it, r in {**io["surplus"], **io["exports"]}.items() if r}
+        facs.append({"key": key, "name": data.get("name", key), "solved": io["solved"],
+                     "stale": bool(result and result.get("_stale")), "made": made})
+    return {"factories": facs, "claims": _claims(saved)}
 
 
 # ── Async solve job store ─────────────────────────────────────────────────────
@@ -330,7 +369,7 @@ def _build_scenario(b: dict) -> Scenario:
         description=b.get("description", ""),
         alternate_recipes_enabled=b.get("alternate_recipes_enabled", []) or [],
         enabled_machines=b.get("enabled_machines", []) or [],
-        available_resources={k: float(v) for k, v in (b.get("available_resources") or {}).items()},
+        available_resources=supply.available(b),
         unlimited_resources=list(b.get("unlimited_resources") or []),
         must_produce={k: float(v) for k, v in (b.get("must_produce") or {}).items()},
         min_produce={k: float(v) for k, v in (b.get("min_produce") or {}).items()},
@@ -571,6 +610,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/unlocked-alts":
             self._json(200, {"unlocked": _load_unlocked_alts()})
+            return
+
+        if path == "/api/factory-outputs":
+            self._json(200, _factory_outputs())
             return
 
         if path == "/api/blackboard":

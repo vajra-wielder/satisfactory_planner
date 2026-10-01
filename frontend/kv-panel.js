@@ -1,5 +1,6 @@
 /**
- * kv-panel.js — key/value editor rows for resources, objectives, and constraints.
+ * kv-panel.js — key/value editor rows for goals and constraints
+ * (resources are supply-panel.js).
  * Extracted from sidebar.js.
  *
  * Owns:
@@ -19,7 +20,7 @@ import { makeAC } from './sidebar.js';
 // Safely evaluates a PEMDAS arithmetic expression string.
 // Allows digits, spaces, and operators +-*/()%.
 // Returns the numeric result, or null if invalid/unsafe.
-function evalExpr(raw) {
+export function evalExpr(raw) {
   const s = raw.trim();
   if (!s) return null;
   // Whitelist: only digits, spaces, and arithmetic characters
@@ -38,7 +39,6 @@ function evalExpr(raw) {
 // ── Registry ──────────────────────────────────────────────
 // Each panel maps to a SC field and maintains its own row list.
 export const KVS = {
-  res:  { field: 'available_resources', rows: [] },
   obj:  { field: 'objective',           rows: [] },
   must: { field: 'must_produce',        rows: [] },
   min:  { field: 'min_produce',         rows: [] },
@@ -56,8 +56,6 @@ export function syncKv(name) {
     const evaled = evalExpr(String(val));
     SC[st.field][key] = evaled !== null ? evaled : (parseFloat(val) || 0);
   });
-  if (name === 'res')
-    SC.unlimited_resources = st.rows.filter(r => r.key && r.unlimited).map(r => r.key);
 }
 
 // Sync all panels at once — used by readUI() before a solve.
@@ -69,12 +67,7 @@ export function syncAllKv() {
 // Populate rows from the current SC field, then re-render.
 function loadKvFromScenario(name) {
   const st = KVS[name];
-  const unlimited = new Set(name === 'res' ? SC.unlimited_resources || [] : []);
-  st.rows = Object.entries(SC[st.field] || {}).map(([key, val]) => ({
-    key,
-    val: String(val),
-    unlimited: unlimited.has(key),
-  }));
+  st.rows = Object.entries(SC[st.field] || {}).map(([key, val]) => ({ key, val: String(val) }));
   renderKv(name);
 }
 
@@ -94,7 +87,7 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
 
   st.rows.forEach((row, i) => {
     const div  = document.createElement('div');
-    div.className = name === 'res' ? 'kvr kvr-res' : 'kvr';
+    div.className = 'kvr';
     const wrap = document.createElement('div'); wrap.className = 'acw';
 
     // ── Item key input ───────────────────────────────────
@@ -158,25 +151,6 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
     div.appendChild(wrap);
     div.appendChild(vi);
 
-    // ── Unlimited toggle (resources only) ────────────────
-    // An unlimited resource has no cap and costs nothing, so an abundant one
-    // like Water doesn't dilute the finite resources in the solver's score.
-    if (name === 'res') {
-      const ub = document.createElement('button');
-      ub.className = 'bi binf';
-      ub.innerHTML = '∞';
-      const paint = () => {
-        ub.classList.toggle('on', !!row.unlimited);
-        ub.title = row.unlimited
-          ? 'Unlimited — click to use the amount instead'
-          : 'Treat as unlimited (no cap, free)';
-        vi.disabled = !!row.unlimited;
-        vi.value = row.unlimited ? '∞' : (row.val || '');
-      };
-      ub.addEventListener('click', () => { row.unlimited = !row.unlimited; paint(); syncKv(name); });
-      paint();
-      div.appendChild(ub);
-    }
     div.appendChild(rb);
     c.appendChild(div);
   });

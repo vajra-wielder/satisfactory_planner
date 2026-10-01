@@ -8,7 +8,9 @@ export const DEF_SC = () => ({
   description: '',
   alternate_recipes_enabled: [],
   enabled_machines: [],
-  available_resources: {},
+  available_resources: {},   // derived from resource_nodes + from_factories
+  resource_nodes: [],        // [{resource, extractor, purity, clock, count} | {resource, extractor: 'fixed', rate}]
+  from_factories: [],        // [{item, factory, rate}] — taken from other saved factories
   must_produce: {},
   min_produce: {},
   max_produce: {},
@@ -28,7 +30,6 @@ export let SC = DEF_SC();
 export function setScenario(s) { Object.assign(SC, s); }
 export function resetSC() {
   Object.assign(SC, DEF_SC());
-  setPins(null);
 }
 
 // Solver result
@@ -49,6 +50,10 @@ export function setAllItems(arr) { ALL_ITEMS = arr; }
 // Shape: { key: { display, machine, alternate, inputs, outputs } }
 export let RECIPES = {};
 export function setRecipes(obj) { RECIPES = obj; }
+
+// Extractors (rate per node at 100%, normal purity) — from /api/boot
+export let EXTRACTORS = {}, PURITY = {}, MAX_CLOCK = 250;
+export function setExtractors(ex, pu, mc) { EXTRACTORS = ex || {}; PURITY = pu || {}; MAX_CLOCK = mc || 250; }
 
 // Machine colour map — populated after recipes are loaded
 export const MCOL = {
