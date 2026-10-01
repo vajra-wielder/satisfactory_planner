@@ -157,20 +157,40 @@ def _result_key(name: str) -> str:
     # Same key the frontend saves the scenario under (see handleSave)
     return "".join(ch for ch in "_".join(name.split()).lower() if ch.isalnum() or ch in "_-") or "scenario"
 
+# Entries are gzipped compact JSON (≈10× smaller); plain .json files from
+# before are still read and replaced on the next write. The folder keeps the
+# _RESULTS_KEEP most recently written scenarios.
+_RESULTS_KEEP = 64
+
+def _cache_paths(key: str):
+    return RESULTS_DIR / f"{key}.json.gz", RESULTS_DIR / f"{key}.json"
+
 def _cache_read(key: str):
-    p = RESULTS_DIR / f"{key}.json"
+    gz, plain = _cache_paths(key)
     try:
-        return json.loads(p.read_text()) if p.exists() else None
+        if gz.exists():
+            return json.loads(gzip.decompress(gz.read_bytes()))
+        if plain.exists():
+            return json.loads(plain.read_text())
     except Exception:
-        return None
+        pass
+    return None
 
 def _cache_write(key: str, entry: dict) -> None:
     try:
         RESULTS_DIR.mkdir(exist_ok=True)
+        gz, plain = _cache_paths(key)
+        data = gzip.compress(json.dumps(entry, separators=(",", ":"), default=str).encode(), 6)
         fd, tmp = tempfile.mkstemp(dir=RESULTS_DIR, prefix=f".{key}_", suffix=".tmp")
-        with os.fdopen(fd, "w") as f:
-            json.dump(entry, f, default=str)
-        os.replace(tmp, RESULTS_DIR / f"{key}.json")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, gz)
+        plain.unlink(missing_ok=True)
+        # Keep the folder bounded: the oldest entries go first
+        files = sorted((p for p in RESULTS_DIR.iterdir() if p.name.endswith((".json", ".json.gz"))),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[_RESULTS_KEEP:]:
+            p.unlink(missing_ok=True)
     except Exception:
         import traceback; traceback.print_exc()
 
@@ -601,7 +621,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     with open(p) as f:
                         rk = _result_key((yaml.safe_load(f) or {}).get("name", name))
-                    (RESULTS_DIR / f"{rk}.json").unlink(missing_ok=True)   # its cached plan
+                    for cp in _cache_paths(rk):                         # its cached plan
+                        cp.unlink(missing_ok=True)
                 except Exception:
                     pass
                 p.unlink()

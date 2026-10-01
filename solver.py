@@ -30,7 +30,7 @@ ANALYSIS:
   off the continuous relaxation of the same planning model.
 """
 
-import math, time, yaml, json
+import math, yaml, json
 from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -43,7 +43,6 @@ SCENARIOS_DIR = ROOT / "scenarios"
 POWER_EXP   = math.log2(2.5)   # ≈1.3219 — 1.0 overclock power curve (250% → 3.36× power)
 _POWER_ROUNDS = 4      # re-solves that move a power-capped plan closer to the cap
 _POWER_CLOSE  = 0.002  # … stopping once within 0.2% of it
-_POWER_TIME_S = 5.0    # … or once the solve has taken this long
 # Min New Alts: the goal may drop by at most this share to use fewer alts you
 # haven't unlocked yet (each costs a hard drive, however much it runs).
 _NEW_ALT_TOL = 0.01
@@ -494,7 +493,9 @@ _RES_TOL       = 1e-6    # relative slack on the locked resource score (numerics
 _RES_GAP       = 0.01    # machines_first: resources within 1% of the least
 _MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machine space for fewer recipes
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
-_STAGE_TIME_S  = (20, 20, 15)   # per stage; on timeout the best plan so far is kept
+# No time limits: every stage runs until proven — plans are cached, so even a
+# long solve is a one-time cost. (None = unlimited; a number caps a stage.)
+_STAGE_TIME_S: Tuple[Optional[float], ...] = (None, None, None)
 _PRUNE_LOOPS   = True    # drop pack/unpack pairs that can only loop (see _pointless_loops)
 _Q_EPS         = 1e-6    # throughput below this is treated as "not running"
 _MIP_BACKENDS  = ("SCIP", "CBC")
@@ -665,7 +666,7 @@ class _Model:
         for c, bv, kind in self.links.get(k, []):
             c.SetCoefficient(bv, -float(m_n) if kind == "n" else -max(ub, 0.0))
 
-    def run(self, coeffs: Dict[Key, float], maximize: bool, time_s: float,
+    def run(self, coeffs: Dict[Key, float], maximize: bool, time_s: Optional[float],
             gap: Optional[float] = None) -> Optional[bool]:
         """Solve with this objective. None = failed, else True if proven optimal
         (within `gap`, relative, when given). self.bound holds the proven bound."""
@@ -676,7 +677,8 @@ class _Model:
             if v is not None:
                 obj.SetCoefficient(v, obj.GetCoefficient(v) + a)
         obj.SetMaximization() if maximize else obj.SetMinimization()
-        self.s.SetTimeLimit(int(time_s * 1000))
+        # None = no limit (the limit persists between solves, so always set it)
+        self.s.SetTimeLimit(int(time_s * 1000) if time_s is not None else 10 ** 12)
         if self.integer:
             if self._hint and _USE_HINTS:
                 self.s.SetHint(*self._hint)
@@ -740,7 +742,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     Run the stages. Returns None when the scenario is infeasible.
     sloop_caps: at most this many sloops per recipe (from _dive_sloops).
     goal_gap:   stop stage 1 once proven within this relative gap.
-    goal_time:  stage-1 time limit (default _STAGE_TIME_S[0]).
+    goal_time:  stage-1 time limit (default _STAGE_TIME_S[0], none).
     beat:       goal-only mode — stop right after stage 1 and return None, with
                 info["goal"], ["goal_bound"], ["proven"] and ["plan"] (for
                 `known`); if its goal beats this, info["alloc"] gets its sloops
@@ -1148,7 +1150,6 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     _SHARD_POWER), so the first plan can sit a little under the cap. The
     re-solves raise the model's cap by that slack, keeping a plan only if its
     real power still fits the cap and it makes at least as much."""
-    t0 = time.time()
     result = _solve_once(scenario, all_recipes, machine_meta)
     cap = scenario.max_power_mw
     if cap is None or cap <= 0 or not result.status.startswith("Optimal"):
@@ -1158,8 +1159,7 @@ def solve(scenario: Scenario, all_recipes: Dict[str,Recipe],
     lo, hi = cap, None
     for _ in range(_POWER_ROUNDS):
         used, bound = result.total_power_mw, result.power_bound_mw
-        if used <= 0 or bound is None or used >= cap * (1 - _POWER_CLOSE) \
-                or time.time() - t0 > _POWER_TIME_S:
+        if used <= 0 or bound is None or used >= cap * (1 - _POWER_CLOSE):
             break
         if bound < lo * (1 - _POWER_CLOSE):
             break                      # power isn't what limits this plan
