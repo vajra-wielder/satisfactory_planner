@@ -174,13 +174,20 @@ _RESULTS_KEEP = 64
 def _cache_paths(key: str):
     return RESULTS_DIR / f"{key}.json.gz", RESULTS_DIR / f"{key}.json"
 
+_read_memo: dict = {}   # path → (mtime, entry): every Blackboard and list request reads every plan
+
 def _cache_read(key: str):
     gz, plain = _cache_paths(key)
     try:
-        if gz.exists():
-            return json.loads(gzip.decompress(gz.read_bytes()))
-        if plain.exists():
-            return json.loads(plain.read_text())
+        for p in (gz, plain):
+            if p.exists():
+                mt = p.stat().st_mtime_ns
+                hit = _read_memo.get(str(p))
+                if hit and hit[0] == mt:
+                    return hit[1]
+                entry = json.loads(gzip.decompress(p.read_bytes()) if p is gz else p.read_text())
+                _read_memo[str(p)] = (mt, entry)
+                return entry
     except Exception:
         pass
     return None
@@ -377,12 +384,20 @@ def _network_sites(keys) -> list:
     """Each factory for network planning: its scenario, what its plan makes (held),
     the recipes it runs, and what it draws from its supply."""
     sites = []
+    claims = _claims(_scenario_files())
     for key in keys:
         data, result = _factory_plan(key)
         sc = _build_scenario(data)
         held, own, drawn = {}, {}, {}
         if result:
             held = {k: v for k, v in (result.get("sink_nodes") or {}).items() if v > 1e-6}
+            # What the other factories in this network take from it is theirs —
+            # the network routes it — so it isn't also held here (its plan's
+            # output counts it once already)
+            for it, by in (claims.get(key) or {}).items():
+                taken = sum(r for who, r in by.items() if who in keys and who != key)
+                if taken and it in held:
+                    held[it] = max(0.0, held[it] - taken)
             for t in data.get("to_storage") or []:      # what it stores it must keep making
                 if t.get("item"):
                     held[t["item"]] = max(held.get(t["item"], 0.0), float(t.get("rate") or 0))

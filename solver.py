@@ -30,7 +30,7 @@ ANALYSIS:
   off the continuous relaxation of the same planning model.
 """
 
-import math, yaml, json
+import math, os, threading, yaml, json
 from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -187,10 +187,33 @@ def _sf(v, d=0.0):
     try: return float(v) if v is not None else d
     except: return d
 
+_RAW: Dict[str, Tuple[float, dict]] = {}
+
 def _load_raw_yaml(path=RECIPES_PATH) -> dict:
-    """Parse the recipes YAML once; callers slice what they need."""
-    with open(path) as f:
-        return yaml.safe_load(f)
+    """The recipes YAML, parsed once per process; callers slice what they need.
+    Pure-Python YAML takes ~0.6 s for this file, so a JSON copy beside it
+    (data/.recipes_cache.json, rebuilt whenever the YAML changes) loads instead."""
+    path = Path(path)
+    mtime = path.stat().st_mtime
+    hit = _RAW.get(str(path))
+    if hit and hit[0] == mtime:
+        return hit[1]
+    cache = path.with_name(f".{path.stem}_cache.json")
+    raw = None
+    try:
+        if cache.exists() and cache.stat().st_mtime >= mtime:
+            raw = json.loads(cache.read_text(encoding="utf-8"))
+    except Exception:
+        raw = None
+    if raw is None:
+        with open(path) as f:
+            raw = yaml.safe_load(f)
+        try:
+            cache.write_text(json.dumps(raw), encoding="utf-8")
+        except Exception:
+            pass
+    _RAW[str(path)] = (mtime, raw)
+    return raw
 
 def _build_recipes(raw: dict) -> Dict[str, "Recipe"]:
     """Construct the Recipe dict from a parsed YAML blob. Used by both loaders."""
@@ -332,8 +355,7 @@ def _node_resources() -> Set[str]:
     """Items mined from nodes (node_resources in the recipe data)."""
     global _NODE_RES
     if _NODE_RES is None:
-        with open(RECIPES_PATH) as f:
-            _NODE_RES = set(yaml.safe_load(f).get("node_resources") or [])
+        _NODE_RES = set(_load_raw_yaml().get("node_resources") or [])
     return _NODE_RES
 
 
@@ -512,6 +534,10 @@ _RES_TOL       = 1e-6    # relative slack on the locked resource score (numerics
 # lock). Stopping within 1% mirrors _MACHINE_SLACK in the default order.
 _RES_GAP       = 0.01    # machines_first: resources within 1% of the least
 _MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machine space for fewer recipes
+# 3b — the least space among the fewest-recipe plans — stops once within this
+# of its proven best: proving the last few Smelter units took ~40% of all
+# solve time on big plans, for ≤0.1% less space
+_CLEAN_SPACE_GAP = 0.003
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
 # No time limits: every stage runs until proven — plans are cached, so even a
 # long solve is a one-time cost. (None = unlimited; a number caps a stage.)
@@ -687,9 +713,11 @@ class _Model:
             c.SetCoefficient(bv, -float(m_n) if kind == "n" else -max(ub, 0.0))
 
     def run(self, coeffs: Dict[Key, float], maximize: bool, time_s: Optional[float],
-            gap: Optional[float] = None) -> Optional[bool]:
+            gap: Optional[float] = None, nodes: Optional[int] = None) -> Optional[bool]:
         """Solve with this objective. None = failed, else True if proven optimal
-        (within `gap`, relative, when given). self.bound holds the proven bound."""
+        (within `gap`, relative, when given). self.bound holds the proven bound.
+        nodes: stop after this many branch-and-bound nodes — a limit that, unlike
+        time, gives the same plan on any machine."""
         obj = self.s.Objective()
         obj.Clear()
         for key, a in coeffs.items():
@@ -702,8 +730,10 @@ class _Model:
         if self.integer:
             if self._hint and _USE_HINTS:
                 self.s.SetHint(*self._hint)
-            if _SCIP_PARAMS and self.s.SolverVersion().startswith("SCIP"):
-                self.s.SetSolverSpecificParametersAsString(_SCIP_PARAMS)
+            if self.s.SolverVersion().startswith("SCIP"):
+                # the node limit persists between solves, so always set it
+                self.s.SetSolverSpecificParametersAsString(
+                    _SCIP_PARAMS + f"limits/nodes = {nodes if nodes else -1}\n")
             p = pywraplp.MPSolverParameters()
             p.SetDoubleParam(p.RELATIVE_MIP_GAP, _MIP_GAP if gap is None else gap)
             st = self.s.Solve(p)
@@ -737,22 +767,52 @@ class _Model:
                      power_bound=self.value(self.power) if self.power else None)
 
 
+# Bounds take one LP per recipe — hundreds on a big plan. Only the objective
+# changes between them, so GLOP's presolve (which discards the last basis) is
+# turned off, and they're split across threads: OR-Tools releases Python's
+# lock while it solves, and each thread has its own copy of the model.
+# Every LP is the same as one after the other, so the bounds are too.
+_THREADS = max(1, min(4, os.cpu_count() or 1))
+_LP_WARM = "use_preprocessing:false use_dual_simplex:false"
+
+
+def _max_each(build, keys) -> Dict[str, float]:
+    """Most each recipe in `keys` can run (machine-equivalents) on the
+    relaxation build() returns — the bounds that make tight big-Ms."""
+    keys = list(keys)
+    out: Dict[str, float] = {}
+
+    def work(ks):
+        lp = build()
+        lp.s.SetSolverSpecificParametersAsString(_LP_WARM)
+        for k in ks:
+            cols = {("q", k, l): 1.0 for l in lp.levels[k]}
+            if lp.run(cols, True, 5) is not None:
+                out[k] = lp.value(cols) * (1 + 1e-7) + 1e-6
+
+    n = min(_THREADS, len(keys) // 25)   # a thread is worth it from ~25 LPs
+    if n <= 1:
+        work(keys)
+    else:
+        ts = [threading.Thread(target=work, args=(keys[i::n],)) for i in range(n)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+    return out
+
+
 def _recipe_bounds(scenario: Scenario, usable: Dict[str, Recipe]) -> Dict[str, float]:
     """Most each recipe can run (machine-equivalents), on the relaxation with no
     sloop caps — valid bounds for every plan of this scenario."""
-    lp = _Model(scenario, usable, integer=False)
-    out: Dict[str, float] = {}
-    for k, levels in lp.levels.items():
-        cols = {("q", k, l): 1.0 for l in levels}
-        if lp.run(cols, True, 5) is not None:
-            out[k] = lp.value(cols) * (1 + 1e-7) + 1e-6
-    return out
+    return _max_each(lambda: _Model(scenario, usable, integer=False), usable)
 
 
 def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
           sloop_caps: Optional[Dict[str, int]] = None,
           goal_gap: Optional[float] = None,
           goal_time: Optional[float] = None,
+          goal_nodes: Optional[int] = None,
           beat: Optional[float] = None,
           info: Optional[dict] = None,
           bounds: Optional[Dict[str, float]] = None,
@@ -763,6 +823,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     sloop_caps: at most this many sloops per recipe (from _dive_sloops).
     goal_gap:   stop stage 1 once proven within this relative gap.
     goal_time:  stage-1 time limit (default _STAGE_TIME_S[0], none).
+    goal_nodes: stage-1 node limit (none).
     beat:       goal-only mode — stop right after stage 1 and return None, with
                 info["goal"], ["goal_bound"], ["proven"] and ["plan"] (for
                 `known`); if its goal beats this, info["alloc"] gets its sloops
@@ -778,12 +839,19 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     """
     mip = _Model(scenario, usable, integer=True)
     lp  = _Model(scenario, usable, integer=False)    # relaxation: bounds + LP-only stages
+    # What's been added to lp, so tighten() can build copies of it for threads
+    lp_edits: List = []
+
+    def caps(m) -> None:
+        for k, levels in m.levels.items():
+            expr = {("n", k, l): float(l) for l in levels if l}
+            if expr:
+                m.ct(-m.inf, float(sloop_caps.get(k, 0)), expr)
+
     if sloop_caps is not None:
-        for m in (mip, lp):
-            for k, levels in m.levels.items():
-                expr = {("n", k, l): float(l) for l in levels if l}
-                if expr:
-                    m.ct(-m.inf, float(sloop_caps.get(k, 0)), expr)
+        caps(mip)
+        caps(lp)
+        lp_edits.append(caps)
     if not mip.integer:
         warnings.append("No integer solver available — machine counts are rounded, "
                         "somersloops and shards are not optimised.")
@@ -791,18 +859,22 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     def lock(lo: float, hi: float, expr_of) -> None:
         mip.ct(lo, hi, expr_of(mip))
         lp.ct(lo, hi, expr_of(lp))
+        lp_edits.append(lambda m: m.ct(lo, hi, expr_of(m)))
+
+    def lp_copy() -> "_Model":
+        m = _Model(scenario, usable, integer=False)
+        for edit in lp_edits:
+            edit(m)
+        return m
 
     def tighten(only=None) -> None:
         """Per-recipe max throughput under the current locks → tight big-Ms.
         Recipes that can't run at all under the locks are switched off.
         only: just these recipes (the others keep their earlier, looser
         but still valid bounds)."""
-        for k, levels in lp.levels.items():
-            if only is not None and k not in only:
-                continue
-            cols = {("q", k, l): 1.0 for l in levels}
-            if lp.run(cols, True, 5) is not None:
-                mip.bound_recipe(k, lp.value(cols) * (1 + 1e-7) + 1e-6)
+        keys = [k for k in lp.levels if only is None or k in only]
+        for k, ub in _max_each(lp_copy, keys).items():
+            mip.bound_recipe(k, ub)
 
     if bounds is None:
         tighten()
@@ -834,7 +906,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         if known is not None:
             ok, g, goal_bound = known["proven"], known["goal"], known["goal_bound"]
         else:
-            ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
+            ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap, nodes=goal_nodes)
             if ok is None:
                 return None
             g = m1.value(m1.goal)
@@ -874,6 +946,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
                 for k in dropped:
                     mip.bound_recipe(k, 0.0)
                     lp.bound_recipe(k, 0.0)
+                lp_edits.append(lambda m, ks=tuple(dropped): [m.bound_recipe(k, 0.0) for k in ks])
                 m1 = mip
             else:
                 # No integer solver: fall back to the least new-alt throughput
@@ -881,7 +954,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
                     return None
                 lock(-mip.inf, lp.value(lp.new_alt) + 1e-6, lambda m: m.new_alt)
             if mip.goal:
-                ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap)
+                ok = m1.run(m1.goal, True, goal_time or _STAGE_TIME_S[0], gap=goal_gap, nodes=goal_nodes)
                 if ok is None:
                     return None
                 proven &= ok
@@ -951,6 +1024,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
         best = mip.snapshot(proven)
         v2 = mip.value(mip.space)
         v_floor = math.ceil(mip.bound - 1e-6) if mip.integer else v2
+        mip.space_floor = v_floor     # proven: no plan under these locks takes less
         cap = max(v2, math.floor(v_floor * (1 + _MACHINE_SLACK) + 1e-9))
         lock(-mip.inf, cap + 0.5, lambda m: m.space)
         return True
@@ -994,7 +1068,13 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     # Space is in whole Smelter units, so the solver rounds its bound and this
     # proves quickly (in m³ it couldn't, and ran out of time).
     mip.ct(-mip.inf, mip.value(obj) + 1e-6, obj)
-    ok_b = mip.run(mip.space, False, _STAGE_TIME_S[2])
+    # Stage 2 proved no plan takes less space than its floor, and 3b only adds
+    # locks — so the floor is a valid cut, and the search starts its bound there
+    # instead of at a weak relaxation (it often proves at once)
+    floor = getattr(mip, "space_floor", None)
+    if floor:
+        mip.ct(floor - 1e-6, mip.inf, mip.space)
+    ok_b = mip.run(mip.space, False, _STAGE_TIME_S[2], gap=_CLEAN_SPACE_GAP)
     if ok_b is None:
         return best
     best = mip.snapshot(proven)
@@ -1023,7 +1103,10 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
 # proven lower bound on how close the plan is to the best buildable one.
 _CERT_TARGET = 0.95   # below this, fall back to an exact goal search (to 1 − target)
 _POLISH_BELOW = 0.99  # below this, give the exact goal search a short try too
-_POLISH_TIME_S = 3.0
+# The polish's budget, in branch-and-bound nodes rather than seconds, so a
+# scenario gives the same plan however fast the machine is. 300 nodes matched
+# or beat the old 3-second limit on every stress case (150 lost 0.2% on one).
+_POLISH_NODES = 300
 
 
 def _fractional_ceiling(scenario: Scenario, usable: Dict[str, Recipe]) -> Optional[float]:
@@ -1245,7 +1328,7 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
             if "goal" in first and ceiling > 1e-9:
                 # Placement is judged on the goal before Min New Alts trades any
                 # away (stage 1's own goal) — that trade is deliberate.
-                use_alloc, use_known = alloc, first
+                use_alloc, use_known, use_seed = alloc, first, None
                 if first["goal"] / ceiling < _POLISH_BELOW:
                     # Try the exact goal search, seeded with the dive's plan:
                     #  • below the target (whole machines make the fractional
@@ -1259,16 +1342,19 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
                           # The solver's gap is (bound − plan) ÷ plan, so
                           # certifying the target needs 1/target − 1
                           goal_gap=(1 / _CERT_TARGET - 1) if below else None,
-                          goal_time=None if below else _POLISH_TIME_S,
+                          goal_nodes=None if below else _POLISH_NODES,
                           beat=first["goal"], info=info, bounds=rb, seed=first.get("plan"))
                     if "alloc" in info:
-                        use_alloc, use_known = info["alloc"], None   # better placement
+                        # Better placement. Its goal search ran under a time
+                        # limit, so the build searches again with the sloops
+                        # fixed — often finding more — starting from its plan
+                        use_alloc, use_known, use_seed = info["alloc"], None, info.get("plan")
                     bound = info.get("goal_bound")
                     if bound and bound > 1e-9:
                         ceiling = min(ceiling, bound)
                 plan = _plan(model_sc, usable, warnings, sloop_caps=use_alloc, bounds=rb,
-                             known=use_known)
-                if plan is None and use_known is None:
+                             known=use_known, seed=use_seed)
+                if plan is None and use_alloc is not alloc:
                     plan = _plan(model_sc, usable, warnings, sloop_caps=alloc, bounds=rb,
                                  known=first)
                 if plan is not None:

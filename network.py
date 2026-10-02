@@ -29,13 +29,11 @@ network's leftover resources are worth to it.
 """
 from typing import Dict, List, Optional
 
-import yaml
 from ortools.linear_solver import pywraplp
 
-from solver import RECIPES_PATH, Recipe, Scenario, machine_space
+from solver import Recipe, Scenario, _load_raw_yaml, machine_space
 
-with open(RECIPES_PATH) as _f:
-    _RAW = yaml.safe_load(_f)
+_RAW = _load_raw_yaml()
 FLUIDS = set(_RAW.get("fluids") or [])
 NODE = set(_RAW.get("node_resources") or [])
 STACK = dict(_RAW.get("stack_sizes") or {})

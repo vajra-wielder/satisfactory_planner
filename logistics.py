@@ -12,15 +12,13 @@ inside the box.
 """
 from typing import Dict, Optional
 
-import yaml
 
-from solver import RECIPES_PATH
+from solver import _load_raw_yaml
 import supply
 
 
 def _load_meta() -> dict:
-    with open(RECIPES_PATH) as f:
-        raw = yaml.safe_load(f)
+    raw = _load_raw_yaml()
     return {
         "fluids": list(raw.get("fluids") or []),
         "node_resources": list(raw.get("node_resources") or []),

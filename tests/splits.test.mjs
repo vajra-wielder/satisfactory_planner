@@ -1,5 +1,5 @@
 // Belt splits (frontend/splits.js): every output gets exactly its rate.
-//   node --test tests/splits.test.mjs
+//   node --test tests/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { exactSplit, recommend, streamCount } from '../frontend/splits.js';

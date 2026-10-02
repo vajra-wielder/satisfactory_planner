@@ -19,13 +19,17 @@ import supply
 class _Temp(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
-        self._keep = {k: getattr(server, k) for k in ("SCENARIOS_DIR", "RESULTS_DIR", "HISTORY_DIR", "BOARD_PATH")}
+        (self.dir / ".data").mkdir()
+        self._keep = {k: getattr(server, k) for k in ("SCENARIOS_DIR", "RESULTS_DIR", "HISTORY_DIR", "BOARD_PATH",
+                                                      "UNLOCKED_PATH", "SAVE_NODES_PATH")}
         self._prog = supply.PROGRESS_PATH
         server.SCENARIOS_DIR = self.dir
         server.RESULTS_DIR = self.dir / ".results"
         server.HISTORY_DIR = self.dir / ".history"
-        server.BOARD_PATH = self.dir / "board.yaml"
-        supply.PROGRESS_PATH = self.dir / "progress.yaml"
+        server.BOARD_PATH = self.dir / ".data" / "board.yaml"
+        server.UNLOCKED_PATH = self.dir / ".data" / "unlocked_alts.yaml"   # none: not yours
+        server.SAVE_NODES_PATH = self.dir / ".data" / "save_nodes.json"
+        supply.PROGRESS_PATH = self.dir / ".data" / "progress.yaml"   # not among the scenarios
         server._mem_cache.clear()
         supply.save_progress({"machines": ["Smelter", "Constructor", "Assembler", "Foundry", "Refinery"]})
 

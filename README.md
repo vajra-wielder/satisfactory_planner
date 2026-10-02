@@ -70,14 +70,16 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Between factories: every saved scenario is a black box showing only what it
   imports and exports (from its last plan), where its imports come from and
   how much of each output others take. "From factories" imports are drawn as
-  routes on their own. Join factories with routes (belt,
+  routes on their own — one band per route, a stripe per item in it, each as
+  wide as its rate. Join factories with routes (belt,
   train, truck or drone, with trip times) and plan the network: which recipe
   runs where, what crosses each route (items, stacks and cars / drones / lanes),
   what each factory draws, and how much more each goal the leftovers could make.
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
 - Flows: a Sankey of everything moving between factories and into storage —
-  as set in each factory, or as the network plan would send it.
+  as set in each factory, or as the network plan would send it; one band per
+  pair of factories, its items as stripes inside it.
 - Storage: every item sent to storage, per minute and per hour, by factory.
 - Power: what each factory's machines and extractors draw and its generators
   and geysers make, the grid's balance, and which factories their cap holds back.
@@ -204,9 +206,11 @@ The application launches as a native desktop window.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .   # supply, claims, owed, chain, solver (seconds)
-node --test tests/splits.test.mjs           # belt splits
-python -m tests.stress                      # every scenario over a sloop/shard grid (a minute)
+python -m unittest discover -s tests -t .   # supply, claims, owed, chain, Blackboard data, solver (seconds)
+node --test tests/*.test.mjs                # belt splits, Blackboard bands
+node tests/blackboard.e2e.mjs               # the Blackboard in a browser, on a throwaway planner (needs Playwright)
+python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core (~15 s)
+python -m tests.stress -j 1                 # one at a time, for per-case times (~40 s)
 ```
 
 ---

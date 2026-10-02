@@ -18,6 +18,7 @@ import { itemName, RECIPES, PROGRESS } from './state.js';
 import { saveProgress, fetchFactoryOutputs } from './api.js';
 import { mountMapView } from './map-picker.js';
 import { onChain, chainHTML } from './chain.js';
+import { bundle, bandStripes, bandScale, sankeyLayout, itemColor as colorOf } from './bundles.js';
 import { recommend, tierFor } from './splits.js';
 
 let DATA = null;          // { factories, fluids, transport }
@@ -25,6 +26,7 @@ let LAYOUT = { positions: {}, routes: [], belt: 'Mk5', pipe: 'Mk2' };
 let FLUIDS = new Set();
 let NET = null;           // last network plan
 let FLOW_SRC = 'declared';
+const STORE = '@storage';
 let onOpenFactory = () => {};
 let saveTimer = null;
 
@@ -125,7 +127,7 @@ function renderFactories() {
     return;
   }
   DATA.factories.forEach((f, i) => {
-    const pos = LAYOUT.positions[f.key] || { x: 30 + (i % 4) * 300, y: 30 + Math.floor(i / 4) * 320 };
+    const pos = LAYOUT.positions[f.key] || { x: 30 + (i % 4) * 400, y: 30 + Math.floor(i / 4) * 360 };   // room for the bands
     const card = document.createElement('div');
     card.className = 'bb-card';
     card.dataset.key = f.key;
@@ -221,6 +223,21 @@ function startRoute(e, from) {
   window.addEventListener('mouseup', up);
 }
 
+// What a route carries: the network plan's items when it has one, else what
+// the factories at its ends import from each other ("From factories")
+function routeFlows(rt, i) {
+  const plan = NET?.routes?.[i];
+  if (plan) return plan.items.map(x => ({ from: x.from, to: x.to, item: x.item, rate: x.rate }));
+  const out = [];
+  [[rt.a, rt.b], [rt.b, rt.a]].forEach(([src, dst]) => (factory(dst)?.sources || [])
+    .forEach(f => { if (f.factory === src && f.rate > 0) out.push({ from: src, to: dst, item: f.item, rate: +f.rate }); }));
+  return out;
+}
+
+const SVG = 'http://www.w3.org/2000/svg';
+const nameOf = k => (k === STORE ? 'Storage' : factory(k)?.name || k);
+const flowTitle = f => `${nameOf(f.from)} → ${nameOf(f.to)}: ${itemName(f.item)} ${fmt(f.rate)}/min`;
+
 function drawRoutes() {
   if (!DATA || !isOpen()) return;
   const board = $('bb-board'), svg = $('bb-links');
@@ -228,18 +245,42 @@ function drawRoutes() {
   svg.setAttribute('height', board.scrollHeight);
   svg.innerHTML = '';
   board.querySelectorAll('.bb-link-label').forEach(x => x.remove());
+  // One band per route, its items side by side; one scale for every band
+  const flows = LAYOUT.routes.map((rt, i) => routeFlows(rt, i));
+  const scale = bandScale(flows.map(fs => ({ total: fs.reduce((s, f) => s + f.rate, 0) })), 28);
   LAYOUT.routes.forEach((rt, i) => {
     const a = centre(rt.a), b = centre(rt.b);
     if (!a || !b) return;
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', a[0]); line.setAttribute('y1', a[1]);
-    line.setAttribute('x2', b[0]); line.setAttribute('y2', b[1]);
-    line.setAttribute('class', 'bb-link');
-    svg.appendChild(line);
+    const items = bundle(flows[i])[0]?.items || [];
+    if (items.length) {
+      const g = document.createElementNS(SVG, 'g');
+      g.setAttribute('class', 'bb-band');
+      const band = bandStripes(a, b, items, scale);
+      band.stripes.forEach(st => {
+        const line = document.createElementNS(SVG, 'line');
+        line.setAttribute('x1', st.x1); line.setAttribute('y1', st.y1);
+        line.setAttribute('x2', st.x2); line.setAttribute('y2', st.y2);
+        line.setAttribute('stroke', colorOf(st.flow.item, FLUIDS.has(st.flow.item)));
+        line.setAttribute('stroke-width', st.w);
+        line.setAttribute('class', 'bb-stripe');
+        line.innerHTML = `<title>${flowTitle(st.flow)}</title>`;
+        g.appendChild(line);
+      });
+      svg.appendChild(g);
+    } else {   // a route with nothing on it yet
+      const line = document.createElementNS(SVG, 'line');
+      line.setAttribute('x1', a[0]); line.setAttribute('y1', a[1]);
+      line.setAttribute('x2', b[0]); line.setAttribute('y2', b[1]);
+      line.setAttribute('class', 'bb-link');
+      svg.appendChild(line);
+    }
+    const total = items.reduce((s, f) => s + f.rate, 0);
     const lab = document.createElement('div');
     lab.className = 'bb-link-label';
+    // just below the band's middle, so the band itself stays in view
+    const half = items.length ? bandStripes(a, b, items, scale).width / 2 : 0;
     lab.style.left = (a[0] + b[0]) / 2 + 'px';
-    lab.style.top = (a[1] + b[1]) / 2 + 'px';
+    lab.style.top = (a[1] + b[1]) / 2 + half + 6 + 'px';
     const plan = NET?.routes?.[i];
     lab.innerHTML = `
       <select class="bb-mode">${Object.entries(MODES).map(([m, t]) =>
@@ -247,7 +288,8 @@ function drawRoutes() {
       ${rt.mode === 'belt' ? '' : `<input class="bb-trip" type="number" min="0.1" step="0.5" value="${rt.trip_min}"
         title="Round trip, minutes"/> min`}
       <span class="bb-x" title="Remove this route">✕</span>
-      ${plan ? `<div class="bb-route-load">${fmt(plan.load)} ${LOAD_UNIT[rt.mode]} · ${fmt(plan.throughput)}/min</div>` : ''}`;
+      ${items.length ? `<div class="bb-route-sum" title="${items.map(flowTitle).join('\n')}">${items.length} item${items.length > 1 ? 's' : ''} · ${fmt(total)}/min</div>` : ''}
+      ${plan ? `<div class="bb-route-load">${fmt(plan.load)} ${LOAD_UNIT[rt.mode]}</div>` : ''}`;
     lab.querySelector('.bb-mode').addEventListener('change', e => { rt.mode = e.target.value; NET = null; save(); drawRoutes(); });
     lab.querySelector('.bb-trip')?.addEventListener('change', e => {
       rt.trip_min = Math.max(0.1, parseFloat(e.target.value) || 4); NET = null; save(); drawRoutes();
@@ -384,9 +426,7 @@ function renderSplit() {
 // FLOWS — a Sankey of what moves between factories
 // ══════════════════════════════════════════════════════════
 
-const STORE = '@storage';
-const hue = s => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
-const itemColor = it => (FLUIDS.has(it) ? `hsl(${200 + hue(it) % 30} 70% 55%)` : `hsl(${hue(it)} 55% 55%)`);
+const itemColor = it => colorOf(it, FLUIDS.has(it));
 
 // [{from, to, item, rate}]: each factory's From factories and To storage —
 // or what the network plan sends over each route
@@ -416,45 +456,30 @@ function renderFlows() {
     el.innerHTML = '<p class="bb-hint">Nothing moves yet — add "From factories" imports or "To storage" in a factory.</p>';
     return;
   }
-  // Columns: each factory one right of everything it takes from (cycles stop after a pass per node)
-  const keys = [...new Set(links.flatMap(l => [l.from, l.to]))];
-  const col = Object.fromEntries(keys.map(k => [k, 0]));
-  for (let pass = 0; pass < keys.length; pass++)
-    links.forEach(l => { if (l.to !== STORE && col[l.to] < col[l.from] + 1) col[l.to] = col[l.from] + 1; });
-  const last = Math.max(0, ...keys.filter(k => k !== STORE).map(k => col[k]));
-  if (STORE in col) col[STORE] = last + 1;
-  const cols = [];
-  keys.forEach(k => (cols[col[k]] = cols[col[k]] || []).push(k));
-  const inSum = k => links.filter(l => l.to === k).reduce((s, l) => s + l.rate, 0);
-  const outSum = k => links.filter(l => l.from === k).reduce((s, l) => s + l.rate, 0);
-  const size = k => Math.max(inSum(k), outSum(k));
-  const W = Math.max(el.clientWidth - 28, 220 * cols.length), H = Math.max(Math.min(el.clientHeight - 28, 700), 360);
-  const NW = 14, GAP = 26, padL = 8, padR = 150;
-  // one scale for every band: the fullest column fits, and no node takes more than ~40% of the height
-  const big = Math.max(...keys.map(size));
-  const k = Math.min(0.4 * H / big, ...cols.map(c => (H - GAP * (c.length - 1)) / c.reduce((s, n) => s + size(n), 0)));
-  const pos = {};
-  cols.forEach((c, ci) => {
-    let y = 0;
-    const x = padL + (cols.length === 1 ? 0 : ci * (W - padL - padR - NW) / (cols.length - 1));
-    c.forEach(n => { const h = Math.max(4, size(n) * k); pos[n] = { x, y, h, inY: y, outY: y }; y += h + GAP; });
-  });
+  const W = Math.max(el.clientWidth - 28, 640);
+  const H = Math.max(Math.min(el.clientHeight - 28, 700), 360);
+  const L = sankeyLayout(links, { W, H, store: STORE });
   let g = '';
-  // bands, widest first so the narrow ones stay on top
-  [...links].sort((a, b) => pos[a.from].y - pos[b.from].y || pos[a.to].y - pos[b.to].y).forEach(l => {
-    const a = pos[l.from], b = pos[l.to], w = Math.max(1, l.rate * k);
-    const x1 = a.x + NW, x2 = b.x, y1 = a.outY, y2 = b.inY, mx = (x1 + x2) / 2;
-    a.outY += w; b.inY += w;
-    const nm = n => (n === STORE ? 'Storage' : factory(n)?.name || n);
-    g += `<path class="sk-link" fill="${itemColor(l.item)}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}
-      L${x2},${y2 + w} C${mx},${y2 + w} ${mx},${y1 + w} ${x1},${y1 + w} Z"><title>${nm(l.from)} → ${nm(l.to)}: ${itemName(l.item)} ${fmt(l.rate)}/min</title></path>`;
-    if (w >= 11) g += `<text class="sk-lab" x="${x1 + 6}" y="${y1 + w / 2 + 3.5}">${itemName(l.item)} ${fmt(l.rate)}/min</text>`;
+  // One band per pair of factories: its items' stripes side by side, an
+  // outline round the lot, and one label for the band
+  L.bundles.forEach(b => {
+    const a = L.nodes[b.from], c = L.nodes[b.to];
+    const x1 = a.x + L.nodeW, x2 = c.x, mx = (x1 + x2) / 2;
+    const path = (ya, yb, w) => `M${x1},${ya} C${mx},${ya} ${mx},${yb} ${x2},${yb} L${x2},${yb + w} C${mx},${yb + w} ${mx},${ya + w} ${x1},${ya + w} Z`;
+    b.stripes.forEach(st => {
+      g += `<path class="sk-link" fill="${itemColor(st.flow.item)}" d="${path(st.y1, st.y2, st.w)}"><title>${flowTitle(st.flow)}</title></path>`;
+    });
+    g += `<path class="sk-band" d="${path(b.y1, b.y2, b.w)}"/>`;
+    if (b.w >= 12) {   // one label, in the middle of the band
+      const label = b.items.length === 1 ? `${itemName(b.items[0].item)} ${fmt(b.total)}/min` : `${b.items.length} items · ${fmt(b.total)}/min`;
+      g += `<text class="sk-lab" text-anchor="middle" x="${mx}" y="${(b.y1 + b.y2 + b.w) / 2 + 3.5}">${label}</text>`;
+    }
   });
-  keys.forEach(n => {
-    const p = pos[n], store = n === STORE;
-    g += `<rect class="sk-node ${store ? 'store' : ''}" x="${p.x}" y="${p.y}" width="${NW}" height="${p.h}" rx="3"/>
-      <text class="sk-name" data-key="${store ? '' : n}" x="${p.x + NW + 6}" y="${p.y + 12}">${store ? 'Storage' : factory(n)?.name || n}</text>
-      <text x="${p.x + NW + 6}" y="${p.y + 26}">${fmt(size(n))}/min</text>`;
+  Object.entries(L.nodes).forEach(([n, p]) => {
+    const store = n === STORE;
+    g += `<rect class="sk-node ${store ? 'store' : ''}" x="${p.x}" y="${p.y}" width="${L.nodeW}" height="${p.h}" rx="3"/>
+      <text class="sk-name" data-key="${store ? '' : n}" x="${p.x + L.nodeW + 6}" y="${p.y + 12}">${nameOf(n)}</text>
+      <text x="${p.x + L.nodeW + 6}" y="${p.y + 26}">${fmt(p.size)}/min</text>`;
   });
   el.innerHTML = `<svg width="${W}" height="${H + 30}">${g}</svg>`;
   el.querySelectorAll('.sk-name[data-key]').forEach(t => {

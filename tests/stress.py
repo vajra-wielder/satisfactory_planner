@@ -3,13 +3,16 @@ Stress suite: every saved scenario over a grid of somersloop / shard budgets,
 plus three deep late-game chains. A plan fails when it breaks a promise its
 scenario makes (tests/checks.py) or a dive is certified below 95%.
 
-    python -m tests.stress            # everything (a minute or so)
+    python -m tests.stress            # everything, a case per core
     python -m tests.stress steel      # scenarios whose name has "steel"
+    python -m tests.stress -j 1       # one at a time: per-case times without contention
 """
 import dataclasses as d
 import glob
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 
 import solver
 from tests.checks import check
@@ -47,22 +50,39 @@ def cases(only=None):
     return [c for c in out if not only or only in c[0]]
 
 
-def main(only=None) -> int:
+def _run(case):
+    n, sc, S, SH = case
+    t = time.time()
+    r = solver.solve(sc, REC, META)
+    errs = check(sc, r) if r.status.startswith('Optimal') else [r.status]
+    return n, S, SH, r.objective_value, r.certified, time.time() - t, errs, r.warnings
+
+
+def main(only=None, jobs=None) -> int:
     bad = below = 0
     t0 = time.time()
-    for n, sc, S, SH in cases(only):
-        t = time.time()
-        r = solver.solve(sc, REC, META)
-        errs = check(sc, r) if r.status.startswith('Optimal') else [r.status]
-        cert = r.certified
+    todo = cases(only)
+    jobs = jobs or os.cpu_count() or 1
+    if jobs > 1:
+        with ProcessPoolExecutor(jobs) as pool:
+            results = list(pool.map(_run, todo))
+    else:
+        results = map(_run, todo)
+    for n, S, SH, goal, cert, dt, errs, warnings in results:
         bad += bool(errs)
         below += cert is not None and cert < 0.95
-        print(f"{n[:14]:14s} S={S:3d} SH={SH:3d}  goal={r.objective_value:12.3f}  "
-              f"certified={'exact' if cert is None else f'{cert * 100:6.2f}%':>7s}  {time.time() - t:6.2f}s"
-              f"{'  ERR ' + str(errs) if errs else ''}{'  WARN ' + str(r.warnings) if r.warnings else ''}", flush=True)
-    print(f"\n{bad} unsound, {below} certified below 95%, {time.time() - t0:.1f}s")
+        print(f"{n[:14]:14s} S={S:3d} SH={SH:3d}  goal={goal:12.3f}  "
+              f"certified={'exact' if cert is None else f'{cert * 100:6.2f}%':>7s}  {dt:6.2f}s"
+              f"{'  ERR ' + str(errs) if errs else ''}{'  WARN ' + str(warnings) if warnings else ''}", flush=True)
+    print(f"\n{bad} unsound, {below} certified below 95%, {time.time() - t0:.1f}s ({jobs} at a time)")
     return 1 if bad or below else 0
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else None))
+    args = sys.argv[1:]
+    jobs = None
+    if '-j' in args:
+        i = args.index('-j')
+        jobs = int(args[i + 1])
+        del args[i:i + 2]
+    sys.exit(main(args[0] if args else None, jobs))
