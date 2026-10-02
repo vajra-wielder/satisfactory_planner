@@ -32,6 +32,8 @@ const CAP = { Miner: 1200, Oil_Extractor: 600, Water_Extractor: 600 };
 const GEO_MW = { impure: 100, normal: 200, pure: 400 };
 const FACTORY_COLORS = ['#f59e0b', '#22c55e', '#38bdf8', '#f472b6', '#a78bfa', '#ef4444', '#14b8a6', '#eab308', '#fb923c', '#84cc16'];
 const nameOf = r => (r === 'Geyser' ? 'Geyser' : itemName(r));
+// What a factory mines; geysers' generators go on the grid (the Blackboard's map)
+const PICKABLE = Object.keys(COLORS).filter(r => r !== 'Geyser');
 
 let MAP = null, BY = {}, BOUNDS = null, SAVE = new Set(), SAVE_INFO = null, IMG = null;
 export const mapNode = id => BY[id];
@@ -98,7 +100,9 @@ function makeMap(el, M) {
       g += `<g data-id="${n.id}" class="mp-n ${taken ? 'taken' : ''} ${on ? 'on' : ''}">
         ${SAVE.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 3.5}" class="mp-save"/>` : ''}
         ${own ? `<circle cx="${x}" cy="${y}" r="${r + 2}" fill="none" stroke="${M.ownerColor(own)}" stroke-width="2.5"/>` : ''}
+        ${M.grid?.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 6}" class="mp-grid-g"/>` : ''}
         <circle cx="${x}" cy="${y}" r="${r}" fill="${COLORS[n.r]}" fill-opacity="${{ impure: 0.45, normal: 0.75, pure: 1 }[n.p]}"/>
+        ${M.grid?.has(n.id) ? `<text x="${x}" y="${y + 3.5}" class="mp-bolt">⚡</text>` : ''}
         ${taken ? `<path d="M${x - r} ${y - r}L${x + r} ${y + r}M${x + r} ${y - r}L${x - r} ${y + r}" class="mp-x"/>` : ''}</g>`;
     });
     (M.pins || []).forEach((p, i) => {
@@ -170,7 +174,8 @@ function makeMap(el, M) {
       tip.innerHTML = `<b>${nameOf(n.r)}</b> · ${n.p}${n.w ? ' · well satellite' : ''}${n.r === 'Geyser' ? ` · ~${GEO_MW[n.p]} MW` : ''}<br>
         <span>${fmt(n.x)}, ${fmt(n.y)} m</span>${SAVE.has(n.id) ? '<br><span class="mp-save-t">mined in your save</span>' : ''}
         ${M.taken?.[n.id] ? `<br><span class="n-warn">mined by ${M.taken[n.id]}</span>` : ''}
-        ${M.owner?.[n.id] ? `<br><span>${M.ownerName(M.owner[n.id])}</span>` : ''}`;
+        ${M.owner?.[n.id] ? `<br><span>${M.ownerName(M.owner[n.id])}</span>` : ''}
+        ${M.grid?.has(n.id) ? '<br><span class="mp-save-t">⚡ geothermal generator on the grid</span>' : ''}`;
     }
     tip.style.display = 'block';
     tip.style.left = (e.clientX - r.left + 12) + 'px';
@@ -180,13 +185,13 @@ function makeMap(el, M) {
 }
 
 // Filter chips for a map
-function chips(el, M, redraw) {
-  el.innerHTML = Object.keys(COLORS).map(r =>
+function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
+  el.innerHTML = kinds.map(r =>
     `<button class="mp-f ${M.filter.has(r) ? 'on' : ''}" data-r="${r}"><i style="background:${COLORS[r]}"></i>${nameOf(r)}</button>`).join('')
     + '<button class="mp-f" data-r="*" title="Shift- or Ctrl-click a resource to add it">All</button>';
   el.querySelectorAll('.mp-f').forEach(b => b.addEventListener('click', e => {
     const r = b.dataset.r;
-    if (r === '*') M.filter = new Set(Object.keys(COLORS));
+    if (r === '*') M.filter = new Set(kinds);
     else if (e.shiftKey || e.ctrlKey || e.metaKey) M.filter.has(r) ? M.filter.delete(r) : M.filter.add(r);
     else M.filter = new Set([r]);
     el.querySelectorAll('.mp-f').forEach(x => x.classList.toggle('on', M.filter.has(x.dataset.r)));
@@ -250,7 +255,7 @@ let S = null;   // the open picker
 export function openMapPicker(opts) {
   loadMap().then(() => {
     S = { ...opts, picked: new Set(opts.picked), shards: { ...opts.shards }, pins: (opts.pins || []).map(p => ({ ...p })),
-          filter: opts.resource && COLORS[opts.resource] ? new Set([opts.resource]) : new Set(Object.keys(COLORS)),
+          filter: opts.resource && PICKABLE.includes(opts.resource) ? new Set([opts.resource]) : new Set(PICKABLE),
           pinMode: false };
     let m = $('map-modal');
     if (!m) {
@@ -296,7 +301,7 @@ export function openMapPicker(opts) {
     M.onPinClick = i => { if (M.pinMode) { M.pins.splice(i, 1); M.map.draw(); renderList(); } };
     M.map = makeMap($('mp-map'), M);
     const redraw = () => M.map.draw();
-    chips($('mp-filters'), M, redraw);
+    chips($('mp-filters'), M, redraw, PICKABLE);
     tools($('mp-tools'), redraw);
     requestAnimationFrame(() => { M.map.refit(); renderList(); });
   });
@@ -380,8 +385,9 @@ function renderList() {
 // ══════════════════════════════════════════════════════════
 
 /** el: the container. owners: {node id: factory key}; factories: [{key, name}];
- *  pins: [{x, y, count, factory}]; onOpen(key). */
-export function mountMapView(el, { owners, factories, pins, onOpen }) {
+ *  pins: [{x, y, count, factory}]; grid: geyser ids with the grid's geothermal
+ *  generators; onGrid(ids) when they change; onOpen(key). */
+export function mountMapView(el, { owners, factories, pins, grid = [], onGrid = () => {}, onOpen }) {
   return loadMap().then(() => {
     const color = {};
     factories.forEach((f, i) => { color[f.key] = FACTORY_COLORS[i % FACTORY_COLORS.length]; });
@@ -389,7 +395,16 @@ export function mountMapView(el, { owners, factories, pins, onOpen }) {
     el.innerHTML = `<div class="mp-filters"></div><div class="mp-tools"></div>
       <div class="mp-main"><div class="mp-view"></div><div class="mp-side mp-legend"></div></div>`;
     const M = { filter: new Set(Object.keys(COLORS)), owner: owners, ownerColor: k => color[k] || '#fff', ownerName: name,
-                pins: pins.map(p => ({ ...p, color: color[p.factory], label: name(p.factory), mine: true })) };
+                pins: pins.map(p => ({ ...p, color: color[p.factory], label: name(p.factory), mine: true })),
+                grid: new Set(grid), geoMode: false };
+    const setGrid = ids => { M.grid = new Set(ids); onGrid([...M.grid].sort()); redraw(); };
+    // In geothermal mode a click on a geyser puts a generator on it (or takes it off)
+    M.onClick = id => {
+      if (!M.geoMode || BY[id]?.r !== 'Geyser' || owners[id]) return;
+      const g = new Set(M.grid);
+      g.has(id) ? g.delete(id) : g.add(id);
+      setGrid(g);
+    };
     M.map = makeMap(el.querySelector('.mp-view'), M);
     const legend = () => {
       const count = {}, free = {}, inSave = {};
@@ -397,10 +412,18 @@ export function mountMapView(el, { owners, factories, pins, onOpen }) {
         if (!M.filter.has(n.r)) return;
         if (owners[n.id]) count[owners[n.id]] = (count[owners[n.id]] || 0) + 1;
         else if (SAVE.has(n.id)) inSave[n.r] = (inSave[n.r] || 0) + 1;
-        else if (n.p === 'pure') free[n.r] = (free[n.r] || 0) + 1;
+        else if (n.p === 'pure' && !M.grid.has(n.id)) free[n.r] = (free[n.r] || 0) + 1;
       });
+      const mw = [...M.grid].reduce((a, id) => a + (GEO_MW[BY[id]?.p] || 0), 0);
+      // geysers your save already has generators on, not yet on the grid
+      const saved = MAP.filter(n => n.r === 'Geyser' && SAVE.has(n.id) && !M.grid.has(n.id) && !owners[n.id]).map(n => n.id);
       el.querySelector('.mp-legend').innerHTML = `
-        <div class="n-sent-t">Factories</div>
+        <div class="n-sent-t">Power grid</div>
+        ${M.grid.size ? `<div class="mp-lg"><i class="geo"></i>Geothermal × ${M.grid.size}<b>${fmt(mw)} MW</b></div>
+          <p class="n-hint">On average — a geyser swings between ½× and 1½×: ${fmt(mw / 2)}–${fmt(mw * 1.5)} MW.</p>`
+          : '<p class="n-hint">No geothermal generators yet — ⚡ Geothermal, then click geysers.</p>'}
+        ${saved.length ? `<button class="bsm" id="mp-geo-save">⚡ Add the ${saved.length} in your save</button>` : ''}
+        <div class="n-sent-t" style="margin-top:10px">Factories</div>
         ${factories.filter(f => count[f.key]).map(f => `<div class="mp-lg"><i style="border-color:${color[f.key]}"></i>
           <span class="bb-name" data-key="${f.key}" style="font-weight:400">${f.name}</span><b>${count[f.key]}</b></div>`).join('')
           || '<p class="n-hint">No factory has nodes picked yet.</p>'}
@@ -410,10 +433,22 @@ export function mountMapView(el, { owners, factories, pins, onOpen }) {
         <div class="n-sent-t" style="margin-top:10px">Pure nodes still free</div>
         ${Object.entries(free).map(([r, c]) => `<div class="mp-lg"><i style="background:${COLORS[r]};border:none"></i>${nameOf(r)}<b>${c}</b></div>`).join('')}`;
       el.querySelectorAll('.mp-legend .bb-name').forEach(t => t.addEventListener('click', () => onOpen(t.dataset.key)));
+      el.querySelector('#mp-geo-save')?.addEventListener('click', () => setGrid([...M.grid, ...saved]));
     };
-    const redraw = () => { M.map.draw(); legend(); };
+    function redraw() { M.map.draw(); legend(); }
     chips(el.querySelector('.mp-filters'), M, redraw);
     tools(el.querySelector('.mp-tools'), redraw);
+    // the grid's geothermal: a mode, so ordinary clicks never place one by accident
+    el.querySelector('.mp-tools').insertAdjacentHTML('afterbegin',
+      '<button class="bsm" id="mp-geo" title="Click geysers to put geothermal generators on the power grid">⚡ Geothermal</button>');
+    const geoBtn = el.querySelector('#mp-geo');
+    geoBtn.addEventListener('click', () => {
+      M.geoMode = !M.geoMode;
+      geoBtn.classList.toggle('act', M.geoMode);
+      if (M.geoMode) M.filter = new Set(['Geyser']);
+      el.querySelectorAll('.mp-filters .mp-f').forEach(x => x.classList.toggle('on', M.filter.has(x.dataset.r)));
+      redraw();
+    });
     requestAnimationFrame(() => { M.map.refit(); legend(); });
   });
 }

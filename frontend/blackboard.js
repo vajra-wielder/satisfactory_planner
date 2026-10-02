@@ -16,7 +16,7 @@
 
 import { itemName, RECIPES, PROGRESS } from './state.js';
 import { saveProgress, fetchFactoryOutputs } from './api.js';
-import { mountMapView } from './map-picker.js';
+import { mountMapView, loadMap, mapNode } from './map-picker.js';
 import { onChain, chainHTML } from './chain.js';
 import { bundle, bandStripes, bandScale, sankeyLayout, itemColor as colorOf } from './bundles.js';
 import { recommend, tierFor } from './splits.js';
@@ -65,7 +65,7 @@ export function openBlackboard() {
     DATA = d;
     BUILD = null;
     FLUIDS = new Set(d.fluids || []);
-    LAYOUT = { positions: {}, routes: [], ...(d.layout || {}), belt: PROGRESS.belt, pipe: PROGRESS.pipe };
+    LAYOUT = { positions: {}, routes: [], geysers: [], ...(d.layout || {}), belt: PROGRESS.belt, pipe: PROGRESS.pipe };
     LAYOUT.routes = (LAYOUT.routes || []).filter(r => factory(r.a) && factory(r.b));
     // A factory's "From factories" imports join it to where they come from
     let added = false;
@@ -102,6 +102,11 @@ function showTab(tab) {
 function fillTierSelect(id, tiers, chosen) {
   $(id).innerHTML = Object.entries(tiers)
     .map(([t, c]) => `<option value="${t}" ${t === chosen ? 'selected' : ''}>${t} · ${c}/min</option>`).join('');
+}
+
+function saveNow() {
+  clearTimeout(saveTimer);
+  return fetch('/api/blackboard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(LAYOUT) });
 }
 
 function save() {
@@ -521,34 +526,52 @@ function renderStorage() {
 // POWER — what each factory draws and makes, and the grid
 // ══════════════════════════════════════════════════════════
 
+const GEO_MW = { impure: 100, normal: 200, pure: 400 };
+
 function renderPower() {
   const el = $('bb-power');
   if (!DATA) return;
-  let made = 0, used = 0;
-  const rows = DATA.factories.map(f => {
-    const p = f.power || {};
-    const draw = (p.machines || 0) + (p.extractors || 0), make = (p.generators || 0) + (p.geothermal || 0);
-    used += draw; made += make;
-    // the plan's own net against its cap (the cap counts machines and generators; geysers raise it)
-    const net = (p.machines || 0) - (p.generators || 0);
-    const capped = p.cap != null && p.solved && net >= 0.99 * (p.cap + (p.geothermal || 0)) - 1e-6;
-    const plan = v => (p.solved ? fmt(v || 0) : '—');   // machines and generators need a current plan
-    return `<tr><td><span class="bb-name" data-key="${f.key}" style="font-weight:400">${f.name}</span>${p.solved ? '' : ' <span class="bb-hint">(not solved)</span>'}</td>
-      <td class="num">${plan(p.machines)}</td><td class="num">${fmt(p.extractors || 0)}</td>
-      <td class="num">${plan(p.generators)}</td><td class="num">${fmt(p.geothermal || 0)}</td>
-      <td class="num ${make - draw < -1e-6 ? 'bb-warn' : 'bb-ok'}">${make - draw >= 0 ? '+' : ''}${fmt(make - draw)}</td>
-      <td class="num">${p.cap == null ? '—' : fmt(p.cap)}</td>
-      <td>${capped ? '<span class="bb-warn" title="Its plan uses all its power cap: more power would let it make more">cap limits it</span>' : ''}</td></tr>`;
-  }).join('');
-  const bal = made - used;
-  el.innerHTML = `<div class="bb-kpi" style="margin-bottom:10px">Grid: <b>${fmt(made)} MW</b> made · <b>${fmt(used)} MW</b> used ·
-      <span class="${bal < 0 ? 'bb-warn' : 'bb-ok'}"><b>${bal >= 0 ? fmt(bal) + ' MW spare' : fmt(-bal) + ' MW short'}</b></span></div>
-    <table class="st-tab"><tr><th>Factory</th><th style="text-align:right">Machines</th><th style="text-align:right">Extractors</th>
-      <th style="text-align:right">Generators</th><th style="text-align:right">Geothermal</th><th style="text-align:right">Net MW</th><th style="text-align:right">Cap</th><th></th></tr>${rows}</table>
-    <p class="bb-hint" style="margin-top:10px">Machines and generators come from each factory's plan; extractors and geothermal from its nodes.
-      Geysers swing between half and one and a half times their average — the average is counted. A factory's power cap is what the grid gives it;
-      its own generators and geysers add to it.</p>`;
-  el.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
+  loadMap().then(() => {
+    let made = 0, used = 0, geoFactories = 0;
+    const anyGeo = DATA.factories.some(f => (f.power?.geothermal || 0) > 0);   // geysers inside a factory (older saves)
+    const rows = DATA.factories.map(f => {
+      const p = f.power || {};
+      const draw = (p.machines || 0) + (p.extractors || 0), make = (p.generators || 0) + (p.geothermal || 0);
+      used += draw; made += make; geoFactories += p.geothermal || 0;
+      // the plan's own net against its cap (the cap counts machines and generators; geysers raise it)
+      const net = (p.machines || 0) - (p.generators || 0);
+      const capped = p.cap != null && p.solved && net >= 0.99 * (p.cap + (p.geothermal || 0)) - 1e-6;
+      const plan = v => (p.solved ? fmt(v || 0) : '—');   // machines and generators need a current plan
+      return `<tr><td><span class="bb-name" data-key="${f.key}" style="font-weight:400">${f.name}</span>${p.solved ? '' : ' <span class="bb-hint">(not solved)</span>'}</td>
+        <td class="num">${plan(p.machines)}</td><td class="num">${fmt(p.extractors || 0)}</td>
+        <td class="num">${plan(p.generators)}</td>${anyGeo ? `<td class="num">${fmt(p.geothermal || 0)}</td>` : ''}
+        <td class="num ${make - draw < -1e-6 ? 'bb-warn' : 'bb-ok'}">${make - draw >= 0 ? '+' : ''}${fmt(make - draw)}</td>
+        <td class="num">${p.cap == null ? '—' : fmt(p.cap)}</td>
+        <td>${capped ? '<span class="bb-warn" title="Its plan uses all its power cap: more power would let it make more">cap limits it</span>' : ''}</td></tr>`;
+    }).join('');
+    // The grid's own geothermal generators (placed on the Map tab)
+    const geys = (LAYOUT.geysers || []).map(mapNode).filter(Boolean);
+    const geo = geys.reduce((a, n) => a + (GEO_MW[n.p] || 0), 0);
+    const purity = ['pure', 'normal', 'impure'].map(p => [p, geys.filter(n => n.p === p).length]).filter(([, c]) => c)
+      .map(([p, c]) => `${c} ${p}`).join(', ');
+    made += geo;
+    const gridRow = `<tr class="pw-grid"><td>⚡ Power grid <span class="bb-hint">${geys.length ? `geothermal × ${geys.length} (${purity})` : 'no geothermal yet — place them on the Map tab'}</span></td>
+      <td class="num"></td><td class="num"></td><td class="num">${geys.length ? fmt(geo) : '—'}</td>${anyGeo ? '<td class="num"></td>' : ''}
+      <td class="num bb-ok">${geo ? '+' + fmt(geo) : ''}</td><td class="num"></td><td></td></tr>`;
+    const bal = made - used;
+    // every geyser at the low of its swing (½×) at once: the grid's worst moment
+    const low = bal - (geo + geoFactories) / 2;
+    el.innerHTML = `<div class="bb-kpi" style="margin-bottom:4px">Grid: <b>${fmt(made)} MW</b> made · <b>${fmt(used)} MW</b> used ·
+        <span class="${bal < 0 ? 'bb-warn' : 'bb-ok'}"><b>${bal >= 0 ? fmt(bal) + ' MW spare' : fmt(-bal) + ' MW short'}</b></span></div>
+      ${geo + geoFactories ? `<div class="bb-kpi" style="margin-bottom:10px">With every geyser at its low: <span class="${low < 0 ? 'bb-warn' : 'bb-ok'}"><b>${low >= 0 ? fmt(low) + ' MW spare' : fmt(-low) + ' MW short'}</b></span>
+        <span class="bb-hint">· at its high: ${fmt(bal + (geo + geoFactories) / 2)} MW spare</span></div>` : '<div style="height:6px"></div>'}
+      <table class="st-tab"><tr><th>Factory</th><th style="text-align:right">Machines</th><th style="text-align:right">Extractors</th>
+        <th style="text-align:right">Generators</th>${anyGeo ? '<th style="text-align:right">Geothermal</th>' : ''}<th style="text-align:right">Net MW</th><th style="text-align:right">Cap</th><th></th></tr>${rows}${gridRow}</table>
+      <p class="bb-hint" style="margin-top:10px">Machines and generators come from each factory's plan, extractors from its nodes.
+        Geothermal generators sit on geysers on the grid (Map tab → ⚡ Geothermal); a geyser swings between ½× and 1½× its average, so the
+        grid is shown at the average and with every geyser at its low. A factory's power cap is what the grid gives it.</p>`;
+    el.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
+  });
 }
 
 // ══════════════════════════════════════════════════════════
@@ -556,6 +579,7 @@ function renderPower() {
 // ══════════════════════════════════════════════════════════
 
 let BUILD = null, BUILD_PICK = null;
+const BUILD_SEEN = new Set();
 const machName = m => m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1');
 
 function renderBuild() {
@@ -565,7 +589,9 @@ function renderBuild() {
     fetch('/api/build-list').then(r => r.json()).then(d => { BUILD = d.factories; renderBuild(); });
     return;
   }
-  BUILD_PICK = BUILD_PICK || new Set(BUILD.filter(f => f.solved).map(f => f.key));
+  // what you've ticked stays ticked; anything new (a factory, the grid) starts ticked
+  BUILD_PICK = BUILD_PICK || new Set();
+  BUILD.forEach(f => { if (f.solved && !BUILD_SEEN.has(f.key)) BUILD_PICK.add(f.key); BUILD_SEEN.add(f.key); });
   const pick = BUILD.filter(f => BUILD_PICK.has(f.key));
   const sum = field => {
     const out = {};
@@ -615,6 +641,9 @@ function renderMapTab() {
   fetchFactoryOutputs().then(o => mountMapView(el, {
     owners: o.nodes || {}, factories: o.factories.map(f => ({ key: f.key, name: f.name })),
     pins: o.pins || [], onOpen: onOpenFactory,
+    // the grid's geothermal generators: saved with the board, at once
+    grid: LAYOUT.geysers || [],
+    onGrid: ids => { LAYOUT.geysers = ids; BUILD = null; saveNow(); },
   }));
 }
 

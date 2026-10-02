@@ -96,3 +96,18 @@ class Cards(_Temp):
             self.assertGreater(i["rate"], 0)
         self.assertAlmostEqual(rt["throughput"], sum(i["rate"] for i in rt["items"]), places=2)
         self.assertIn("iron", out["headroom"])
+
+    def test_grid_geothermal(self):
+        import supply
+        m = supply.map_nodes()
+        pure = [k for k, v in m.items() if v["r"] == "Geyser" and v["p"] == "pure"][:2]
+        ore = next(k for k, v in m.items() if v["r"] == "Iron_Ore")
+        # only geysers are kept, once each
+        server._save_board({"geysers": pure + [pure[0], ore, "nope", 5]})
+        self.assertEqual(server._load_board()["geysers"], sorted(pure))
+        g = server._grid()
+        self.assertEqual((g["count"], g["mw"], g["low"], g["high"]), (2, 800.0, 400.0, 1200.0))
+        self.assertEqual(g["cost"]["Wire"], 500)
+        grid = next(r for r in server._build_list() if r["key"] == "@grid")
+        self.assertEqual(grid["extractors"], {supply.GEOTHERMAL: 2})
+

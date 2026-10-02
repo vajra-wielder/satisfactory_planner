@@ -18,8 +18,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   node and resource-well satellite, with its purity), or type them in. Nodes one
   factory mines are crossed out for the others. Power shards on the extractors
   (0–3 each, +50% clock per shard) decide how much comes out; "Spread" puts a
-  number of shards where they add the most. Geysers take geothermal
-  generators; water extractors are pins you drop where there's water. A fixed
+  number of shards where they add the most. Water extractors are pins you drop where there's water. A fixed
   rate covers anything else
 - Your save: read a .sav (Machines & Alts, or the map) to mark the nodes your
   game already mines, on the map and on the Blackboard's Map tab, so you can
@@ -61,7 +60,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Power plants: Coal (coal, compacted coal, petroleum coke) and Fuel generators
   (fuel, turbofuel, rocket, ionized and liquid biofuel) and Nuclear plants make
   Power, in MW — a goal like any item, so a factory can be a power plant. A
-  factory's own generators and geysers add to its power cap. Burning fuel rods
+  factory's own generators add to its power cap. Burning fuel rods
   yields Uranium/Plutonium waste, so full Plutonium and Ficsonium chains can be
   planned
 - Last solve of each scenario cached and restored when the scenario is reopened
@@ -82,11 +81,16 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   pair of factories, its items as stripes inside it.
 - Storage: every item sent to storage, per minute and per hour, by factory.
 - Power: what each factory's machines and extractors draw and its generators
-  and geysers make, the grid's balance, and which factories their cap holds back.
+  make, the power grid's geothermal, the grid's balance — on average and with
+  every geyser at its low (½×) and its high (1½×) — and which factories their
+  cap holds back.
 - Build list: the machines (extractors and generators too) and the materials to
-  build them, per factory or for any you pick — no belts, pipes or stations.
+  build them, per factory or for any you pick (the grid's geothermal
+  generators too) — no belts, pipes or stations.
 - Map: whose nodes are whose, what your save already mines, the pure nodes
-  still free.
+  still free. ⚡ Geothermal: click geysers to put a geothermal generator on
+  them for the power grid (100 / 200 / 400 MW by purity), or add the ones your
+  save has. Geysers belong to the grid, not to a factory.
 - Apply a network plan: what it sends between factories becomes their imports,
   the alternates it uses are switched on, then they're re-solved in order. A
   factory's own goals are always made in it.
@@ -238,13 +242,13 @@ your scenarios, plans and unlocks are never touched.
 
 A scenario may contain:
 
-- Resource Nodes (picked on the map, typed in, or fixed rates), extractor shards, geysers
+- Resource Nodes (picked on the map, typed in, or fixed rates), extractor shards
 - Imports From Other Factories
 - Items Sent to Storage
 - Objective Outputs (weighted; Power in MW for a power plant)
 - Exact, Minimum and Maximum Production Targets
 - Power Shards and Somersloops for its machines (Dive or Exact placement)
-- A Power Cap (its own generators and geysers add to it)
+- A Power Cap (its own generators add to it)
 - Alternate Recipes (and Min New Alts: the fewest you haven't unlocked)
 - Least machine space first instead of least resources (Min Machines)
 

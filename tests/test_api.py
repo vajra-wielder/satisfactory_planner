@@ -74,9 +74,9 @@ class API(_Temp):
         self.assertEqual(out["routes"], [])
         code, out = self.call("POST", "/api/apply-network", {"flows": [{"from": "a"}, 5], "alts": "x"})
         self.assertEqual((code, out["changed"]), (200, []))
-        self.assertEqual(self.call("POST", "/api/blackboard", {"routes": "bad", "positions": 3})[0], 200)
+        self.assertEqual(self.call("POST", "/api/blackboard", {"routes": "bad", "positions": 3, "geysers": ["nope", 4]})[0], 200)
         _, b = self.call("GET", "/api/blackboard")
-        self.assertEqual(b["layout"], {"positions": {}, "routes": []})
+        self.assertEqual(b["layout"], {"positions": {}, "routes": [], "geysers": []})
 
     def test_map_settings_stay_numbers(self):
         _, st = self.call("POST", "/api/map-settings", {"dx": "abc", "scale": -1, "opacity": 7})

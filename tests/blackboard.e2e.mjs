@@ -97,6 +97,22 @@ try {
     await page.click('#bb-tabs button[data-tab="map"]'); await page.waitForSelector('#bb-map svg');
     assert.ok(await page.locator('#bb-map [data-id]').count() > 500);
   });
+  check('geothermal goes on the grid: placed on the map, counted in power, built, kept', async () => {
+    await page.click('#bb-tabs button[data-tab="map"]'); await page.waitForSelector('#bb-map svg');
+    await page.click('#mp-geo'); await sleep(200);
+    const gs = page.locator('#bb-map [data-id^="ResourceNodeGeyser"]');
+    await gs.nth(0).dispatchEvent('click'); await gs.nth(1).dispatchEvent('click'); await sleep(300);
+    assert.equal(await page.locator('#bb-map .mp-grid-g').count(), 2);
+    assert.match(await page.locator('#bb-map .mp-legend').innerText(), /Geothermal × 2/);
+    await page.click('#bb-tabs button[data-tab="power"]'); await sleep(400);
+    const pw = await page.locator('#bb-power').innerText();
+    assert.match(pw, /geothermal × 2/); assert.match(pw, /every geyser at its low/);
+    await page.click('#bb-tabs button[data-tab="build"]'); await page.waitForSelector('.bl-pick');
+    assert.match(await page.locator('#bb-build').innerText(), /Geothermal Generator\s+2/);
+    const layout = await api('/api/blackboard');
+    assert.equal(layout.layout.geysers.length, 2);
+    assert.equal(layout.grid.count, 2);
+  });
   check('planning the network redraws the band from the plan', async () => {
     await page.click('#bb-tabs button[data-tab="factories"]'); await sleep(200);
     await page.click('#bb-plan');

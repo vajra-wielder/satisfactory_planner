@@ -348,7 +348,11 @@ def _clean_board(layout) -> dict:
     layout = layout if isinstance(layout, dict) else {}
     pos = layout.get("positions") if isinstance(layout.get("positions"), dict) else {}
     routes = layout.get("routes") if isinstance(layout.get("routes"), list) else []
+    known = supply.map_nodes()
+    geysers = layout.get("geysers") if isinstance(layout.get("geysers"), list) else []
     return {
+        # geothermal generators on the grid: the geysers they sit on
+        "geysers": sorted({g for g in geysers if isinstance(g, str) and known.get(g, {}).get("r") == "Geyser"}),
         "positions": {k: {"x": _num(v.get("x"), 0.0, 0.0), "y": _num(v.get("y"), 0.0, 0.0)}
                       for k, v in pos.items() if _valid_key(str(k)) and isinstance(v, dict)},
         "routes": [{"a": r["a"], "b": r["b"],
@@ -566,6 +570,16 @@ def _factory_outputs() -> dict:
             for key, data, _ in saved for n in data.get("resource_nodes") or [] if n.get("at")]
     return {"factories": facs, "claims": claims, "nodes": nodes, "alerts": alerts, "pins": pins}
 
+def _grid() -> dict:
+    """The power grid's own geothermal generators (on the Blackboard's map):
+    their average MW, and the range a geyser's swing (½× to 1½×) spans."""
+    known = supply.map_nodes()
+    gs = [{"id": g, "p": known[g]["p"], "mw": supply.GEOTHERMAL_MW[known[g]["p"]]}
+          for g in _load_board().get("geysers", []) if g in known]
+    mw = sum(g["mw"] for g in gs)
+    cost = {it: a * len(gs) for it, a in supply.BUILD[supply.GEOTHERMAL].items()}
+    return {"geysers": gs, "count": len(gs), "mw": mw, "low": mw * 0.5, "high": mw * 1.5, "cost": cost}
+
 def _power(data: dict, result) -> dict:
     """A factory's power: what its machines draw and its generators make (from
     its plan), its extractors' draw and its geysers' power (from its nodes)."""
@@ -602,6 +616,10 @@ def _build_list() -> list:
                     "shards": int((result or {}).get("build_cost_shards") or 0) + supply.shards_used(data)
                               - int(data.get("power_shards_available") or 0),
                     "sloops": int((result or {}).get("build_cost_sloops") or 0)})
+    g = _grid()
+    if g["count"]:   # the grid's geothermal generators, as one more thing to build
+        out.append({"key": "@grid", "name": "Power grid", "solved": True, "stale": False, "machines": {},
+                    "extractors": {supply.GEOTHERMAL: g["count"]}, "materials": g["cost"], "shards": 0, "sloops": 0})
     return out
 
 _save_lock = threading.Lock()   # claim check + write as one step, so two saves can't both take the same
@@ -1340,7 +1358,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/blackboard":
-            self._json(200, {"factories": _blackboard_factories(), "layout": _load_board(),
+            self._json(200, {"factories": _blackboard_factories(), "layout": _load_board(), "grid": _grid(),
                              "fluids": logistics.META["fluids"],
                              "transport": logistics.META["transport"]})
             return

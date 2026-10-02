@@ -71,12 +71,11 @@ try {
     await page.locator('#kv-res .nrow').last().locator('.n-ex').selectOption('fixed'); await sleep(150);
     await page.locator('#kv-res .nrow').last().locator('.n-rate-in').fill('120');
     await page.locator('#kv-res .nrow').last().locator('.n-rate-in').blur();
-    // on the map: a coal node, a geyser, a water pin
+    // on the map: a coal node, a water pin (geysers belong to the grid, not here)
     await page.click('#btn-map-pick'); await page.waitForSelector('#mp-map [data-id]');
     await page.click('.mp-f[data-r="Coal"]'); await sleep(200);
     await page.locator('#mp-map [data-id]').first().dispatchEvent('click');
-    await page.click('.mp-f[data-r="Geyser"]'); await sleep(200);
-    await page.locator('#mp-map [data-id]').first().dispatchEvent('click');
+    assert.equal(await page.locator('.mp-f[data-r="Geyser"]').count(), 0, 'no geysers in a factory');
     await page.click('#mp-pin');
     const box = await page.locator('#mp-map').boundingBox();
     await page.mouse.click(box.x + 20, box.y + 20); await sleep(200);
@@ -137,7 +136,7 @@ try {
     assert.deepEqual(s.from_factories, [{ item: 'Iron_Plate', factory: 'iron', rate: 20 }]);
     assert.deepEqual(s.to_storage, [{ item: 'Reinforced_Iron_Plate', rate: 0.5 }]);
     const kinds = s.resource_nodes.map(n => n.extractor).sort();
-    assert.deepEqual(kinds, ['Geothermal_Generator', 'Miner', 'Miner', 'Water_Extractor', 'fixed']);
+    assert.deepEqual(kinds, ['Miner', 'Miner', 'Water_Extractor', 'fixed']);
     assert.ok(s.resource_nodes.find(n => n.extractor === 'Water_Extractor').at, 'the pin keeps its place');
     assert.deepEqual(s.unlimited_resources, ['Water']);
     assert.ok(s.available_resources.Iron_Ore > 0 && s.available_resources.Limestone === 120 && s.available_resources.Iron_Plate === 20);
@@ -149,7 +148,7 @@ try {
     await page.evaluate(() => document.getElementById('wo')?.classList.remove('show'));
     await page.click('#bc-toggle'); await sleep(200);
     const bc = await page.locator('#bcb').innerText();
-    assert.match(bc, /Miner Mk\.3/); assert.match(bc, /Geothermal Generator/); assert.match(bc, /Water Extractor/);
+    assert.match(bc, /Miner Mk\.3/); assert.match(bc, /Water Extractor/);
   });
 
   await step('the analysis opens', async () => {
