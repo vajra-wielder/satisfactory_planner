@@ -11,7 +11,7 @@ Can also be run directly for browser-only use:
     python server.py 5001   # custom port
 """
 
-import gzip, json, os, sys, tempfile, threading
+import gzip, json, os, re, sys, tempfile, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -162,9 +162,91 @@ def _signature(s: Scenario, styles=()) -> str:
                       sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()
 
-def _result_key(name: str) -> str:
-    # Same key the frontend saves the scenario under (see handleSave)
-    return "".join(ch for ch in "_".join(name.split()).lower() if ch.isalnum() or ch in "_-") or "scenario"
+def key_of(name: str) -> str:
+    """The key a factory is saved under (and its plan cached under): its name
+    with spaces as _, lower case, ASCII letters, digits, _ and - only, so it's a
+    filename on any system. The frontend's keyOf is the same."""
+    return "".join(ch for ch in "_".join(str(name).split()).lower()
+                   if (ch.isascii() and ch.isalnum()) or ch in "_-") or "factory"
+
+_KEY = re.compile(r"[A-Za-z0-9_-]{1,120}")
+
+def _valid_key(key: str) -> bool:
+    """A scenario or version key from a URL: nothing that could leave its folder."""
+    return bool(_KEY.fullmatch(key or ""))
+
+_result_key = key_of
+
+
+class _BadRequest(ValueError):
+    """Input the server can't use — answered with 400 and this message."""
+
+
+def _num(v, default=0.0, lo=None):
+    """A finite number from user input, else the default (and never below lo)."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    if x != x or x in (float("inf"), float("-inf")):
+        return default
+    return max(lo, x) if lo is not None else x
+
+
+def _clean_scenario(d) -> dict:
+    """A scenario from the browser, made safe to save and solve: numbers are
+    numbers, rows without an item are dropped, rates and counts never negative,
+    lists are lists of strings. Everything else is kept as it came."""
+    if not isinstance(d, dict):
+        raise _BadRequest("A scenario is a JSON object")
+    out = dict(d)
+    out["name"] = str(d.get("name") or "Factory").strip()[:120] or "Factory"
+    for k in ("description", "notes"):
+        if k in d:
+            out[k] = str(d.get(k) or "")
+    for k in ("available_resources", "must_produce", "min_produce", "max_produce", "objective"):
+        v = d.get(k)
+        out[k] = {str(i): _num(x) for i, x in v.items() if i} if isinstance(v, dict) else {}
+    for k in ("alternate_recipes_enabled", "enabled_machines", "unlimited_resources"):
+        v = d.get(k)
+        out[k] = [str(x) for x in v if isinstance(x, str)] if isinstance(v, list) else []
+    for k in ("power_shards_available", "somersloops_available"):
+        if d.get(k) is not None:
+            out[k] = int(_num(d.get(k), 0, 0))
+    if d.get("max_power_mw") not in (None, ""):
+        mw = _num(d.get("max_power_mw"), None)
+        out["max_power_mw"] = None if mw is None else max(0.0, mw)
+    rows = lambda k: [r for r in d.get(k) if isinstance(r, dict)] if isinstance(d.get(k), list) else None
+    if d.get("resource_nodes") is not None:
+        nodes = []
+        for n in rows("resource_nodes") or []:
+            if not isinstance(n.get("resource"), str) or not n["resource"]:
+                continue
+            n = dict(n)
+            for f in ("count", "shards"):
+                if f in n:
+                    n[f] = int(_num(n[f], 1 if f == "count" else 0, 0))
+            if "shards" in n:
+                n["shards"] = min(n["shards"], supply.MAX_SHARDS)
+            if "rate" in n:
+                n["rate"] = _num(n["rate"], 0.0, 0.0)
+            if "nodes" in n:
+                n["nodes"] = [x for x in (n["nodes"] if isinstance(n["nodes"], list) else []) if isinstance(x, str)]
+            if isinstance(n.get("node_shards"), dict):
+                n["node_shards"] = {str(i): min(supply.MAX_SHARDS, int(_num(v, 0, 0))) for i, v in n["node_shards"].items()}
+            nodes.append(n)
+        out["resource_nodes"] = nodes
+    if d.get("from_factories") is not None:
+        out["from_factories"] = [{"item": r["item"], "factory": r["factory"], "rate": _num(r.get("rate"), 0.0, 0.0)}
+                                 for r in rows("from_factories") or []
+                                 if isinstance(r.get("item"), str) and r["item"]
+                                 and isinstance(r.get("factory"), str) and _valid_key(r["factory"])]
+    if d.get("to_storage") is not None:
+        out["to_storage"] = [{"item": r["item"], "rate": _num(r.get("rate"), 0.0, 0.0)}
+                             for r in rows("to_storage") or [] if isinstance(r.get("item"), str) and r["item"]]
+    if out.get("resource_nodes") is not None or out.get("from_factories") is not None:
+        out["available_resources"] = supply.available(out)
+    return out
 
 # Entries are gzipped compact JSON (≈10× smaller); plain .json files from
 # before are still read and replaced on the next write. The folder keeps the
@@ -257,14 +339,28 @@ BOARD_PATH = HERE / "data" / "blackboard.yaml"
 def _load_board() -> dict:
     try:
         raw = yaml.safe_load(BOARD_PATH.read_text(encoding="utf-8")) if BOARD_PATH.exists() else None
-        return raw if isinstance(raw, dict) else {}
+        return _clean_board(raw) if isinstance(raw, dict) else {}
     except Exception:
         return {}
 
+def _clean_board(layout) -> dict:
+    """Card positions {key: {x, y}} and routes [{a, b, mode, trip_min}], nothing else."""
+    layout = layout if isinstance(layout, dict) else {}
+    pos = layout.get("positions") if isinstance(layout.get("positions"), dict) else {}
+    routes = layout.get("routes") if isinstance(layout.get("routes"), list) else []
+    return {
+        "positions": {k: {"x": _num(v.get("x"), 0.0, 0.0), "y": _num(v.get("y"), 0.0, 0.0)}
+                      for k, v in pos.items() if _valid_key(str(k)) and isinstance(v, dict)},
+        "routes": [{"a": r["a"], "b": r["b"],
+                    "mode": r.get("mode") if r.get("mode") in ("belt", "train", "truck", "drone") else "train",
+                    "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
+                   for r in routes if isinstance(r, dict) and _valid_key(str(r.get("a", "")))
+                   and _valid_key(str(r.get("b", ""))) and r.get("a") != r.get("b")],
+    }
+
 def _save_board(layout: dict) -> None:
-    keep = {k: layout[k] for k in ("positions", "routes", "belt", "pipe") if k in layout}
     BOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BOARD_PATH.write_text(yaml.safe_dump(keep, sort_keys=False), encoding="utf-8")
+    BOARD_PATH.write_text(yaml.safe_dump(_clean_board(layout), sort_keys=False), encoding="utf-8")
 
 # What a factory owes: other factories' "From factories" imports from it and its
 # own "To storage" are claims on its outputs. Solving it makes at least those
@@ -353,8 +449,7 @@ def _owed_ok(entry: dict, owed: dict, supply: dict) -> bool:
         return False                       # solved owing more than now: there may be a better plan
     return not _owed_short(entry.get("result") or {}, owed, supply)
 
-def _save_key(name: str) -> str:
-    return "_".join(str(name).split()).lower()   # as the frontend saves it (handleSave)
+_save_key = key_of
 
 def _factory_plan(key: str, stale_ok: bool = False, claims: dict = None, data: dict = None):
     """(scenario data, its current cached plan or None) for a saved factory.
@@ -818,8 +913,9 @@ def _map_settings() -> dict:
         d = json.loads(MAP_SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
         d = {}
-    return {"ext": d.get("ext"), "dx": float(d.get("dx") or 0), "dy": float(d.get("dy") or 0),
-            "scale": float(d.get("scale") or 1), "opacity": float(d.get("opacity") or 0.6)}
+    return {"ext": d.get("ext") if d.get("ext") in _IMAGE_TYPES.values() else None,
+            "dx": _num(d.get("dx"), 0.0), "dy": _num(d.get("dy"), 0.0),
+            "scale": _num(d.get("scale"), 1.0, 0.05), "opacity": min(1.0, _num(d.get("opacity"), 0.6, 0.0))}
 
 
 # ── Async solve job store ─────────────────────────────────────────────────────
@@ -964,8 +1060,19 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, default=str).encode())
 
     def _read_json(self):
-        length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length)) if length else {}
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length))
+        except (ValueError, UnicodeDecodeError):
+            raise _BadRequest("The request body isn't valid JSON")
+
+    def _read_obj(self) -> dict:
+        d = self._read_json()
+        if not isinstance(d, dict):
+            raise _BadRequest("Expected a JSON object")
+        return d
 
     def _scenario_path(self, name: str) -> Path:
         SCENARIOS_DIR.mkdir(exist_ok=True)
@@ -989,7 +1096,26 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── GET ───────────────────────────────────────────────────────────────────
 
-    def do_GET(self):
+    def _guard(self, fn):
+        """Every request answers: bad input with 400 and what was wrong, anything
+        else that fails with 500 (and the traceback in the log) — never a
+        dropped connection."""
+        try:
+            fn()
+        except _BadRequest as e:
+            self._json(400, {"error": str(e)})
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            try:
+                self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            except Exception:
+                pass
+
+    def do_GET(self): self._guard(self._get)
+
+    def _get(self):
         parsed = urlparse(self.path)
         path   = parsed.path.rstrip("/") or "/"
         qs     = parse_qs(parsed.query)
@@ -1001,7 +1127,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/frontend/"):
-            self._serve_file(HERE / path.lstrip("/"))
+            f = (HERE / path.lstrip("/")).resolve()
+            if (HERE / "frontend").resolve() not in f.parents:   # nothing outside frontend/
+                self._json(404, {"error": "Not found"})
+                return
+            self._serve_file(f)
             return
 
         # ── API routes ────────────────────────────────────────────────────────
@@ -1058,6 +1188,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/scenarios/"):
             name = path[len("/api/scenarios/"):]
+            if not _valid_key(name):
+                self._json(400, {"error": "A factory key is letters, digits, _ and - only"})
+                return
             p    = self._scenario_path(name)
             if not p.exists():
                 self._json(404, {"error": "Not found"})
@@ -1158,7 +1291,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/api/history/"):
-            self._json(200, {"versions": _history(path[len("/api/history/"):])})
+            key = path[len("/api/history/"):]
+            if not _valid_key(key):
+                self._json(400, {"error": "Bad key"})
+                return
+            self._json(200, {"versions": _history(key)})
             return
 
         if path == "/api/save-nodes":
@@ -1224,15 +1361,19 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── POST / PUT ────────────────────────────────────────────────────────────
 
-    def do_POST(self): self._handle_write()
-    def do_PUT(self):  self._handle_write()
+    def do_POST(self): self._guard(self._handle_write)
+    def do_PUT(self):  self._guard(self._handle_write)
 
     def _handle_write(self):
         path = urlparse(self.path).path.rstrip("/")
 
         if path == "/api/network":
-            b = self._read_json() or {}
-            routes = [r for r in (b.get("routes") or []) if r.get("a") and r.get("b")]
+            b = self._read_obj()
+            have = {k for k, _ in _scenario_files()}
+            routes = [{"a": r["a"], "b": r["b"], "mode": r.get("mode") if r.get("mode") in ("belt", "train", "truck", "drone") else "belt",
+                       "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
+                      for r in (b.get("routes") if isinstance(b.get("routes"), list) else [])
+                      if isinstance(r, dict) and r.get("a") in have and r.get("b") in have and r["a"] != r["b"]]
             keys = sorted({k for r in routes for k in (r["a"], r["b"])})
             try:
                 sites = _network_sites(keys)
@@ -1246,14 +1387,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/resolve-chain":
-            b = self._read_json() or {}
-            self._json(200, _chain_start(b.get("keys")))
+            b = self._read_obj()
+            keys = b.get("keys")
+            if keys is not None:
+                if not isinstance(keys, list):
+                    raise _BadRequest("keys is a list of factory keys")
+                keys = [k for k in keys if isinstance(k, str) and _valid_key(k)]
+            self._json(200, _chain_start(keys))
             return
 
         if path == "/api/apply-network":
-            b = self._read_json() or {}
+            b = self._read_obj()
+            flows = [{"from": f["from"], "to": f["to"], "item": f["item"], "rate": _num(f.get("rate"), 0.0, 0.0)}
+                     for f in (b.get("flows") if isinstance(b.get("flows"), list) else [])
+                     if isinstance(f, dict) and all(isinstance(f.get(k), str) and f[k] for k in ("from", "to", "item"))
+                     and _valid_key(f["from"]) and _valid_key(f["to"])]
+            flows = [f for f in flows if f["rate"] > 0]
+            alts = {k: [a for a in v if isinstance(a, str)] for k, v in
+                    (b.get("alts").items() if isinstance(b.get("alts"), dict) else []) if _valid_key(k) and isinstance(v, list)}
             try:
-                changed = _apply_network(b.get("flows") or [], b.get("alts") or {})
+                changed = _apply_network(flows, alts)
                 self._json(200, {"changed": changed, **(_chain_start(changed) if changed else {"todo": []})})
             except Exception as e:
                 import traceback; traceback.print_exc()
@@ -1261,7 +1414,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/api/history/") and path.endswith("/restore"):
-            key, vid = path[len("/api/history/"):-len("/restore")].split("/", 1)
+            parts = path[len("/api/history/"):-len("/restore")].split("/")
+            if len(parts) != 2 or not all(_valid_key(x) for x in parts):
+                self._json(400, {"error": "Bad key"})
+                return
+            key, vid = parts
             src = HISTORY_DIR / key / f"{vid}.yaml"
             if not src.exists():
                 self._json(404, {"error": "No such version"})
@@ -1319,29 +1476,31 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/map-settings":
-            data = self._read_json() or {}
-            st = {**_map_settings(), **{k: data[k] for k in ("dx", "dy", "scale", "opacity") if k in data}}
+            data = self._read_obj()
+            st = {**_map_settings(), **{k: _num(data[k], None) for k in ("dx", "dy", "scale", "opacity")
+                                        if k in data and _num(data[k], None) is not None}}
             MAP_SETTINGS_PATH.write_text(json.dumps(st), encoding="utf-8")
             self._json(200, _map_settings())
             return
 
         if path == "/api/progress":
-            data = self._read_json()
-            self._json(200, supply.save_progress(data if isinstance(data, dict) else {}))
+            self._json(200, supply.save_progress(self._read_obj()))
             return
 
         if path == "/api/blackboard":
-            data = self._read_json()
+            data = self._read_obj()
             try:
-                _save_board(data if isinstance(data, dict) else {})
+                _save_board(data)
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(500, {"error": str(e)})
             return
 
         if path == "/api/unlocked-alts":
-            data = self._read_json()
-            keys = list(data.get("unlocked") or []) if isinstance(data, dict) else []
+            data = self._read_obj()
+            if not isinstance(data.get("unlocked", []), list):
+                raise _BadRequest("unlocked is a list of recipe keys")
+            keys = [k for k in data.get("unlocked") or [] if isinstance(k, str) and k in ALL_RECIPES]
             try:
                 _save_unlocked_alts(keys)
                 self._json(200, {"unlocked": _load_unlocked_alts()})
@@ -1349,30 +1508,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
             return
 
-        if path == "/api/solve-inline":
-            # Legacy synchronous endpoint — kept for backwards compatibility
-            b = self._read_json()
-            if not b:
-                self._json(400, {"error": "No data"})
-                return
-            try:
-                s      = _build_scenario(b)
-                result = solve(s, ALL_RECIPES, MACHINE_META)
-                d      = result_to_dict(result, s, MACHINE_META)
-                _set_dual_cache(s, d, getattr(result, "usable", None))
-                self._json(200, d)
-            except Exception as e:
-                import traceback; traceback.print_exc()
-                self._json(500, {"error": str(e)})
-            return
-
         if path == "/api/solve":
             # Async endpoint: dispatches solve to a background thread immediately
             # and returns a job ID. Client polls GET /api/solve/<id>.
-            b = self._read_json()
+            b = self._read_obj()
             if not b:
                 self._json(400, {"error": "No data"})
                 return
+            b = _clean_scenario(b)
+            if b.get("base_scenario") is not None:
+                b["base_scenario"] = _clean_scenario(b["base_scenario"])
             try:
                 s = _build_scenario(b)
                 styles = list(b.get("solve_styles") or [])
@@ -1413,12 +1558,21 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/scenarios/"):
             name = path[len("/api/scenarios/"):]
-            data = self._read_json()
+            if not _valid_key(name):
+                self._json(400, {"error": "A factory key is letters, digits, _ and - only"})
+                return
+            data = self._read_obj()
             p    = self._scenario_path(name)
-            if not isinstance(data, dict):
+            if not data:
                 self._json(400, {"error": "No data"})
                 return
+            renamed_raw = data.get("_renamed_from")
+            data = _clean_scenario(data)
+            if renamed_raw is not None:
+                data["_renamed_from"] = renamed_raw
             renamed = data.pop("_renamed_from", None)
+            if renamed is not None and not _valid_key(str(renamed)):
+                renamed = None
             with _save_lock:
                 cut = _hold_claims(name, data)
                 _history_keep(name)
@@ -1436,10 +1590,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── DELETE ────────────────────────────────────────────────────────────────
 
-    def do_DELETE(self):
+    def do_DELETE(self): self._guard(self._delete)
+
+    def _delete(self):
         path = urlparse(self.path).path.rstrip("/")
         if path.startswith("/api/scenarios/"):
             name = path[len("/api/scenarios/"):]
+            if not _valid_key(name):
+                self._json(400, {"error": "A factory key is letters, digits, _ and - only"})
+                return
             p    = self._scenario_path(name)
             if p.exists():
                 try:

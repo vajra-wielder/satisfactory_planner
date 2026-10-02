@@ -10,7 +10,7 @@
  */
 
 import {
-  SC, RESULT, RECIPES, PROGRESS,
+  SC, RESULT, RECIPES, PROGRESS, keyOf,
   setResult, resetSC, setAllItems, setRecipes, buildItemDisplay, setExtractors,
   nextSolveSeq, solveSeq,
 } from './state.js';
@@ -399,7 +399,7 @@ let LOADED_KEY = null, LOADED_NAME = null;
 
 function handleSave() {
   readUI();
-  const key = SC.name.replace(/\s+/g, '_').toLowerCase();
+  const key = keyOf(SC.name);
   // Saved under a new name: rename it (its links follow), or keep both
   const body = { ...SC };
   if (LOADED_KEY && LOADED_KEY !== key &&

@@ -26,6 +26,10 @@ export const DEF_SC = () => ({
   unlimited_resources: [],   // resources with no cap that don't count in the resource score
 });
 
+// The key a factory is saved under: its name with spaces as _, lower case,
+// letters, digits, _ and - only (a filename on any system) — server.key_of
+export const keyOf = name => (name || '').trim().split(/\s+/).join('_').toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'factory';
+
 // Active scenario (mutable)
 export let SC = DEF_SC();
 export function setScenario(s) { Object.assign(SC, s); }
@@ -94,6 +98,11 @@ export function buildItemDisplay(serverMap) {
     ITEM_DISPLAY['Caterium_Ingot'] = 'Caterium Ingot';
   }
 }
+
+// A rate as it reads: items per minute, power (from generators) in MW
+export const perMin = (item, v, digits = 2, short = false) => (item === 'Power'
+  ? `${Math.round(Number(v) || 0).toLocaleString()} MW`
+  : `${Number(v || 0).toFixed(digits)}${short ? '/m' : '/min'}`);
 
 export function itemName(key) {
   return ITEM_DISPLAY[key] || key.replace(/_/g, ' ');

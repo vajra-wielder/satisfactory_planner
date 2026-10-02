@@ -3,7 +3,7 @@
  * Extracted from sidebar.js so sidebar.js only handles sidebar concerns.
  */
 
-import { RESULT, itemName } from './state.js';
+import { RESULT, itemName, perMin } from './state.js';
 
 // ══════════════════════════════════════════════════════════
 // WARNINGS MODAL
@@ -69,7 +69,7 @@ export function renderResultsBar() {
 
   let h = '';
   objItems.forEach(([k, v], i) => {
-    h += st(itemName(k), `${v.toFixed(1)}/m`, 'var(--ok)');
+    h += st(itemName(k), perMin(k, v, 1, true), 'var(--ok)');
     if (i < objItems.length - 1) h += sep;
   });
   if (objItems.length) h += sep;
@@ -107,8 +107,11 @@ let _bcLastKey = null;
 export function toggleBC() { bcOpen = !bcOpen; renderBuildCost(); }
 export function renderBuildCost() {
   const panel  = document.getElementById('bc');
-  const cost   = RESULT?.build_cost ?? {};
-  const entries = Object.entries(cost);
+  // the plan's machines, plus the extractors and geothermal generators its nodes need
+  const cost   = { ...(RESULT?.build_cost ?? {}) };
+  const ex     = RESULT?.extractor_build ?? {};
+  Object.values(ex).forEach(e => Object.entries(e.cost || {}).forEach(([k, v]) => { cost[k] = (cost[k] || 0) + v; }));
+  const entries = Object.entries(cost).sort((a, b) => b[1] - a[1]);
   const shards = RESULT?.build_cost_shards ?? 0;
   const sloops = RESULT?.build_cost_sloops ?? 0;
   if (!entries.length && !shards && !sloops) {
@@ -122,11 +125,16 @@ export function renderBuildCost() {
   body.style.display = bcOpen ? '' : 'none';
   if (!bcOpen) return;
 
-  const cacheKey = JSON.stringify(cost) + shards + sloops;
+  const cacheKey = JSON.stringify(cost) + JSON.stringify(ex) + shards + sloops;
   if (cacheKey === _bcLastKey) return;
   _bcLastKey = cacheKey;
 
   body.innerHTML = '';
+  Object.entries(ex).forEach(([m, e]) => {
+    const r = document.createElement('div'); r.className = 'bcr';
+    r.innerHTML = `<span style="color:var(--t2)">⛏ ${m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1')}</span><span>×${e.count}</span>`;
+    body.appendChild(r);
+  });
   entries.forEach(([item, qty]) => {
     const r = document.createElement('div'); r.className = 'bcr';
     r.innerHTML = `<span>${itemName(item)}</span><span>×${qty}</span>`;

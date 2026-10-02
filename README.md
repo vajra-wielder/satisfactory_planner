@@ -158,22 +158,38 @@ the solver determines the optimal production plan automatically.
 
 ```text
 satisfactory-planner/
-│
-├── app.py
-├── server.py
-├── solver.py
-├── recipes_complete.yaml
-│
+├── app.py                desktop window (pywebview) around the server
+├── server.py             HTTP server and API: scenarios, solves, plan cache, claims,
+│                         owed outputs, re-solve chain, history, save files, Blackboard
+├── solver.py             the optimiser (OR-Tools: SCIP + GLOP)
+├── supply.py             nodes, extractors, shards, imports → supply; shared unlocks
+├── network.py            planning several factories together
+├── logistics.py          what each factory takes in and sends out
+├── savefile.py           what a game save mines and has unlocked
+├── index.html            the page (and its styles)
 ├── frontend/
-│   ├── graph.js
-│   ├── sidebar.js
-│   ├── state.js
-│   ├── api.js
-│   └── style.css
-│
-├── scenarios/
-│
-└── data/
+│   ├── main.js           wiring, solve, save/open
+│   ├── sidebar.js        sidebar shell, autocomplete
+│   ├── supply-panel.js   resources, imports, storage, sent out
+│   ├── kv-panel.js       goals
+│   ├── machines-panel.js unlocked machines, miner tier, alternates
+│   ├── map-picker.js     the world map: picking nodes, the Blackboard map
+│   ├── save-import.js    reading a save
+│   ├── graph.js          the production graph
+│   ├── analysis.js       factory analysis
+│   ├── blackboard.js     logistics between and inside factories
+│   ├── bundles.js        bands between factories (geometry)
+│   ├── splits.js         belt splits (geometry)
+│   ├── chain.js          re-solving factories in order
+│   └── ui.js, state.js, api.js, recipe-lookup.js
+├── data/
+│   ├── recipes_complete.yaml   recipes and machines (1.0)
+│   ├── map_nodes.json          every resource node, well satellite and geyser
+│   ├── game_classes.json       game class names, for reading saves
+│   └── unlocked_alts.yaml      your unlocked alternates
+│   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*)
+├── scenarios/            your factories (.results: cached plans; .history: earlier versions)
+└── tests/
 ```
 
 ---
@@ -190,28 +206,31 @@ cd satisfactory-planner
 ### Install Dependencies
 
 ```bash
-pip install ortools pyyaml pywebview
+pip install -r requirements.txt     # ortools, PyYAML, pywebview (pywebview only for the desktop window)
 ```
 
 ### Run
 
 ```bash
-python app.py
+python app.py          # native desktop window (on Windows, Planner.bat does this without a console)
+python server.py       # or in your browser, at http://127.0.0.1:5000
 ```
-
-The application launches as a native desktop window.
 
 ---
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .   # supply, claims, owed, chain, Blackboard data, solver (seconds)
+python -m unittest discover -s tests -t .   # supply, claims, owed, chain, Blackboard, API, solver (seconds)
 node --test tests/*.test.mjs                # belt splits, Blackboard bands
-node tests/blackboard.e2e.mjs               # the Blackboard in a browser, on a throwaway planner (needs Playwright)
-python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core (~15 s)
-python -m tests.stress -j 1                 # one at a time, for per-case times (~40 s)
+node tests/sidebar.e2e.mjs                  # every input saved and reloaded, the outputs (browser; needs Playwright)
+node tests/blackboard.e2e.mjs               # every Blackboard tab (browser; needs Playwright)
+python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
+python -m tests.stress -j 1                 # one at a time, for per-case times
 ```
+
+The browser tests run the planner on a throwaway folder (tests/serve_temp.py);
+your scenarios, plans and unlocks are never touched.
 
 ---
 
@@ -219,16 +238,18 @@ python -m tests.stress -j 1                 # one at a time, for per-case times 
 
 A scenario may contain:
 
-- Resource Nodes (map nodes, typed nodes or fixed rates) and extractor shards
+- Resource Nodes (picked on the map, typed in, or fixed rates), extractor shards, geysers
 - Imports From Other Factories
 - Items Sent to Storage
-- Objective Outputs
-- Exact Production Targets
-- Minimum Production Targets
-- Maximum Production Targets
-- Power Limits
-- Alternate Recipe Selection
-- Machine Availability
+- Objective Outputs (weighted; Power in MW for a power plant)
+- Exact, Minimum and Maximum Production Targets
+- Power Shards and Somersloops for its machines (Dive or Exact placement)
+- A Power Cap (its own generators and geysers add to it)
+- Alternate Recipes (and Min New Alts: the fewest you haven't unlocked)
+- Least machine space first instead of least resources (Min Machines)
+
+Unlocked machines, the miner tier and the best belt and pipe are shared by
+every factory (Machines & Alts — or read them from a save).
 
 ---
 
@@ -246,25 +267,9 @@ A scenario may contain:
 
 ## Roadmap
 
-### Graph
-- Improved coordinate assignment
-- Focus mode
-- Search-to-node
-- Edge bundling
-- Semantic clustering
-- Minimap
-
-### Solver
-- Constraint-aware pruning
-- Dependency closure reduction
-- Sensitivity analysis
-- Bottleneck diagnostics
-
-### UX
-- Scenario diffing
-- Factory stages
-- Power analysis dashboard
-- Constraint conflict reporting
+- Region names on the map (it has nodes, wells and geysers, and takes your own map picture)
+- Station and platform counts per route (needs your trip times)
+- Biomass burners
 
 ---
 
@@ -272,7 +277,7 @@ A scenario may contain:
 
 - Lightweight
 - No Electron
-- No Node.js
+- No Node.js to run (the browser tests use it)
 - No Build Step
 - Fully Local
 - Fast Solve Times

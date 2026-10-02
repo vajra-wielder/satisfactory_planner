@@ -193,7 +193,7 @@ function renderAnalysis() {
     }
   }
 
-  // ── Other limits: the machine cap and the shard pool ──────────────────────
+  // ── Other limits: power shards and the power cap ──────────────────────────
   const limits = RESULT.analysis?.limits || {};
   const LIMIT_LABEL = {
     shards:   ['Power shards', 'extra shard', `${RESULT.shards_used || 0} of ${SC.power_shards_available ?? 0} used`],

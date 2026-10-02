@@ -25,7 +25,7 @@
  *   edge geometry rebuilt only on layout change
  */
 
-import { RESULT, mCol, MABBR, itemName } from './state.js';
+import { RESULT, mCol, MABBR, itemName, perMin } from './state.js';
 
 // ── Canvas refs (lazy — resolved on first use, not at module parse time) ──────
 let CV = null, C = null, GE = null;
@@ -1106,7 +1106,7 @@ function drawEdge(e) {
 
   // Edge label — always "ItemName  rate/m", same format for split and non-split edges.
   if (ZOOM >= 0.35 && alpha > 0.3 && !e.noLabel) {
-    const rateStr = `${Number(e.rate).toFixed(2)}/m`;
+    const rateStr = perMin(e.item, e.rate, 2, true);
     const lbl     = `${itemName(e.item)}  ${rateStr}`;
 
     const fs  = 10;
@@ -1145,7 +1145,7 @@ function drawStub(e) {
   circleFill(e._x2 - L, ty, 2.2); C.fill();
 
   if (ZOOM >= 0.45 && !FOCUSED) {
-    const rate = `${Number(e.rate).toFixed(2)}/m`;
+    const rate = perMin(e.item, e.rate, 2, true);
     const tn = NODEMAP[e.tgt];
     const tLabel = tn?.type === 'recipe' ? cleanDisplay(tn.data.display) : itemName(tn?.data?.item || '');
     C.font = `9px 'JetBrains Mono',monospace`; C.textBaseline = 'middle';
@@ -1200,7 +1200,7 @@ function drawHub(n) {
   C.font = 'bold 8px JetBrains Mono,monospace'; C.fillStyle = col;
   C.textAlign = 'left';  C.fillText(kind, x + 14, y + 12);
   C.font = '9px JetBrains Mono,monospace'; C.fillStyle = '#9aa0b4';
-  C.textAlign = 'right'; C.fillText(`${Number(data.rate).toFixed(2)}/m`, x + w - 14, y + 12);
+  C.textAlign = 'right'; C.fillText(perMin(data.item, data.rate, 2, true), x + w - 14, y + 12);
   C.font = '600 11px Inter,sans-serif'; C.fillStyle = '#e8eaf0';
   C.textAlign = 'center'; C.fillText(measureTrunc(itemName(data.item), w - 20), x + w / 2, y + 27);
   C.textAlign = 'left'; C.textBaseline = 'alphabetic';
@@ -1338,20 +1338,20 @@ function drawNode(n) {
     C.fillText(label.toUpperCase(), x + 10, cy + DIV_H / 2);
     C.textBaseline = 'alphabetic'; cy += DIV_H;
   };
-  const ioRow = (label, rate, lc) => {
+  const ioRow = (label, rate, lc, item) => {
     C.font = '11px Inter,sans-serif'; C.fillStyle = lc; C.textBaseline = 'middle';
     C.fillText(measureTrunc(label, w - 85), x + 12, cy + IO_H / 2);
     C.font = '10px JetBrains Mono,monospace'; C.fillStyle = '#9aa0b4';
-    C.textAlign = 'right'; C.fillText(`${Number(rate).toFixed(2)}/m`, x + w - 8, cy + IO_H / 2);
+    C.textAlign = 'right'; C.fillText(perMin(item, rate, 2, true), x + w - 8, cy + IO_H / 2);
     C.textAlign = 'left'; C.textBaseline = 'alphabetic'; cy += IO_H;
   };
 
   const ins  = Object.entries(f.inputs  || {});
   const outs = Object.entries(f.outputs || {});
-  if (ins.length)  { divider('Inputs');  ins.forEach(([k, r]) => ioRow('← ' + itemName(k), r, '#9aa0b4')); }
+  if (ins.length)  { divider('Inputs');  ins.forEach(([k, r]) => ioRow('← ' + itemName(k), r, '#9aa0b4', k)); }
   if (outs.length) {
     divider('Outputs' + (f.has_sloop ? ` ×${(f.output_multiplier || 1).toFixed(2)}` : ''));
-    outs.forEach(([k, r]) => ioRow('→ ' + itemName(k), r, '#22c55e'));
+    outs.forEach(([k, r]) => ioRow('→ ' + itemName(k), r, '#22c55e', k));
   }
 
   // Expanded layout options
@@ -1402,7 +1402,7 @@ function drawSpecNode(n, bg, border, title, isSource) {
   C.font = '600 12px Inter,sans-serif'; C.fillStyle = '#f1f5f9';
   C.fillText(measureTrunc(itemName(data?.item || ''), w - 10), x + w / 2, y + 30);
   C.font = '11px JetBrains Mono,monospace'; C.fillStyle = border;
-  C.fillText(`${Number(data?.rate || 0).toFixed(2)}/min`, x + w / 2, y + 44);
+  C.fillText(perMin(data?.item, data?.rate), x + w / 2, y + 44);
   C.textAlign = 'left'; C.textBaseline = 'alphabetic';
   C.restore();
   C.fillStyle = border; C.strokeStyle = bg; C.lineWidth = 2;

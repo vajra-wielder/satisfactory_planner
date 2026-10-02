@@ -21,7 +21,7 @@
  * Nodes and imports add up into SC.available_resources, all the solver sees.
  */
 
-import { SC, RESULT, EXTRACTORS, PURITY, MINER_TIERS, MAX_SHARDS, PROGRESS, ALL_ITEMS, itemName } from './state.js';
+import { SC, RESULT, keyOf, EXTRACTORS, PURITY, MINER_TIERS, MAX_SHARDS, PROGRESS, ALL_ITEMS, itemName } from './state.js';
 import { makeAC } from './sidebar.js';
 import { evalExpr } from './kv-panel.js';
 import { fetchFactoryOutputs } from './api.js';
@@ -31,7 +31,7 @@ const $ = id => document.getElementById(id);
 const down = v => Math.floor(v * 1000 + 1e-6) / 1000;   // to 0.001, never above v
 const fmt = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(2)).toLocaleString();
 // This factory's save key (as handleSave makes it), from the name as typed
-export const ownKey = () => (document.getElementById('sc-name')?.value || SC.name || '').replace(/\s+/g, '_').toLowerCase();
+export const ownKey = () => keyOf(document.getElementById('sc-name')?.value || SC.name);
 export const STORAGE = '@storage';
 
 let NODES = [];       // rows, as SC.resource_nodes
