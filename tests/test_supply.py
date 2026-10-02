@@ -66,8 +66,8 @@ class Extractors(unittest.TestCase):
         self.assertEqual(supply.shards_used(d), 3 + 4)
 
     def test_progress_is_cleaned(self):
-        p = supply._clean_progress({"miner": "Mk9", "belt": "Mk6", "shards": "12", "machines": ["B", "A", "A"]})
-        self.assertEqual(p, {"miner": "Mk3", "machines": ["A", "B"], "belt": "Mk6", "pipe": "Mk2", "shards": 12, "sloops": None})
+        p = supply._clean_progress({"miner": "Mk9", "belt": "Mk6", "machines": ["B", "A", "A"]})
+        self.assertEqual(p, {"miner": "Mk3", "machines": ["A", "B"], "belt": "Mk6", "pipe": "Mk2"})
 
 
 if __name__ == "__main__":

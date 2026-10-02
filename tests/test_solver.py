@@ -20,6 +20,8 @@ class SavedScenarios(unittest.TestCase):
                     r = solver.solve(sc, RECIPES, META)
                     self.assertTrue(r.status.startswith("Optimal"), r.status)
                     self.assertEqual(check(sc, r), [])
+                    if sc.objective:   # the fractional ceiling bounds every plan
+                        self.assertGreaterEqual(r.ceiling * (1 + 1e-6) + 1e-6, r.objective_value)
 
 
 class Imports(unittest.TestCase):

@@ -2,8 +2,10 @@
 # Edit this file or use the in-app 'Manage Unlocked Alts' button.
 unlocked:
   - Alt_Basic_Iron_Ingot
+  - Alt_Biocoal
   - Alt_Bolted_Iron_Plate
   - Alt_Cast_Screws
+  - Alt_Charcoal
   - Alt_Compacted_Coal
   - Alt_Copper_Alloy_Ingot
   - Alt_Copper_Rotor
@@ -21,3 +23,4 @@ unlocked:
   - Alt_Steel_Screws
   - Alt_Steeled_Frame
   - Alt_Stitched_Iron_Plate
+  - Turbofuel

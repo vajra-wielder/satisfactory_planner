@@ -18,6 +18,7 @@
 
 import { itemName, PURITY, MAX_SHARDS } from './state.js';
 import { fetchMapNodes } from './api.js';
+import { uploadSave, changesHTML, wireChanges } from './save-import.js';
 
 const $ = id => document.getElementById(id);
 const fmt = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(1)).toLocaleString();
@@ -198,6 +199,7 @@ function tools(el, redraw) {
   el.innerHTML = `
     <label class="bsm" title="Read a .sav to mark the nodes your game already mines">📂 Load save<input type="file" accept=".sav" hidden></label>
     <span class="mp-hint mp-save-info">${SAVE_INFO ? `${SAVE.size} nodes mined in ${SAVE_INFO.file || 'your save'}` : ''}</span>
+    <span class="mp-unl"></span>
     <label class="bsm" title="A picture of the whole in-game map, to draw the nodes on">🖼 Map picture<input type="file" accept="image/png,image/jpeg,image/webp" hidden></label>
     ${IMG?.ext ? `<span class="mp-align">nudge <button class="bsm" data-a="left">←</button><button class="bsm" data-a="right">→</button>
       <button class="bsm" data-a="up">↑</button><button class="bsm" data-a="down">↓</button>
@@ -208,13 +210,14 @@ function tools(el, redraw) {
     const f = saveIn.files[0];
     if (!f) return;
     el.querySelector('.mp-save-info').textContent = 'Reading the save…';
-    fetch('/api/save-file', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': f.name }, body: f })
-      .then(r => r.json()).then(d => {
-        if (d.error) throw new Error(d.error);
-        SAVE = new Set(d.nodes); SAVE_INFO = d;
-        el.querySelector('.mp-save-info').textContent = `${SAVE.size} nodes mined in ${d.file}`;
-        redraw();
-      }).catch(e => { el.querySelector('.mp-save-info').textContent = `Couldn't read it: ${e.message}`; });
+    uploadSave(f).then(d => {
+      SAVE = new Set(d.nodes); SAVE_INFO = d;
+      el.querySelector('.mp-save-info').textContent = `${SAVE.size} nodes mined in ${d.file}`;
+      const u = el.querySelector('.mp-unl');
+      u.innerHTML = changesHTML(d);
+      wireChanges(u, () => { u.innerHTML = '<span class="mp-hint">Unlocks now match the save.</span>'; });
+      redraw();
+    }).catch(e => { el.querySelector('.mp-save-info').textContent = `Couldn't read it: ${e.message}`; });
   });
   imgIn.addEventListener('change', () => {
     const f = imgIn.files[0];
@@ -236,6 +239,9 @@ function tools(el, redraw) {
 // ══════════════════════════════════════════════════════════
 // PICKER — the nodes one factory mines
 // ══════════════════════════════════════════════════════════
+
+// A save read anywhere (Machines & Alts too) marks its nodes on the maps
+document.addEventListener('save-read', e => { SAVE = new Set(e.detail.nodes || []); SAVE_INFO = e.detail; });
 
 let S = null;   // the open picker
 

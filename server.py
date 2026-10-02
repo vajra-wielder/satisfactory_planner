@@ -454,14 +454,7 @@ def _factory_outputs() -> dict:
                          "rate": round(r, 3), "left": round(max(0.0, left), 3)})
     pins = [{"x": n["at"][0], "y": n["at"][1], "count": int(n.get("count") or 1), "factory": key}
             for key, data, _ in saved for n in data.get("resource_nodes") or [] if n.get("at")]
-    return {"factories": facs, "claims": claims, "nodes": nodes, "alerts": alerts, "pins": pins,
-            "pool": _pool([(k, d) for k, d, _ in saved])}
-
-def _pool(files) -> dict:
-    """Power shards and somersloops: what you own (shared) and what each factory holds."""
-    prog = _progress()
-    return {"shards": {"owned": prog["shards"], "used": {k: supply.shards_used(d) for k, d in files}},
-            "sloops": {"owned": prog["sloops"], "used": {k: int(d.get("somersloops_available") or 0) for k, d in files}}}
+    return {"factories": facs, "claims": claims, "nodes": nodes, "alerts": alerts, "pins": pins}
 
 def _power(data: dict, result) -> dict:
     """A factory's power: what its machines draw and its generators make (from
@@ -551,20 +544,6 @@ def _hold_claims(key: str, data: dict) -> list:
         keep.append(t)
     if data.get("to_storage") is not None:
         data["to_storage"] = keep
-
-    # Shards and somersloops from the shared pool: no more than the other factories leave
-    for kind, field in (("shards", "power_shards_available"), ("sloops", "somersloops_available")):
-        pool = out["pool"][kind]
-        if pool["owned"] is None:
-            continue
-        free = pool["owned"] - sum(v for k, v in pool["used"].items() if k != key)
-        held = supply.shards_used(data) if kind == "shards" else int(data.get(field) or 0)
-        if held > free:
-            own = int(data.get(field) or 0)
-            keep = max(0, own - (held - max(0, free)))   # the factory's own count gives way; extractor shards stay
-            if keep != own:
-                data[field] = keep
-                cut.append({"kind": kind, "asked": own, "rate": keep, "free": max(0, free)})
 
     taken = {i: k for i, k in out["nodes"].items() if k != key}
     rows = []
@@ -799,6 +778,25 @@ def _save_nodes() -> dict:
         return json.loads(SAVE_NODES_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {"nodes": []}
+
+def _unlock_changes(u) -> dict:
+    """How a save's unlocks differ from the planner's: {alts: {add, drop},
+    machines: {add, drop}, miner|belt|pipe: [planner, save]} (only what differs)."""
+    if not u:
+        return {}
+    prog, have = _progress(), set(_load_unlocked_alts())
+    out = {}
+    a = {"add": sorted(set(u["alts"]) - have), "drop": sorted(have - set(u["alts"]))}
+    if a["add"] or a["drop"]:
+        out["alts"] = a
+    ms = set(prog["machines"] or [])
+    m = {"add": sorted(set(u["machines"]) - ms), "drop": sorted(ms - set(u["machines"]))}
+    if m["add"] or m["drop"]:
+        out["machines"] = m
+    for k in ("miner", "belt", "pipe"):
+        if u.get(k) and u[k] != prog[k]:
+            out[k] = [prog[k], u[k]]
+    return out
 
 def _map_settings() -> dict:
     try:
@@ -1149,7 +1147,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/save-nodes":
-            self._json(200, _save_nodes())
+            sv = _save_nodes()
+            self._json(200, {**sv, "changes": _unlock_changes(sv.get("unlocks"))})
             return
 
         if path == "/api/map-settings":
@@ -1264,16 +1263,29 @@ class Handler(BaseHTTPRequestHandler):
             # The raw .sav: mark the nodes it already mines
             length = int(self.headers.get("Content-Length", 0))
             try:
-                ids = savefile.used_nodes(self.rfile.read(length))
+                sv = savefile.read(self.rfile.read(length))
             except Exception as e:
                 self._json(400, {"error": str(e)})
                 return
             known = supply.map_nodes()
             import time as _t
             out = {"file": self.headers.get("X-File-Name", ""), "when": int(_t.time()),
-                   "nodes": [i for i in ids if i in known], "unknown": len([i for i in ids if i not in known])}
+                   "nodes": [i for i in sv["nodes"] if i in known],
+                   "unknown": len([i for i in sv["nodes"] if i not in known]),
+                   "unlocks": savefile.unlocks(sv["recipes"]) if sv["recipes"] else None}
             SAVE_NODES_PATH.write_text(json.dumps(out), encoding="utf-8")
-            self._json(200, out)
+            self._json(200, {**out, "changes": _unlock_changes(out["unlocks"])})
+            return
+
+        if path == "/api/save-unlocks":
+            # Make the planner's shared unlocks match the last save read
+            u = _save_nodes().get("unlocks")
+            if not u:
+                self._json(400, {"error": "No save with unlocks read yet"})
+                return
+            supply.save_progress({"machines": u["machines"], **{k: u[k] for k in ("miner", "belt", "pipe") if u.get(k)}})
+            _save_unlocked_alts(u["alts"])
+            self._json(200, {"progress": _progress(), "unlocked": _load_unlocked_alts()})
             return
 
         if path == "/api/map-image":

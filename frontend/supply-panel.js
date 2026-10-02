@@ -24,7 +24,7 @@
 import { SC, RESULT, EXTRACTORS, PURITY, MINER_TIERS, MAX_SHARDS, PROGRESS, ALL_ITEMS, itemName } from './state.js';
 import { makeAC } from './sidebar.js';
 import { evalExpr } from './kv-panel.js';
-import { fetchFactoryOutputs, saveProgress } from './api.js';
+import { fetchFactoryOutputs } from './api.js';
 import { openMapPicker, mapNode, loadMap } from './map-picker.js';
 
 const $ = id => document.getElementById(id);
@@ -183,7 +183,7 @@ const nodesTaken = () => Object.fromEntries(Object.entries(OUTPUTS?.nodes || {})
   .filter(([, k]) => k !== ownKey()).map(([id, k]) => [id, facName(k)]));
 
 export function refreshOutputs() {
-  return fetchFactoryOutputs().then(d => { OUTPUTS = d; renderNodes(); renderFrom(); renderStorage(); renderPool(); }).catch(() => {});
+  return fetchFactoryOutputs().then(d => { OUTPUTS = d; renderNodes(); renderFrom(); renderStorage(); renderGeo(); }).catch(() => {});
 }
 
 // ── Load / sync ───────────────────────────────────────────
@@ -197,7 +197,6 @@ export function loadSupply() {
     document.addEventListener('progress-changed', () => { syncSupply(); renderNodes(); });
   }
   UNLIM = new Set(SC.unlimited_resources || []);
-  wirePool();
   if (Array.isArray(SC.resource_nodes)) NODES = SC.resource_nodes.map(n => {
     const r = { ...n, extractor: canon(n.extractor) };
     if (r.clock != null && r.shards == null) r.shards = Math.min(MAX_SHARDS, Math.max(0, Math.round((r.clock - 100) / 50)));
@@ -368,60 +367,15 @@ function renderShardTotal() {
     const n = extractorShards();
     el.textContent = n ? `${n} on extractors` : '';
   }
-  renderPool();
+  renderGeo();
 }
 
-// ── Shards and somersloops: owned once, shared by every factory ──
-// Free for this factory = owned − what the other saved factories hold
-// (shards: their machines' and extractors'), less this factory's extractor shards.
-function poolFree(kind) {
-  const p = OUTPUTS?.pool?.[kind];
-  const owned = PROGRESS[kind];
-  if (owned == null) return null;
-  const others = Object.entries(p?.used || {}).filter(([k]) => k !== ownKey()).reduce((s, [, v]) => s + v, 0);
-  return owned - others - (kind === 'shards' ? extractorShards() : 0);
-}
-
-export function renderPool() {
-  const own = { shards: $('own-sh'), sloops: $('own-sl') };
-  if (own.shards && document.activeElement !== own.shards) own.shards.value = PROGRESS.shards ?? '';
-  if (own.sloops && document.activeElement !== own.sloops) own.sloops.value = PROGRESS.sloops ?? '';
-  [['shards', 'pool-sh', 'sc-sh', 'For its machines'], ['sloops', 'pool-sl', 'sc-sl', 'Max 106']].forEach(([kind, hint, input, plain]) => {
-    const el = $(hint), inp = $(input);
-    if (!el || !inp) return;
-    const free = poolFree(kind);
-    if (free == null) { el.textContent = plain; el.classList.remove('n-warn'); inp.removeAttribute('max'); return; }
-    const want = parseInt(inp.value, 10) || 0;
-    el.textContent = `${Math.max(0, free)} free of ${PROGRESS[kind]}`;
-    el.title = kind === 'shards' ? 'Owned, less what the other factories hold (machines and extractors) and this factory\'s extractors' : 'Owned, less what the other factories hold';
-    el.classList.toggle('n-warn', want > free);
-    inp.max = Math.max(0, free);
-  });
+// Geysers' power, beside the power cap it adds to
+function renderGeo() {
   const geo = $('geo-note');
-  if (geo) {
-    const mw = NODES.reduce((a, n) => a + geoMW(n), 0);
-    geo.textContent = mw ? `+ ${fmt(mw)} geothermal` : '';
-  }
-}
-
-let poolWired = false;
-function wirePool() {
-  if (poolWired) return;
-  poolWired = true;
-  [['own-sh', 'shards'], ['own-sl', 'sloops']].forEach(([id, kind]) => $(id)?.addEventListener('change', e => {
-    const v = e.target.value === '' ? null : Math.max(0, parseInt(e.target.value, 10) || 0);
-    PROGRESS[kind] = v;
-    saveProgress({ [kind]: v }).catch(() => {});
-    renderPool();
-  }));
-  [['sc-sh', 'shards'], ['sc-sl', 'sloops']].forEach(([id, kind]) => {
-    const inp = $(id);
-    inp?.addEventListener('input', renderPool);
-    inp?.addEventListener('blur', () => {      // no more than the pool has free
-      const free = poolFree(kind);
-      if (free != null && (parseInt(inp.value, 10) || 0) > free) { inp.value = Math.max(0, free); renderPool(); }
-    });
-  });
+  if (!geo) return;
+  const mw = NODES.reduce((a, n) => a + geoMW(n), 0);
+  geo.textContent = mw ? `+ ${fmt(mw)} geothermal` : '';
 }
 
 export function addNode() {
@@ -488,7 +442,6 @@ function renderFrom(focus = -1) {
   if (CUT.length) {
     c.insertAdjacentHTML('beforeend', `<p class="n-hint n-warn">Saved with less than asked — already taken: ${
       CUT.map(x => x.kind === 'node' ? `a ${itemName(x.item || '')} node (mined by ${facName(x.factory)})`
-        : x.kind === 'shards' || x.kind === 'sloops' ? `${x.kind === 'shards' ? 'power shards' : 'somersloops'} ${x.asked} → ${x.rate} (${x.free} free)`
         : `${itemName(x.item)}${x.kind === 'storage' ? ' to storage' : ` from ${facName(x.factory)}`} ${fmt(x.asked)} → ${fmt(x.rate)}`).join('; ')}.</p>`);
   }
   if (OUTPUTS && !madeItems().length && !FROM.length)

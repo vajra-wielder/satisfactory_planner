@@ -10,6 +10,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 
 ### Factory Optimization
 - Exact mixed-integer solver (OR-Tools + SCIP), proven optimal
+- Every plan against its fractional ceiling — the goal with machines, shards and
+  somersloops in fractions, which no buildable plan can pass — shown in the
+  results bar
 - Weighted multi-item objectives
 - Resources as nodes: pick the nodes a factory mines on the 1.0 world map (every
   node and resource-well satellite, with its purity), or type them in. Nodes one
@@ -18,13 +21,14 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   number of shards where they add the most. Geysers take geothermal
   generators; water extractors are pins you drop where there's water. A fixed
   rate covers anything else
-- Your save: load a .sav to mark the nodes your game already mines, on the map
-  and on the Blackboard's Map tab, so you can plan which to take next. Load a
-  picture of the in-game map to draw the nodes on (nudge it to line up)
+- Your save: read a .sav (Machines & Alts, or the map) to mark the nodes your
+  game already mines, on the map and on the Blackboard's Map tab, so you can
+  plan which to take next — and to see what it has unlocked (alternates,
+  machines, miner, belt and pipe tiers) against the planner's; one click makes
+  them match. Load a picture of the in-game map to draw the nodes on (nudge it
+  to line up)
 - Shared unlocks, for every factory: the machines, the miner tier (miners always
-  run at it), the best belt and pipe. Power shards and somersloops are owned
-  once — enter how many you have, and each factory takes from that pool (its
-  machines' shards and its extractors'); saving holds it to what's free
+  run at it), the best belt and pipe
 - From factories: take items another saved factory makes — an import adds to
   what the factory makes of it, it doesn't cap it. Pick the item (from
   everything your other factories' last plans make) and the factory; the rate

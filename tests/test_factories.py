@@ -1,4 +1,4 @@
-"""Factories together (server.py): claims, owed outputs, the shared pool,
+"""Factories together (server.py): claims, owed outputs,
 re-solve order, applying a network plan, history, reading a save.
 Runs against a temporary scenarios folder, never your own."""
 import json
@@ -73,15 +73,6 @@ class Claims(_Temp):
         self.assertEqual(y["resource_nodes"][0]["nodes"], [b])
         self.assertEqual([c["kind"] for c in cut], ["node"])
 
-    def test_shared_shards(self):
-        supply.save_progress({"shards": 10})
-        self.save("x", resource_nodes=[{"resource": "Coal", "extractor": "Miner", "purity": "pure", "count": 2, "shards": 2}],
-                  power_shards_available=3)                       # 4 on extractors + 3 = 7
-        y = {"name": "y", "resource_nodes": [], "power_shards_available": 6}
-        cut = server._hold_claims("y", y)
-        self.assertEqual(y["power_shards_available"], 3)
-        self.assertEqual(cut[0]["kind"], "shards")
-
     def test_owed_and_reuse(self):
         src = self.save("src", resource_nodes=[], max_produce={"Rubber": 15}, must_produce={"Fuel": 5},
                         to_storage=[{"item": "Plastic", "rate": 10}])
@@ -146,6 +137,23 @@ class Save(unittest.TestCase):
         self.assertEqual(savefile.used_nodes(raw), ["FrackingSatellite7", "ResourceNode123"])
         with self.assertRaises(ValueError):
             savefile.used_nodes(b"not a save")
+
+    def test_reads_unlocks(self):
+        def fstr(t):
+            b = t.encode() + b"\x00"
+            return struct.pack("<i", len(b)) + b
+        names = ["Recipe_MinerMk1", "Recipe_MinerMk2", "Recipe_ConveyorBeltMk4", "Recipe_ConstructorMk1",
+                 "Recipe_SmelterMk1", "Recipe_Alternate_EnrichedCoal"]   # Compacted Coal, to the game
+        arr = b"".join(struct.pack("<i", 0) + fstr(f"/Game/FactoryGame/Recipes/X/{n}.{n}_C") for n in names)
+        body = (b"mAvailableRecipes\x00\x0e\x00\x00\x00ArrayProperty\x00" + b"\x00" * 12
+                + struct.pack("<i", len(names)) + arr + b"\x00" * 16)
+        raw = struct.pack("<I", 0x9E2A83C1) + b"\x00" * 44 + zlib.compress(body)
+        got = savefile.read(raw)
+        self.assertEqual(got["recipes"], names)
+        u = savefile.unlocks(got["recipes"])
+        # the game calls the Foundry's recipe Recipe_SmelterMk1
+        self.assertEqual(u, {"alts": ["Alt_Compacted_Coal"], "machines": ["Constructor", "Foundry"],
+                             "miner": "Mk2", "belt": "Mk4", "pipe": None})
 
 
 if __name__ == "__main__":

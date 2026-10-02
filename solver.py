@@ -175,6 +175,7 @@ class SolveResult:
     usable: Optional[Dict[str,"Recipe"]] = field(default=None, repr=False)
     certified: Optional[float] = None   # goal ≥ this fraction of the best possible (proven)
     power_bound_mw: Optional[float] = None   # the model's bound on power (with a cap)
+    ceiling: Optional[float] = None   # the goal with machines, shards and sloops fractional — no plan beats it
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -1025,6 +1026,15 @@ _POLISH_BELOW = 0.99  # below this, give the exact goal search a short try too
 _POLISH_TIME_S = 3.0
 
 
+def _fractional_ceiling(scenario: Scenario, usable: Dict[str, Recipe]) -> Optional[float]:
+    """The goal of the continuous relaxation: whole machines, shards and sloops
+    made fractional. A bound no buildable plan can pass."""
+    lp = _Model(scenario, usable, integer=False)
+    if lp.run(lp.goal, True, _STAGE_TIME_S[0]) is None:
+        return None
+    return lp.value(lp.goal) + 0.0
+
+
 def _dive_sloops(scenario: Scenario, usable: Dict[str, Recipe]
                  ) -> Optional[Tuple[Dict[str, int], float]]:
     """Returns (sloops per recipe, relaxation ceiling on the goal), or None."""
@@ -1218,12 +1228,13 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
     saturation_points: Dict[str,object] = {}
 
     model_sc = _with_unlimited(scenario)
-    plan, certified = None, None
+    plan, certified, frac_ceiling = None, None, None
     if usable and model_sc.somersloops_available > 0 and model_sc.objective \
             and model_sc.sloop_search != "exact":
         dive = _dive_sloops(model_sc, usable)
         if dive is not None:
             alloc, ceiling = dive
+            frac_ceiling = ceiling
             # One set of recipe bounds for every plan this solve builds
             rb = _recipe_bounds(model_sc, usable)
             # Decide the sloop placement on the goal alone, then build the full
@@ -1266,6 +1277,8 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
         plan = _plan(model_sc, usable, warnings) if usable else None
         if plan is not None and plan.goal_bound:
             certified = min(1.0, plan.goal / plan.goal_bound) if plan.goal_bound > 1e-9 else None
+    if plan is not None and frac_ceiling is None and model_sc.objective:
+        frac_ceiling = _fractional_ceiling(model_sc, usable)
     status  = "Optimal" if plan is not None else "Infeasible"
     obj_val = plan.goal if plan is not None else 0.0
     # Warn on the plan's own shortfall, not on a Min New Alts trade
@@ -1438,6 +1451,7 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
         saturation_points=saturation_points,
         certified=None if certified is None else round(certified, 6),
         power_bound_mw=None if plan is None or plan.power_bound is None else round(plan.power_bound, 2),
+        ceiling=None if frac_ceiling is None else round(frac_ceiling, 6),
         usable=usable,
     )
     return result
@@ -1804,6 +1818,10 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "surplus_intermediates": result.surplus_intermediates,
         "cap_overshoot":         result.cap_overshoot,
         "certified_pct":         None if result.certified is None else round(100 * result.certified, 2),
+        # the plan against the fractional ceiling (whole machines, shards, sloops relaxed)
+        "ceiling":               result.ceiling,
+        "ceiling_pct":           (None if not result.ceiling or result.ceiling <= 1e-9
+                                  else round(min(100.0, 100 * result.objective_value / result.ceiling), 2)),
         "unlimited_resources":   list(scenario.unlimited_resources),
         "pruned_recipe_count":   result.pruned_recipe_count,
         "objective_items":       result.objective_items,

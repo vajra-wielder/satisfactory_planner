@@ -54,8 +54,8 @@ export function setRecipes(obj) { RECIPES = obj; }
 
 // Extractors (rate per node at 100%, normal purity) and what's unlocked — from /api/boot
 export let EXTRACTORS = {}, PURITY = {}, MINER_TIERS = {}, MAX_SHARDS = 3;
-// Shared unlocks, for every factory: miner tier, machines, belt/pipe tier, shards/sloops owned
-export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2', shards: null, sloops: null };
+// Shared unlocks, for every factory: miner tier, machines, belt/pipe tier
+export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2' };
 export function setExtractors(b) {
   EXTRACTORS = b.extractors || {}; PURITY = b.purity || {};
   MINER_TIERS = b.miner_tiers || {}; MAX_SHARDS = b.max_shards ?? 3;

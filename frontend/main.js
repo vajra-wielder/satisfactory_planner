@@ -33,6 +33,7 @@ import {
 // all interaction goes through sidebar.js re-exports above.
 
 import { startChain, watchChain, onChain, chainHTML } from './chain.js';
+import { uploadSave, changesHTML, wireChanges } from './save-import.js';
 import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards,
          refreshOutputs, applyCut, onResult } from './supply-panel.js';
 
@@ -407,11 +408,6 @@ function handleSave() {
   saveScenario(key, body)
     .then(res => {
       LOADED_KEY = key; LOADED_NAME = SC.name;
-      if (res?.cut?.some(c => c.kind === 'shards' || c.kind === 'sloops')) {   // the shared pool ran short
-        SC.power_shards_available = res.power_shards_available ?? SC.power_shards_available;
-        SC.somersloops_available = res.somersloops_available ?? SC.somersloops_available;
-        fillUI({ skipMachines: true });
-      }
       if (res?.cut?.length) applyCut(res);   // over what the sources have left
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
@@ -497,6 +493,22 @@ onChain(st => {
   _chainWasRunning = st.running;
 });
 document.addEventListener('resolve-chain', e => startChain(e.detail?.keys || null));
+
+// Reading a save in Machines & Alts: what it mines, and its unlocks against the planner's
+function showSave(d) {
+  const info = document.getElementById('save-info'), box = document.getElementById('save-unl');
+  if (!info || !d?.file) return;
+  info.textContent = `${d.file}: ${d.nodes.length} nodes mined`;
+  box.innerHTML = changesHTML(d);
+  wireChanges(box, () => fetch('/api/save-nodes').then(r => r.json()).then(showSave));
+}
+document.getElementById('save-in').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  document.getElementById('save-info').textContent = 'Reading the save…';
+  uploadSave(f).then(showSave).catch(err => { document.getElementById('save-info').textContent = `Couldn't read it: ${err.message}`; });
+});
+fetch('/api/save-nodes').then(r => r.json()).then(showSave).catch(() => {});
 document.addEventListener('resolve-chain-watch', () => watchChain());
 
 // ── DOM wiring ────────────────────────────────────────────────────────────────

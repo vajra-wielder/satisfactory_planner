@@ -75,17 +75,13 @@ def _clean_progress(raw: dict) -> dict:
     """What you've unlocked and own, for every factory:
       miner     the miner tier — every miner runs at it
       machines  the machines unlocked (None: not set yet — every factory's own list)
-      belt/pipe the best belt and pipe unlocked (the Blackboard's checks)
-      shards / sloops  power shards and somersloops owned (None: not tracked)"""
+      belt/pipe the best belt and pipe unlocked (the Blackboard's checks)"""
     raw = raw if isinstance(raw, dict) else {}
-    num = lambda v: None if v in (None, "") else max(0, int(float(v)))
     return {
         "miner": raw.get("miner") if raw.get("miner") in MINER_TIERS else "Mk3",
         "machines": sorted(set(raw["machines"])) if isinstance(raw.get("machines"), list) else None,
         "belt": raw.get("belt") if raw.get("belt") in BELTS else "Mk5",
         "pipe": raw.get("pipe") if raw.get("pipe") in PIPES else "Mk2",
-        "shards": num(raw.get("shards")),
-        "sloops": num(raw.get("sloops")),
     }
 
 def load_progress() -> dict:
@@ -100,7 +96,7 @@ def save_progress(p: dict) -> dict:
     """Merge p into what's saved."""
     out = _clean_progress({**load_progress(), **(p if isinstance(p, dict) else {})})
     PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROGRESS_PATH.write_text("# progress.yaml — what you've unlocked and own, for every factory\n"
+    PROGRESS_PATH.write_text("# progress.yaml — what you've unlocked, for every factory\n"
                              + yaml.safe_dump(out, sort_keys=False), encoding="utf-8")
     return out
 

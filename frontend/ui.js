@@ -45,8 +45,8 @@ export function renderResultsBar() {
     _rbLastHTML = null;
     return;
   }
-  const st  = (label, val, color = 'var(--acc)') =>
-    `<div class="rbs"><div class="rbv" style="color:${color}">${val}</div><div class="rbl">${label}</div></div>`;
+  const st  = (label, val, color = 'var(--acc)', title = '') =>
+    `<div class="rbs"${title ? ` title="${title}"` : ''}><div class="rbv" style="color:${color}">${val}</div><div class="rbl">${label}</div></div>`;
   const sep = '<div class="rbsep"></div>';
 
   const objItems = Object.entries(RESULT.objective_items || {})
@@ -85,10 +85,16 @@ export function renderResultsBar() {
   if (resLabel) h += sep + st('Resources', resLabel, bindingCount > 0 ? 'var(--err)' : 'var(--t3)');
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');
-  // Proven: the goal is at least this share of the best possible plan
-  const cert = RESULT.certified_pct;
-  if (cert != null && cert < 99.95)
-    h += sep + st('Certified', `≥${cert.toFixed(1)}%`, cert >= 95 ? 'var(--ok)' : 'var(--warn)');
+  // The plan against the fractional ceiling: the goal with whole machines,
+  // shards and sloops relaxed — no buildable plan beats it, so this is a floor
+  // on how close the plan is to the best (whole machines alone can cost a little)
+  const pct = RESULT.ceiling_pct, cert = RESULT.certified_pct;
+  if (pct != null) {
+    const fmtc = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(2)).toLocaleString();
+    const tip = `Goal ${fmtc(RESULT.objective_value)} of a fractional ceiling of ${fmtc(RESULT.ceiling)} — the most any plan could reach with machines, shards and sloops in fractions.`
+      + (cert != null && cert > pct + 0.05 ? ` Proven against whole machines: at least ${cert.toFixed(1)}% of the best.` : '');
+    h += sep + st('Of ceiling', `${pct >= 99.995 ? '100' : pct.toFixed(2)}%`, pct >= 95 ? 'var(--ok)' : 'var(--warn)', tip);
+  }
 
   if (h === _rbLastHTML) { rb.style.display = 'flex'; return; }
   _rbLastHTML = h;
