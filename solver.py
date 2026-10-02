@@ -534,10 +534,7 @@ _RES_TOL       = 1e-6    # relative slack on the locked resource score (numerics
 # lock). Stopping within 1% mirrors _MACHINE_SLACK in the default order.
 _RES_GAP       = 0.01    # machines_first: resources within 1% of the least
 _MACHINE_SLACK = 0.01    # stage 3 may add ≤1% more machine space for fewer recipes
-# 3b — the least space among the fewest-recipe plans — stops once within this
-# of its proven best: proving the last few Smelter units took ~40% of all
-# solve time on big plans, for ≤0.1% less space
-_CLEAN_SPACE_GAP = 0.003
+
 _PARALLEL_PEN  = 0.5     # a 2nd producer of one product costs half a recipe extra
 # No time limits: every stage runs until proven — plans are cached, so even a
 # long solve is a one-time cost. (None = unlimited; a number caps a stage.)
@@ -1074,7 +1071,7 @@ def _plan(scenario: Scenario, usable: Dict[str, Recipe], warnings: List[str],
     floor = getattr(mip, "space_floor", None)
     if floor:
         mip.ct(floor - 1e-6, mip.inf, mip.space)
-    ok_b = mip.run(mip.space, False, _STAGE_TIME_S[2], gap=_CLEAN_SPACE_GAP)
+    ok_b = mip.run(mip.space, False, _STAGE_TIME_S[2])
     if ok_b is None:
         return best
     best = mip.snapshot(proven)
