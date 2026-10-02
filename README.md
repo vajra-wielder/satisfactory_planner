@@ -24,8 +24,14 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   game already mines, on the map and on the Blackboard's Map tab, so you can
   plan which to take next — and to see what it has unlocked (alternates,
   machines, miner, belt and pipe tiers) against the planner's; one click makes
-  them match. Load a picture of the in-game map to draw the nodes on (nudge it
-  to line up)
+  them match
+- The map is drawn on the game's own map picture (fetched once into data/ the
+  first time you open a map — the in-game map from the open-source
+  satisfactorymap project, lined up with the map's edges), or on your own
+  picture (nudge it to line up). From afar the nodes are dots; zoom in, or
+  pick one or two resources, and each shows its purity (P / N / I); zoom in
+  further for its name and who mines it. Zoom with the wheel, + / −,
+  double-click or the buttons; 0 shows the whole map; arrows pan
 - Shared unlocks, for every factory: the machines, the miner tier (miners always
   run at it), the best belt and pipe
 - From factories: take items another saved factory makes — an import adds to
@@ -73,6 +79,18 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   yields Uranium/Plutonium waste, so full Plutonium and Ficsonium chains can be
   planned
 - Last solve of each scenario cached and restored when the scenario is reopened
+
+### Getting around
+- Go to anything (Ctrl+K or /): a system, a saved factory, an action (solve,
+  save, back up, plan the network…), or who makes an item
+- The systems in a ring — the planner, then each Blackboard tab: Alt+← / Alt+→
+  (or Ctrl+PgUp / PgDn, or the wheel over the top bar or the Blackboard's
+  tabs) steps through them, Alt+1 … Alt+9 jumps to one; a strip shows where
+  you are
+- Alt+↑ / Alt+↓ opens the previous / next saved factory; the wheel over
+  Build · Machines & Alts · Saved steps through those
+- Ctrl+1 / 2 / 3 the sidebar's tabs, Ctrl+M pick on the map, Ctrl+I analysis,
+  Esc closes what's on top; ? shows every shortcut
 
 ### Blackboard (logistics)
 - Between factories: every saved scenario is a black box showing only what it
@@ -197,13 +215,15 @@ satisfactory-planner/
 │   ├── bundles.js        bands between factories (geometry)
 │   ├── splits.js         belt splits (geometry)
 │   ├── chain.js          re-solving factories in order
+│   ├── nav.js            getting around: go to anything, the systems, shortcuts
 │   └── ui.js, state.js, api.js, recipe-lookup.js
 ├── data/
 │   ├── recipes_complete.yaml   recipes and machines (1.0)
 │   ├── map_nodes.json          every resource node, well satellite and geyser
 │   ├── game_classes.json       game class names, for reading saves
 │   └── unlocked_alts.yaml      your unlocked alternates
-│   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*)
+│   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*,
+│    and map_game.avif, the game's map, fetched once)
 ├── scenarios/            your factories (.results: cached plans; .history: earlier versions)
 ├── backups/              your backups (git-ignored)
 └── tests/
@@ -242,6 +262,7 @@ python -m unittest discover -s tests -t .   # supply, claims, owed, chain, Black
 node --test tests/*.test.mjs                # belt splits, Blackboard bands
 node tests/sidebar.e2e.mjs                  # every input saved and reloaded, the outputs (browser; needs Playwright)
 node tests/blackboard.e2e.mjs               # every Blackboard tab (browser; needs Playwright)
+node tests/nav.e2e.mjs                      # getting around: palette, systems, shortcuts, map keys (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```
@@ -279,12 +300,13 @@ every factory (Machines & Alts — or read them from a save).
 | Move node | Drag node |
 | Expand node | Click node |
 | Fit graph | Fit button |
+| Search the graph | Ctrl+F |
 
 ---
 
 ## Roadmap
 
-- Region names on the map (it has nodes, wells and geysers, and takes your own map picture)
+- Region names on the map
 - Station and platform counts per route (needs your trip times)
 - Biomass burners
 

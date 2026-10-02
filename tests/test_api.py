@@ -88,6 +88,22 @@ class API(_Temp):
         self.assertEqual((code, len(b["backups"])), (200, 1))
         self.assertEqual(self.call("GET", "/api/grid-status")[0], 200)
 
+    def test_map_picture_game_then_yours_then_game(self):
+        import server
+        self.assertEqual(self.call("GET", "/api/map-settings")[1]["source"], None)       # no game map in tests
+        (server.MAP_IMAGE_DIR / "map_game.avif").write_bytes(b"avif")
+        st = self.call("GET", "/api/map-settings")[1]
+        self.assertEqual((st["source"], st["ext"], st["dx"], st["scale"]), ("game", "avif", 0.0, 1.0))
+        self.call("POST", "/api/map-settings", {"dx": 30, "opacity": 0.4})              # nudges are yours only
+        st = self.call("GET", "/api/map-settings")[1]
+        self.assertEqual((st["dx"], st["opacity"]), (0.0, 0.4))
+        code, st = self.call("POST", "/api/map-image", raw=b"png", ctype="image/png")
+        self.assertEqual((code, st["source"], st["ext"], st["dx"]), (200, "own", "png", 30.0))
+        code, st = self.call("DELETE", "/api/map-image")
+        self.assertEqual((code, st["source"]), (200, "game"))
+        with urllib.request.urlopen(self.base + "/api/map-image") as r:
+            self.assertEqual((r.headers["Content-Type"], r.read()), ("image/avif", b"avif"))
+
     def test_map_settings_stay_numbers(self):
         _, st = self.call("POST", "/api/map-settings", {"dx": "abc", "scale": -1, "opacity": 7})
         self.assertEqual((st["dx"], st["scale"], st["opacity"]), (0.0, 0.05, 1.0))

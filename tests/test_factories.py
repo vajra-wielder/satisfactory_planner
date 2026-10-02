@@ -22,7 +22,7 @@ class _Temp(unittest.TestCase):
         (self.dir / ".data").mkdir()
         self._keep = {k: getattr(server, k) for k in ("SCENARIOS_DIR", "RESULTS_DIR", "HISTORY_DIR", "BOARD_PATH",
                                                       "UNLOCKED_PATH", "SAVE_NODES_PATH", "MAP_SETTINGS_PATH",
-                                                      "MAP_IMAGE_DIR", "BACKUP_DIR")}
+                                                      "MAP_IMAGE_DIR", "BACKUP_DIR", "GAME_MAP_URL")}
         self._prog = supply.PROGRESS_PATH
         server.SCENARIOS_DIR = self.dir
         server.RESULTS_DIR = self.dir / ".results"
@@ -33,6 +33,7 @@ class _Temp(unittest.TestCase):
         server.MAP_SETTINGS_PATH = self.dir / ".data" / "map_image.json"
         server.MAP_IMAGE_DIR = self.dir / ".data"
         server.BACKUP_DIR = self.dir / ".backups"
+        server.GAME_MAP_URL = None   # never fetched in tests
         supply.PROGRESS_PATH = self.dir / ".data" / "progress.yaml"   # not among the scenarios
         server._mem_cache.clear()
         supply.save_progress({"machines": ["Smelter", "Constructor", "Assembler", "Foundry", "Refinery"]})

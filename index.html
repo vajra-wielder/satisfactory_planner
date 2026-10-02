@@ -373,7 +373,15 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .mp-lg b { margin-left: auto; font-family: var(--mono); font-weight: 500; }
 #bb-map { display: flex; flex-direction: column; }
 .mp-map { flex: 1; position: relative; background: #0a0c10; cursor: grab; overflow: hidden; }
-.mp-map svg { display: block; }
+.mp-map svg { display: block; position: absolute; left: 0; top: 0; }
+.mp-bg { position: absolute; max-width: none; pointer-events: none; user-select: none; image-rendering: auto; }
+.mp-zoom { position: absolute; right: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
+.mp-zoom .bsm { width: 28px; height: 26px; padding: 0; font-size: 14px; background: var(--p2); }
+.mp-level { position: absolute; left: 10px; bottom: 8px; font-size: 10px; color: var(--t3); pointer-events: none; text-shadow: 0 0 3px #000; }
+.mp-pur { text-anchor: middle; font-weight: 700; fill: rgba(0,0,0,.78); pointer-events: none; font-family: var(--mono); }
+.mp-pur.lt { fill: #fff; }
+.mp-lbl { font-size: 11px; fill: #f1f5f9; paint-order: stroke; stroke: rgba(5,7,10,.85); stroke-width: 3px; pointer-events: none; }
+.mp-lbl.sub { font-size: 10px; fill: #fbbf24; }
 .mp-grid { stroke: #1a1f2b; stroke-width: 1; }
 .mp-well { fill: none; stroke: #2c4d66; stroke-dasharray: 3 3; }
 .mp-n { cursor: pointer; }
@@ -772,6 +780,35 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bb-warn { color: var(--warn); }
 
 
+
+/* ── Getting around (nav.js) ── */
+kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px solid var(--b2); border-bottom-width: 2px; border-radius: 4px; color: var(--t2); background: var(--p3); }
+.tb-action-btn kbd { margin-left: 4px; font-size: 9px; }
+#nav-ring { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); z-index: 20000; display: flex; gap: 4px; padding: 6px 8px;
+  background: rgba(15,18,25,.96); border: 1px solid var(--b2); border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+  opacity: 0; pointer-events: none; transition: opacity .18s; font-size: 11px; color: var(--t3); white-space: nowrap; }
+#nav-ring.show { opacity: 1; }
+#nav-ring span { padding: 3px 8px; border-radius: 6px; display: flex; align-items: center; gap: 5px; }
+#nav-ring span.on { background: var(--acc); color: #111; font-weight: 600; }
+#nav-ring span.on kbd { color: #111; border-color: rgba(0,0,0,.3); background: transparent; }
+#nav-ring small { font-weight: 400; opacity: .7; margin-left: 6px; }
+#nav-pal, #nav-help { position: fixed; inset: 0; z-index: 19000; background: rgba(0,0,0,.55); display: none; align-items: flex-start; justify-content: center; padding-top: 12vh; }
+#nav-pal.show, #nav-help.show { display: flex; }
+.np-box, .nh-box { width: min(620px, 92vw); background: var(--p2); border: 1px solid var(--b2); border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.6); overflow: hidden; }
+#nav-pal-q { width: 100%; box-sizing: border-box; border: none; border-bottom: 1px solid var(--b); border-radius: 0; padding: 12px 14px; font-size: 14px; background: transparent; }
+#nav-pal-list { max-height: 52vh; overflow: auto; padding: 4px 0; }
+.np-g { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--t3); padding: 8px 14px 3px; }
+.np-i { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; font-size: 12.5px; color: var(--t); cursor: pointer; }
+.np-i.on { background: rgba(245,158,11,.14); box-shadow: inset 3px 0 0 var(--acc); }
+.np-none { padding: 14px; font-size: 12px; color: var(--t3); }
+.np-foot { border-top: 1px solid var(--b); padding: 7px 14px; font-size: 10.5px; color: var(--t3); }
+.nh-box { padding: 12px 16px 16px; max-height: 76vh; overflow: auto; }
+.nh-top { display: flex; align-items: center; justify-content: space-between; font-size: 14px; color: var(--t); margin-bottom: 4px; }
+.nh-g { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--acc); margin: 12px 0 4px; }
+.nh-box table { width: 100%; border-collapse: collapse; font-size: 12px; color: var(--t2); }
+.nh-box td { padding: 3px 0; vertical-align: top; }
+.nh-box td:first-child { width: 44%; white-space: nowrap; }
+.nh-say { color: var(--t3); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -805,13 +842,18 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
     <div id="tb-rl-panel"><div id="tb-rl-results"></div></div>
   </div>
   <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-    <button id="btn-blackboard" class="tb-action-btn" title="Blackboard — logistics between and inside factories  (Ctrl+P)">
+    <button id="btn-goto" class="tb-action-btn" title="Go to a system, a factory, an action or who makes an item  (Ctrl+K)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      Go to <kbd>Ctrl K</kbd>
+    </button>
+    <button id="btn-keys" class="tb-action-btn" title="Every shortcut  (?)">?</button>
+    <button id="btn-blackboard" class="tb-action-btn" title="Blackboard — logistics between and inside factories  (Ctrl+P · Alt+→ to step through its tabs)">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="4" width="18" height="13" rx="1.5"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
       </svg>
       Blackboard
     </button>
-    <button id="btn-analysis" class="tb-action-btn" title="Factory analysis">
+    <button id="btn-analysis" class="tb-action-btn" title="Factory analysis  (Ctrl+I)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
         <line x1="6" y1="20" x2="6" y2="14"/>
@@ -830,13 +872,13 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 
 <aside id="sidebar">
   <div id="sb-rail">
-    <button class="rail-btn act" id="rail-build" data-tab="build" title="Build">
+    <button class="rail-btn act" id="rail-build" data-tab="build" title="Build  (Ctrl+1)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
     </button>
-    <button class="rail-btn" id="rail-machalt" data-tab="machalt" title="Machines &amp; Alts  (Ctrl+A)">
+    <button class="rail-btn" id="rail-machalt" data-tab="machalt" title="Machines &amp; Alts  (Ctrl+2)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>
     </button>
-    <button class="rail-btn" id="rail-saved" data-tab="saved" title="Saved scenarios">
+    <button class="rail-btn" id="rail-saved" data-tab="saved" title="Saved scenarios  (Ctrl+3)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
     </button>
     <div style="flex:1"></div>
@@ -870,7 +912,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
         <div class="secb">
           <p class="n-hint">The nodes this factory mines — nothing else enters but what it takes from other factories.</p>
           <div class="n-tools">
-            <button class="bsm act" id="btn-map-pick" title="Pick the nodes this factory mines on the world map">🗺 Pick on map</button>
+            <button class="bsm act" id="btn-map-pick" title="Pick the nodes this factory mines on the world map  (Ctrl+M)">🗺 Pick on map</button>
             <span class="n-tools-sh">⚡ <input type="number" id="sh-spread" min="0" step="1" placeholder="0" title="Power shards for the extractors"/>
               <button class="bsm" id="btn-spread" title="Put these shards on the extractors where they add the most">Spread</button></span>
             <span class="n-hint" id="sh-total" style="margin:0"></span>
@@ -1006,8 +1048,8 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
     <p style="font-size:11px">White = inputs &middot; Green = outputs &middot; Red = errors &middot; Amber = surplus</p>
     <p style="font-size:11px">Click = focus &middot; Double-click = expand/centre &middot; Scroll = zoom</p>
     <p style="font-size:11px">Click a band title to collapse it into one node</p>
-    <p style="font-size:11px">Ctrl+R = solve &middot; Ctrl+S = save &middot; Ctrl+Q = recipe lookup &middot; Ctrl+A = machines</p>
-    <p style="font-size:11px">Ctrl+F = search graph &middot; Ctrl+P = blackboard &middot; [ ] = toggle sidebar</p>
+    <p style="font-size:11px">Ctrl+R = solve &middot; Ctrl+S = save &middot; Ctrl+Q = recipe lookup &middot; Ctrl+F = search graph</p>
+    <p style="font-size:11px">Ctrl+K = go to anything &middot; Alt+&larr; / Alt+&rarr; = between systems &middot; ? = every shortcut</p>
   </div>
   <div id="rb" style="display:none"></div>
   <div id="bc" style="display:none">

@@ -20,6 +20,7 @@ data/blackboard.yaml
 data/progress.yaml
 data/save_nodes.json
 data/map_image.*
+data/map_game.*
 scenarios/.history/
 data/.recipes_complete_cache.json
 backups/

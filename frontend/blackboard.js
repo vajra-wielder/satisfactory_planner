@@ -87,6 +87,17 @@ export function openBlackboard() {
 export function closeBlackboard() { $('bb-modal').classList.remove('show'); }
 
 let TAB = 'factories';
+// The Blackboard's tabs, in order — the systems you move between (nav.js)
+export const BB_TABS = [['factories', 'Between factories'], ['flows', 'Flows'], ['storage', 'Storage'], ['power', 'Power'],
+  ['build', 'Build list'], ['map', 'Map'], ['find', 'Who makes'], ['splits', 'Inside a factory']];
+export const blackboardOpen = () => isOpen();
+export const blackboardTab = () => TAB;
+/** Open the Blackboard on a tab (and, for Who makes, an item). */
+export function goBlackboard(tab, item) {
+  if (item !== undefined) $('bb-find-q').value = itemName(item);
+  showTab(tab);
+  if (!isOpen()) openBlackboard();
+}
 function showTab(tab) {
   TAB = tab;
   document.querySelectorAll('#bb-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));

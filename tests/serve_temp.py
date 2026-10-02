@@ -25,6 +25,7 @@ def main(port: int) -> None:
     server.MAP_SETTINGS_PATH = d / ".data" / "map_image.json"
     server.MAP_IMAGE_DIR = d / ".data"
     server.BACKUP_DIR = d / ".backups"
+    server.GAME_MAP_URL = None   # the browser tests use no map picture
     supply.PROGRESS_PATH = d / ".data" / "progress.yaml"
     supply.save_progress({"machines": ["Smelter", "Constructor", "Assembler", "Foundry", "Coal_Generator"]})
     try:

@@ -46,7 +46,8 @@ import {
 import { initRecipeLookup } from './recipe-lookup.js';
 import { openAnalysis, closeAnalysis } from './analysis.js';
 
-import { initBlackboard, openBlackboard, closeBlackboard } from './blackboard.js';
+import { initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './blackboard.js';
+import { initNav, openPalette, openHelp } from './nav.js';
 
 import {
   resize, initLayout, draw,
@@ -521,6 +522,8 @@ document.getElementById('sb-toggle')    .addEventListener('click', toggleSidebar
 document.getElementById('btn-analysis') .addEventListener('click', openAnalysis);
 document.getElementById('btn-blackboard').addEventListener('click', openBlackboard);
 document.getElementById('btn-issues')   .addEventListener('click', openWarn);
+document.getElementById('btn-goto')     .addEventListener('click', openPalette);
+document.getElementById('btn-keys')     .addEventListener('click', openHelp);
 
 // Rail
 document.getElementById('rail-build')   .addEventListener('click', () => expandToTab('build'));
@@ -591,7 +594,12 @@ window.addEventListener('keydown', e => {
   switch (e.key.toLowerCase()) {
     case 'r': e.preventDefault(); handleSolve(); break;
     case 's': e.preventDefault(); handleSave();  break;
-    case 'p': e.preventDefault(); openBlackboard(); break;
+    case 'p': case 'b': e.preventDefault(); openBlackboard(); break;
+    case 'i': e.preventDefault(); openAnalysis(); break;
+    case 'm': e.preventDefault(); pickOnMap(); break;
+    case '1': e.preventDefault(); expandToTab('build'); break;
+    case '2': e.preventDefault(); expandToTab('machalt'); break;
+    case '3': e.preventDefault(); expandToTab('saved'); break;
     case 'q': {
       e.preventDefault();
       const inp = document.getElementById('tb-rl-input');
@@ -629,6 +637,28 @@ Promise.all([fetchBoot()])
       if (tab === 'machalt') renderMachinesIfNeeded();
     });
     initRecipeLookup();
+    initNav({
+      currentFactory: () => LOADED_KEY,
+      openFactory: key => openScenario(key),
+      closeAnalysis, closeWarn,
+      actions: [
+        { label: 'Solve', keys: 'Ctrl+R', run: handleSolve },
+        { label: 'Save', keys: 'Ctrl+S', run: handleSave },
+        { label: 'New factory (reset the planner)', run: () => document.getElementById('breset').click() },
+        { label: 'Pick nodes on the map', keys: 'Ctrl+M', run: () => pickOnMap() },
+        { label: 'Analysis', keys: 'Ctrl+I', run: openAnalysis },
+        { label: 'Recipe lookup', keys: 'Ctrl+Q', run: () => { const i = document.getElementById('tb-rl-input'); i.focus(); i.select(); } },
+        { label: 'Build tab', keys: 'Ctrl+1', run: () => expandToTab('build') },
+        { label: 'Machines & Alts', keys: 'Ctrl+2', run: () => expandToTab('machalt') },
+        { label: 'Saved factories', keys: 'Ctrl+3', run: () => expandToTab('saved') },
+        { label: 'Re-solve out of date', run: () => startChain() },
+        { label: 'Back up now', run: () => { expandToTab('saved'); setTimeout(() => document.getElementById('bk-make')?.click(), 400); } },
+        { label: 'Plan the network', run: () => { goBlackboard('factories'); setTimeout(() => document.getElementById('bb-plan')?.click(), 600); } },
+        { label: 'Hide / show the sidebar', keys: '[', run: toggleSidebar },
+        { label: 'Server log', run: () => document.getElementById('btn-log').click() },
+        { label: 'Every shortcut', keys: '?', run: openHelp },
+      ],
+    });
     initSolveStyles();
     initGraphEvents();
     // Clicking a factory on the Blackboard opens it here

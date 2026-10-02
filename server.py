@@ -1180,6 +1180,7 @@ SAVE_NODES_PATH = HERE / "data" / "save_nodes.json"
 MAP_IMAGE_DIR = HERE / "data"
 MAP_SETTINGS_PATH = HERE / "data" / "map_image.json"
 _IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+_IMAGE_CTYPE = {**{v: k for k, v in _IMAGE_TYPES.items()}, "avif": "image/avif"}
 
 def _save_nodes() -> dict:
     try:
@@ -1206,14 +1207,70 @@ def _unlock_changes(u) -> dict:
             out[k] = [prog[k], u[k]]
     return out
 
-def _map_settings() -> dict:
+# The game's own map, drawn under the nodes unless you add your own picture:
+# fetched once into data/ (it's the in-game map, from the open-source
+# satisfactorymap project; lined up with the map's edges as it is).
+GAME_MAP_URL = ("https://raw.githubusercontent.com/Tjark-Kuehl/satisfactorymap/"
+                "44bfb29f85b998c36740cdbbafe13d76db8d1d41/public/assets/Map-HQ.avif")
+GAME_MAP_SHA256 = "204a3735a6b134a4bcef9c4a30f75b7012f72e19613cd75518cc8558209057ba"
+_game_map = {"state": "idle", "error": None}
+_game_map_lock = threading.Lock()
+
+def _game_map_path() -> Path:
+    return MAP_IMAGE_DIR / "map_game.avif"
+
+def _fetch_game_map() -> None:
+    import urllib.request
+    dst = _game_map_path()
+    try:
+        with urllib.request.urlopen(GAME_MAP_URL, timeout=60) as r:
+            body = r.read()
+        import hashlib as _h
+        if _h.sha256(body).hexdigest() != GAME_MAP_SHA256:
+            raise ValueError("the downloaded map isn't the expected picture")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_suffix(".tmp")
+        tmp.write_bytes(body)
+        os.replace(tmp, dst)
+        _game_map.update(state="ready", error=None)
+    except Exception as e:
+        _game_map.update(state="failed", error=str(e)[:200])
+
+def _ensure_game_map() -> str:
+    """The game map's state: ready, downloading, failed or off; starts the
+    download the first time it's wanted."""
+    if _game_map_path().exists():
+        return "ready"
+    if not GAME_MAP_URL:
+        return "off"
+    with _game_map_lock:
+        if _game_map["state"] in ("idle", "ready"):
+            _game_map.update(state="downloading", error=None)
+            threading.Thread(target=_fetch_game_map, daemon=True).start()
+    return _game_map["state"]
+
+def _own_map() -> dict:
+    """Your own map picture's settings (what's saved)."""
     try:
         d = json.loads(MAP_SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
         d = {}
-    return {"ext": d.get("ext") if d.get("ext") in _IMAGE_TYPES.values() else None,
-            "dx": _num(d.get("dx"), 0.0), "dy": _num(d.get("dy"), 0.0),
-            "scale": _num(d.get("scale"), 1.0, 0.05), "opacity": min(1.0, _num(d.get("opacity"), 0.6, 0.0))}
+    ext = d.get("ext") if d.get("ext") in _IMAGE_TYPES.values() else None
+    if ext and not (MAP_IMAGE_DIR / f"map_image.{ext}").exists():
+        ext = None
+    return {"ext": ext, "dx": _num(d.get("dx"), 0.0), "dy": _num(d.get("dy"), 0.0),
+            "scale": _num(d.get("scale"), 1.0, 0.05), "opacity": min(1.0, _num(d.get("opacity"), 0.7, 0.0))}
+
+def _map_settings() -> dict:
+    """The picture under the map: yours (nudged as you set it) or else the
+    game's (exactly on the map's edges)."""
+    own = _own_map()
+    if own["ext"]:
+        return {**own, "source": "own", "game": _game_map_path().exists() and "ready" or _game_map["state"]}
+    game = _ensure_game_map()
+    if game != "ready":
+        return {**own, "source": None, "game": game, "game_error": _game_map["error"]}
+    return {**own, "ext": "avif", "dx": 0.0, "dy": 0.0, "scale": 1.0, "source": "game", "game": game}
 
 
 # ── Async solve job store ─────────────────────────────────────────────────────
@@ -1629,14 +1686,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/map-image":
-            ext = _map_settings()["ext"]
-            f = MAP_IMAGE_DIR / f"map_image.{ext}" if ext else None
+            st = _map_settings()
+            f = (MAP_IMAGE_DIR / f"map_image.{st['ext']}" if st["source"] == "own"
+                 else _game_map_path() if st["source"] == "game" else None)
             if not f or not f.exists():
                 self._json(404, {"error": "No map image"})
                 return
             body = f.read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", {v: k for k, v in _IMAGE_TYPES.items()}[ext])
+            self.send_header("Content-Type", _IMAGE_CTYPE[st["ext"]])
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
@@ -1827,15 +1885,21 @@ class Handler(BaseHTTPRequestHandler):
                 if old.suffix != ".json":
                     old.unlink()
             (MAP_IMAGE_DIR / f"map_image.{_IMAGE_TYPES[ctype]}").write_bytes(self.rfile.read(length))
-            st = {**_map_settings(), "ext": _IMAGE_TYPES[ctype]}
-            MAP_SETTINGS_PATH.write_text(json.dumps(st), encoding="utf-8")
-            self._json(200, st)
+            MAP_SETTINGS_PATH.write_text(json.dumps({**_own_map(), "ext": _IMAGE_TYPES[ctype]}), encoding="utf-8")
+            self._json(200, _map_settings())
+            return
+
+        if path == "/api/map-game":   # try fetching the game's map again
+            with _game_map_lock:
+                if _game_map["state"] == "failed":
+                    _game_map.update(state="idle", error=None)
+            self._json(200, _map_settings())
             return
 
         if path == "/api/map-settings":
             data = self._read_obj()
-            st = {**_map_settings(), **{k: _num(data[k], None) for k in ("dx", "dy", "scale", "opacity")
-                                        if k in data and _num(data[k], None) is not None}}
+            st = {**_own_map(), **{k: _num(data[k], None) for k in ("dx", "dy", "scale", "opacity")
+                                   if k in data and _num(data[k], None) is not None}}
             MAP_SETTINGS_PATH.write_text(json.dumps(st), encoding="utf-8")
             self._json(200, _map_settings())
             return
@@ -1951,6 +2015,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _delete(self):
         path = urlparse(self.path).path.rstrip("/")
+        if path == "/api/map-image":   # your own picture goes: back to the game's map
+            for old in MAP_IMAGE_DIR.glob("map_image.*"):
+                if old.suffix != ".json":
+                    old.unlink()
+            self._json(200, _map_settings())
+            return
         if path.startswith("/api/scenarios/"):
             name = path[len("/api/scenarios/"):]
             if not _valid_key(name):

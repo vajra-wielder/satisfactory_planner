@@ -27,10 +27,10 @@ const COLORS = {
   Raw_Quartz: '#d77bd8', Sulfur: '#d6e04a', Bauxite: '#c8553d', Uranium_Ore: '#6ee06e', SAM: '#9b6cf0',
   Crude_Oil: '#3a3a52', Nitrogen_Gas: '#7fb7d9', Water: '#3fa7f5', Geyser: '#ff6b9a',
 };
-const RADIUS = { impure: 4, normal: 6, pure: 8.5 };   // screen px
 const CAP = { Miner: 1200, Oil_Extractor: 600, Water_Extractor: 600 };
 const GEO_MW = { impure: 100, normal: 200, pure: 400 };
 const FACTORY_COLORS = ['#f59e0b', '#22c55e', '#38bdf8', '#f472b6', '#a78bfa', '#ef4444', '#14b8a6', '#eab308', '#fb923c', '#84cc16'];
+const DARK = new Set(['Coal', 'Crude_Oil', 'Bauxite', 'SAM', 'Copper_Ore']);   // purity letters in white on these
 const nameOf = r => (r === 'Geyser' ? 'Geyser' : itemName(r));
 // What a factory mines; geysers' generators go on the grid (the Blackboard's map)
 const PICKABLE = Object.keys(COLORS).filter(r => r !== 'Geyser');
@@ -45,8 +45,22 @@ export function loadMap() {
     BY = Object.fromEntries(MAP.map(n => [n.id, n]));
     SAVE = new Set(sv.nodes || []); SAVE_INFO = sv.file ? sv : null;
     IMG = ms;
+    waitForPicture();
     return MAP;
   });
+}
+
+// The game's map is fetched once, in the background: draw it when it's here
+let _waiting = false;
+function waitForPicture(tries = 0) {
+  if (IMG?.ext || IMG?.game !== 'downloading' || (_waiting && !tries)) return;
+  _waiting = true;
+  setTimeout(() => fetch('/api/map-settings').then(r => r.json()).then(ms => {
+    IMG = ms;
+    if (ms.ext) { _waiting = false; document.dispatchEvent(new Event('map-picture')); document.querySelectorAll('.mp-tools').forEach(t => t._redo?.()); }
+    else if (ms.game === 'downloading' && tries < 90) waitForPicture(tries + 1);
+    else { _waiting = false; document.querySelectorAll('.mp-tools').forEach(t => t._redo?.()); }
+  }).catch(() => { _waiting = false; }), 2000);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -55,72 +69,133 @@ export function loadMap() {
 
 function makeMap(el, M) {
   // M: { filter:Set, picked?:Set, taken?, owner?, ownerColor?, pins?, onClick(id), onBox(ids), onPin?(x,y) }
+  el._mapOff?.abort();                    // a map remade in the same place drops the old one's listeners
+  const off = new AbortController(), on = { signal: off.signal };
+  el._mapOff = off;
   el.classList.add('mp-map');
-  el.innerHTML = '<svg></svg><div class="mp-tip"></div>';
-  const svg = el.querySelector('svg'), tip = el.querySelector('.mp-tip');
+  el.innerHTML = `<img class="mp-bg" alt="" draggable="false"><svg></svg><div class="mp-tip"></div>
+    <div class="mp-zoom"><button class="bsm" data-z="in" title="Zoom in (+)">+</button><button class="bsm" data-z="out" title="Zoom out (−)">−</button>
+      <button class="bsm" data-z="fit" title="The whole map (0)">⤢</button></div>
+    <div class="mp-level"></div>`;
+  const svg = el.querySelector('svg'), tip = el.querySelector('.mp-tip'), bg = el.querySelector('.mp-bg');
   const fit = () => {
     const w = el.clientWidth, h = el.clientHeight;
     const bw = BOUNDS.x[1] - BOUNDS.x[0], bh = BOUNDS.y[1] - BOUNDS.y[0];
     const scale = Math.min(w / bw, h / bh) * 0.96;
+    M.fitScale = scale;
     M.view = { scale, ox: (w - bw * scale) / 2 - BOUNDS.x[0] * scale, oy: (h - bh * scale) / 2 - BOUNDS.y[0] * scale };
   };
   const sx = x => x * M.view.scale + M.view.ox, sy = y => y * M.view.scale + M.view.oy;
   const wx = px => (px - M.view.ox) / M.view.scale, wy = py => (py - M.view.oy) / M.view.scale;
+  // How much each node shows: dots from afar; its purity when you're closer or
+  // have picked one or two resources; its name and whose it is up close
+  const level = () => {
+    const rel = M.view.scale / (M.fitScale || M.view.scale);
+    return rel >= 4.5 ? 2 : rel >= 2 || M.filter.size <= 2 ? 1 : 0;
+  };
+  const SIZE = [{ impure: 2.5, normal: 3.5, pure: 4.5 }, { impure: 5, normal: 6.5, pure: 8 }, { impure: 6, normal: 7.5, pure: 9.5 }];
+  const LETTER = { impure: 'I', normal: 'N', pure: 'P' };
+
+  function drawPicture() {
+    if (!IMG?.ext) { bg.style.display = 'none'; return; }
+    // yours nudged by dx, dy, scale; the game's exactly on the map's edges
+    const bw = (BOUNDS.x[1] - BOUNDS.x[0]) * IMG.scale, bh = (BOUNDS.y[1] - BOUNDS.y[0]) * IMG.scale;
+    const cx = (BOUNDS.x[0] + BOUNDS.x[1]) / 2 + IMG.dx, cy = (BOUNDS.y[0] + BOUNDS.y[1]) / 2 + IMG.dy;
+    const src = `/api/map-image?v=${IMG.v || 0}&s=${IMG.source || ''}`;
+    if (bg.getAttribute('src') !== src) bg.setAttribute('src', src);
+    Object.assign(bg.style, { display: 'block', left: `${sx(cx - bw / 2)}px`, top: `${sy(cy - bh / 2)}px`,
+      width: `${bw * M.view.scale}px`, height: `${bh * M.view.scale}px`, opacity: IMG.opacity });
+  }
 
   function draw() {
     if (!M.view) fit();
     const w = el.clientWidth, h = el.clientHeight;
     svg.setAttribute('width', w); svg.setAttribute('height', h);
+    drawPicture();
+    const lv = level();
     let g = '';
-    if (IMG?.ext) {       // your map picture, on the in-game map's edges (nudged by dx, dy, scale)
-      const bw = (BOUNDS.x[1] - BOUNDS.x[0]) * IMG.scale, bh = (BOUNDS.y[1] - BOUNDS.y[0]) * IMG.scale;
-      const cx = (BOUNDS.x[0] + BOUNDS.x[1]) / 2 + IMG.dx, cy = (BOUNDS.y[0] + BOUNDS.y[1]) / 2 + IMG.dy;
-      g += `<image href="/api/map-image?v=${IMG.v || 0}" x="${sx(cx - bw / 2)}" y="${sy(cy - bh / 2)}" width="${bw * M.view.scale}"
-        height="${bh * M.view.scale}" opacity="${IMG.opacity}" preserveAspectRatio="none"/>`;
+    if (!IMG?.ext) {
+      const step = M.view.scale > 0.4 ? 100 : 500;
+      for (let x = Math.ceil(BOUNDS.x[0] / step) * step; x <= BOUNDS.x[1]; x += step)
+        g += `<line class="mp-grid" x1="${sx(x)}" y1="${sy(BOUNDS.y[0])}" x2="${sx(x)}" y2="${sy(BOUNDS.y[1])}"/>`;
+      for (let y = Math.ceil(BOUNDS.y[0] / step) * step; y <= BOUNDS.y[1]; y += step)
+        g += `<line class="mp-grid" x1="${sx(BOUNDS.x[0])}" y1="${sy(y)}" x2="${sx(BOUNDS.x[1])}" y2="${sy(y)}"/>`;
     }
-    const step = M.view.scale > 0.4 ? 100 : 500;
-    for (let x = Math.ceil(BOUNDS.x[0] / step) * step; x <= BOUNDS.x[1]; x += step)
-      g += `<line class="mp-grid" x1="${sx(x)}" y1="${sy(BOUNDS.y[0])}" x2="${sx(x)}" y2="${sy(BOUNDS.y[1])}"/>`;
-    for (let y = Math.ceil(BOUNDS.y[0] / step) * step; y <= BOUNDS.y[1]; y += step)
-      g += `<line class="mp-grid" x1="${sx(BOUNDS.x[0])}" y1="${sy(y)}" x2="${sx(BOUNDS.x[1])}" y2="${sy(y)}"/>`;
     const wells = {};
     MAP.forEach(n => { if (n.w && M.filter.has(n.r)) (wells[n.w] = wells[n.w] || []).push(n); });
+    let labels = '';
     Object.values(wells).forEach(list => {
       const cx = list.reduce((s, n) => s + n.x, 0) / list.length, cy = list.reduce((s, n) => s + n.y, 0) / list.length;
       const rad = Math.max(...list.map(n => Math.hypot(n.x - cx, n.y - cy))) * M.view.scale + 10;
       g += `<circle class="mp-well" cx="${sx(cx)}" cy="${sy(cy)}" r="${rad}"/>`;
+      if (lv === 2) labels += `<text class="mp-lbl" x="${sx(cx)}" y="${sy(cy) - rad - 5}" text-anchor="middle">${nameOf(list[0].r)} well · ${list.length} satellites</text>`;
     });
     const order = { impure: 0, normal: 1, pure: 2 };
-    const zoom = Math.min(1.6, Math.max(0.8, M.view.scale / 0.12));
     [...MAP].filter(n => M.filter.has(n.r)).sort((a, b) => order[a.p] - order[b.p]).forEach(n => {
       const x = sx(n.x), y = sy(n.y);
-      if (x < -20 || y < -20 || x > w + 20 || y > h + 20) return;
-      const r = RADIUS[n.p] * (n.w ? 0.75 : 1) * zoom;
-      const taken = M.taken?.[n.id], on = M.picked?.has(n.id), own = M.owner?.[n.id];
-      g += `<g data-id="${n.id}" class="mp-n ${taken ? 'taken' : ''} ${on ? 'on' : ''}">
+      if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
+      const r = SIZE[lv][n.p] * (n.w ? 0.8 : 1);
+      const taken = M.taken?.[n.id], picked = M.picked?.has(n.id), own = M.owner?.[n.id];
+      g += `<g data-id="${n.id}" class="mp-n ${taken ? 'taken' : ''} ${picked ? 'on' : ''}">
         ${SAVE.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 3.5}" class="mp-save"/>` : ''}
         ${own ? `<circle cx="${x}" cy="${y}" r="${r + 2}" fill="none" stroke="${M.ownerColor(own)}" stroke-width="2.5"/>` : ''}
         ${M.grid?.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 6}" class="mp-grid-g"/>` : ''}
-        <circle cx="${x}" cy="${y}" r="${r}" fill="${COLORS[n.r]}" fill-opacity="${{ impure: 0.45, normal: 0.75, pure: 1 }[n.p]}"/>
+        <circle cx="${x}" cy="${y}" r="${r}" fill="${COLORS[n.r]}" fill-opacity="${lv ? 1 : { impure: 0.55, normal: 0.8, pure: 1 }[n.p]}"/>
+        ${lv && !M.grid?.has(n.id) ? `<text x="${x}" y="${y + r * 0.42}" class="mp-pur ${DARK.has(n.r) ? 'lt' : ''}" style="font-size:${(r * 1.15).toFixed(1)}px">${LETTER[n.p]}</text>` : ''}
         ${M.grid?.has(n.id) ? `<text x="${x}" y="${y + 3.5}" class="mp-bolt">⚡</text>` : ''}
         ${taken ? `<path d="M${x - r} ${y - r}L${x + r} ${y + r}M${x + r} ${y - r}L${x - r} ${y + r}" class="mp-x"/>` : ''}</g>`;
+      if (lv === 2 && !n.w) {
+        const who = taken ? `mined by ${taken}` : own ? M.ownerName(own) : M.grid?.has(n.id) ? '⚡ on the grid' : SAVE.has(n.id) ? 'in your save' : '';
+        labels += `<text class="mp-lbl" x="${x + r + 4}" y="${y - (who ? 1 : -3.5)}">${nameOf(n.r)} · ${n.p}${n.r === 'Geyser' ? ` · ${GEO_MW[n.p]} MW` : ''}</text>`
+          + (who ? `<text class="mp-lbl sub" x="${x + r + 4}" y="${y + 10}">${who}</text>` : '');
+      }
     });
     (M.pins || []).forEach((p, i) => {
       const x = sx(p.x), y = sy(p.y), c = p.color || COLORS.Water;
       g += `<g data-pin="${i}" class="mp-pin"><rect x="${x - 7}" y="${y - 7}" width="14" height="14" rx="3" fill="${c}" stroke="${p.mine === false ? 'none' : '#fff'}" stroke-width="1.5"/>
         <text x="${x}" y="${y + 3.5}" text-anchor="middle">${p.count}</text></g>`;
+      if (lv === 2 && p.label) labels += `<text class="mp-lbl" x="${x + 10}" y="${y + 3.5}">${p.count} water extractor${p.count > 1 ? 's' : ''} · ${p.label}</text>`;
     });
-    svg.innerHTML = g;
+    svg.innerHTML = g + labels;
+    el.querySelector('.mp-level').textContent = ['Zoom in or pick one resource for purity', 'Zoom in more for names and owners', ''][lv];
   }
 
-  el.addEventListener('wheel', e => {
-    e.preventDefault();
-    const r = el.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
-    const k = Math.exp(-e.deltaY * 0.0015), v = M.view;
-    const ns = Math.min(Math.max(v.scale * k, 0.02), 3);
+  const zoomAt = (k, px = el.clientWidth / 2, py = el.clientHeight / 2) => {
+    const v = M.view, ns = Math.min(Math.max(v.scale * k, (M.fitScale || 0.05) * 0.6), 3);
     v.ox = px - (px - v.ox) * ns / v.scale; v.oy = py - (py - v.oy) * ns / v.scale; v.scale = ns;
     draw();
-  }, { passive: false });
+  };
+  el.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = el.getBoundingClientRect();
+    zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false, ...on });
+  el.addEventListener('dblclick', e => {
+    if (e.target.closest('[data-id],[data-pin],.mp-zoom')) return;
+    const r = el.getBoundingClientRect();
+    zoomAt(e.shiftKey ? 0.5 : 2, e.clientX - r.left, e.clientY - r.top);
+  }, on);
+  el.querySelector('.mp-zoom').addEventListener('click', e => {
+    const z = e.target.closest('[data-z]')?.dataset.z;
+    if (z === 'in') zoomAt(1.6); else if (z === 'out') zoomAt(1 / 1.6); else if (z === 'fit') { M.view = null; draw(); }
+  }, on);
+  el.querySelector('.mp-zoom').addEventListener('mousedown', e => e.stopPropagation(), on);
+  // Keys while this map is on screen: + − zoom, 0 the whole map, arrows pan
+  window.addEventListener('keydown', e => {
+    if (!el.isConnected || !el.offsetParent || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+    if (document.querySelector('#nav-pal.show, #nav-help.show')) return;
+    const pan = 120, k = e.key;
+    if (k === '+' || k === '=') zoomAt(1.4);
+    else if (k === '-' || k === '_') zoomAt(1 / 1.4);
+    else if (k === '0') { M.view = null; draw(); }
+    else if (k === 'ArrowLeft') { M.view.ox += pan; draw(); }
+    else if (k === 'ArrowRight') { M.view.ox -= pan; draw(); }
+    else if (k === 'ArrowUp') { M.view.oy += pan; draw(); }
+    else if (k === 'ArrowDown') { M.view.oy -= pan; draw(); }
+    else return;
+    e.preventDefault();
+  }, on);
   el.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
     if (e.target.closest('[data-id],[data-pin]') && !e.shiftKey) return;   // clicks handled on click
@@ -154,14 +229,14 @@ function makeMap(el, M) {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  });
+  }, on);
   el.addEventListener('click', e => {
     if (e.shiftKey) return;
     const pin = e.target.closest('[data-pin]');
     if (pin && M.onPinClick) { M.onPinClick(+pin.dataset.pin); return; }
     const hit = e.target.closest('[data-id]');
     if (hit && M.onClick && !M.taken?.[hit.dataset.id]) M.onClick(hit.dataset.id);
-  });
+  }, on);
   el.addEventListener('mousemove', e => {
     const hit = e.target.closest('[data-id]'), pin = e.target.closest('[data-pin]');
     if (!hit && !pin) { tip.style.display = 'none'; return; }
@@ -180,7 +255,9 @@ function makeMap(el, M) {
     tip.style.display = 'block';
     tip.style.left = (e.clientX - r.left + 12) + 'px';
     tip.style.top = (e.clientY - r.top + 12) + 'px';
-  });
+  }, on);
+  // the game's map arrives in the background the first time
+  document.addEventListener('map-picture', () => draw(), on);
   return { draw, refit: () => { M.view = null; draw(); } };
 }
 
@@ -201,15 +278,27 @@ function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
 
 // Save and map-picture tools, shared by both maps
 function tools(el, redraw) {
+  el._redo = () => { tools(el, redraw); redraw(); };
+  const own = IMG?.source === 'own';
+  const pic = own ? '' : IMG?.source === 'game' ? '<span class="mp-hint">The game\'s map</span>'
+    : IMG?.game === 'downloading' ? '<span class="mp-hint">Fetching the game\'s map…</span>'
+    : IMG?.game === 'failed' ? `<span class="mp-hint n-warn" title="${(IMG.game_error || '').replace(/"/g, '&quot;')}">Couldn't fetch the game's map</span> <button class="bsm" id="mp-game-retry">Try again</button>` : '';
   el.innerHTML = `
     <label class="bsm" title="Read a .sav to mark the nodes your game already mines">📂 Load save<input type="file" accept=".sav" hidden></label>
     <span class="mp-hint mp-save-info">${SAVE_INFO ? `${SAVE.size} nodes mined in ${SAVE_INFO.file || 'your save'}` : ''}</span>
     <span class="mp-unl"></span>
-    <label class="bsm" title="A picture of the whole in-game map, to draw the nodes on">🖼 Map picture<input type="file" accept="image/png,image/jpeg,image/webp" hidden></label>
-    ${IMG?.ext ? `<span class="mp-align">nudge <button class="bsm" data-a="left">←</button><button class="bsm" data-a="right">→</button>
+    ${pic}
+    <label class="bsm" title="Your own picture of the whole in-game map, instead of the game's">🖼 ${own ? 'Another picture' : 'My own picture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden></label>
+    ${own ? '<button class="bsm" id="mp-game-use" title="Drop your picture and draw the game\'s map">Use the game map</button>' : ''}
+    ${IMG?.ext ? `<span class="mp-align">${own ? `nudge <button class="bsm" data-a="left">←</button><button class="bsm" data-a="right">→</button>
       <button class="bsm" data-a="up">↑</button><button class="bsm" data-a="down">↓</button>
       <button class="bsm" data-a="in">+</button><button class="bsm" data-a="out">−</button>
-      <button class="bsm" data-a="fade" title="Fade the picture">◐</button><button class="bsm" data-a="reset" title="Back to the map's edges">reset</button></span>` : ''}`;
+      <button class="bsm" data-a="reset" title="Back to the map's edges">reset</button>` : ''}<button class="bsm" data-a="fade" title="Fade the picture">Fade</button></span>` : ''}`;
+  if (el._keep) el.prepend(el._keep);   // a button of the map's own (the Blackboard's ⚡ Geothermal)
+  el.querySelector('#mp-game-retry')?.addEventListener('click', () =>
+    fetch('/api/map-game', { method: 'POST' }).then(r => r.json()).then(ms => { IMG = ms; waitForPicture(); el._redo(); }));
+  el.querySelector('#mp-game-use')?.addEventListener('click', () =>
+    fetch('/api/map-image', { method: 'DELETE' }).then(r => r.json()).then(ms => { IMG = { ...ms, v: Date.now() }; waitForPicture(); el._redo(); }));
   const [saveIn, imgIn] = el.querySelectorAll('input[type=file]');
   saveIn.addEventListener('change', () => {
     const f = saveIn.files[0];
@@ -233,7 +322,7 @@ function tools(el, redraw) {
   el.querySelectorAll('[data-a]').forEach(b => b.addEventListener('click', () => {
     const step = 20 / IMG.scale, a = b.dataset.a;
     const ch = { left: { dx: IMG.dx - step }, right: { dx: IMG.dx + step }, up: { dy: IMG.dy - step }, down: { dy: IMG.dy + step },
-      in: { scale: IMG.scale * 1.005 }, out: { scale: IMG.scale / 1.005 }, fade: { opacity: IMG.opacity > 0.35 ? 0.3 : 0.7 },
+      in: { scale: IMG.scale * 1.005 }, out: { scale: IMG.scale / 1.005 }, fade: { opacity: IMG.opacity >= 0.95 ? 0.7 : IMG.opacity >= 0.65 ? 0.4 : 1 },
       reset: { dx: 0, dy: 0, scale: 1 } }[a];
     Object.assign(IMG, ch);
     redraw();
@@ -437,11 +526,17 @@ export function mountMapView(el, { owners, factories, pins, grid = [], onGrid = 
     };
     function redraw() { M.map.draw(); legend(); }
     chips(el.querySelector('.mp-filters'), M, redraw);
-    tools(el.querySelector('.mp-tools'), redraw);
     // the grid's geothermal: a mode, so ordinary clicks never place one by accident
-    el.querySelector('.mp-tools').insertAdjacentHTML('afterbegin',
-      '<button class="bsm" id="mp-geo" title="Click geysers to put geothermal generators on the power grid">⚡ Geothermal</button>');
-    const geoBtn = el.querySelector('#mp-geo');
+    const geoBtn = document.createElement('button');
+    Object.assign(geoBtn, { className: 'bsm', id: 'mp-geo', title: 'Click geysers to put geothermal generators on the power grid (G)', textContent: '⚡ Geothermal' });
+    el.querySelector('.mp-tools')._keep = geoBtn;
+    tools(el.querySelector('.mp-tools'), redraw);
+    el._viewOff?.abort();
+    el._viewOff = new AbortController();
+    window.addEventListener('keydown', e => {   // G: geothermal mode, while this map is on screen
+      if ((e.key === 'g' || e.key === 'G') && !e.ctrlKey && !e.metaKey && !e.altKey && el.offsetParent
+          && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) { e.preventDefault(); geoBtn.click(); }
+    }, { signal: el._viewOff.signal });
     geoBtn.addEventListener('click', () => {
       M.geoMode = !M.geoMode;
       geoBtn.classList.toggle('act', M.geoMode);
