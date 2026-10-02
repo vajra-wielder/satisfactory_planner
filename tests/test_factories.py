@@ -22,7 +22,7 @@ class _Temp(unittest.TestCase):
         (self.dir / ".data").mkdir()
         self._keep = {k: getattr(server, k) for k in ("SCENARIOS_DIR", "RESULTS_DIR", "HISTORY_DIR", "BOARD_PATH",
                                                       "UNLOCKED_PATH", "SAVE_NODES_PATH", "MAP_SETTINGS_PATH",
-                                                      "MAP_IMAGE_DIR")}
+                                                      "MAP_IMAGE_DIR", "BACKUP_DIR")}
         self._prog = supply.PROGRESS_PATH
         server.SCENARIOS_DIR = self.dir
         server.RESULTS_DIR = self.dir / ".results"
@@ -32,6 +32,7 @@ class _Temp(unittest.TestCase):
         server.SAVE_NODES_PATH = self.dir / ".data" / "save_nodes.json"
         server.MAP_SETTINGS_PATH = self.dir / ".data" / "map_image.json"
         server.MAP_IMAGE_DIR = self.dir / ".data"
+        server.BACKUP_DIR = self.dir / ".backups"
         supply.PROGRESS_PATH = self.dir / ".data" / "progress.yaml"   # not among the scenarios
         server._mem_cache.clear()
         supply.save_progress({"machines": ["Smelter", "Constructor", "Assembler", "Foundry", "Refinery"]})
@@ -132,6 +133,92 @@ class Chain(_Temp):
         self.assertEqual([n["resource"] for n in d["resource_nodes"]], ["Coal"])     # the typed Plastic went
         self.assertEqual(d["alternate_recipes_enabled"], ["Alt_Recycled_Rubber"])
         self.assertEqual(len(server._history("dst")), 1)                             # the old one is kept
+
+
+class History(_Temp):
+    def test_keeps_confirmed_and_latest_changes(self):
+        d = self.save("h", objective={"Plastic": 1}, from_factories=[{"item": "Fuel", "factory": "oil", "rate": 10}])
+        self.assertEqual(server._history_keep("h", dict(d)), "")            # unchanged: nothing kept
+        first = server._history_keep("h", {**d, "objective": {"Plastic": 2}})
+        self.assertTrue(first)
+        server._history_confirm("h", first, True)
+        for i in range(8):
+            server._history_keep("h", {**d, "notes": str(i)})
+            self.save("h", **{**d, "notes": str(i)})
+        ids = [v["id"] for v in server._history("h")]
+        self.assertEqual(len(ids), 6)                                       # 5 latest + the confirmed one
+        self.assertIn(first, ids)
+        server._history_confirm("h", "current", True)
+        self.assertEqual(sum(v["confirmed"] for v in server._history("h")), 2)
+        for _ in range(3):
+            server._history_confirm("h", ids[1 + _], True)
+        with self.assertRaises(server._BadRequest):                        # 5 at most
+            server._history_confirm("h", ids[-2], True)
+        server._history_confirm("h", first, False)
+        self.assertNotIn(first, [v["id"] for v in server._history("h") if v["confirmed"]])
+
+    def test_says_what_restoring_changes(self):
+        cur = {"name": "a", "objective": {"Plastic": 1}, "alternate_recipes_enabled": ["Alt_Recycled_Rubber"],
+               "from_factories": [{"item": "Fuel", "factory": "oil", "rate": 25}],
+               "resource_nodes": [{"resource": "Coal", "extractor": "fixed", "rate": 60}], "max_power_mw": 300}
+        old = {"name": "a", "objective": {"Plastic": 1, "Rubber": 2}, "alternate_recipes_enabled": [],
+               "from_factories": [{"item": "Fuel", "factory": "oil", "rate": 40}],
+               "resource_nodes": [{"resource": "Coal", "extractor": "fixed", "rate": 120}]}
+        self.assertEqual(server._diff(cur, old), [
+            "+ goal Rubber 2", "supply Coal: 60 → 120/min", "Fuel from oil: 25 → 40/min",
+            "− Alt Recycled Rubber", "power cap: 300 → —"])
+        self.assertEqual(server._diff(cur, cur), [])
+
+
+class Grid(_Temp):
+    def test_short_grid_names_whose_draw_rose(self):
+        flows = lambda mw: {"flows": [{"machine": "Smelter", "power_mw": mw, "inputs": {}, "outputs": {}}]}
+        a = self.save("a", resource_nodes=[], objective={"Iron_Ingot": 1})
+        self.plan("a", flows(100.0), a)
+        p = self.save("p", resource_nodes=[], objective={"Power": 1})
+        self.plan("p", flows(-150.0), p)
+        g = server._grid_status()
+        self.assertEqual((g["spare"], g["rose"]), (50.0, []))
+        a = self.save("a", resource_nodes=[], objective={"Iron_Ingot": 2})   # changed and re-solved: draws more
+        self.plan("a", flows(400.0), a)
+        g = server._grid_status()
+        self.assertEqual(g["spare"], -250.0)
+        self.assertEqual(g["rose"], [{"key": "a", "name": "a", "was": 100.0, "now": 400.0}])
+
+
+class Backup(_Temp):
+    def test_round_trip(self):
+        import zipfile, io
+        a = self.save("a", objective={"Plastic": 1})
+        server._history_keep("a", {**a, "notes": "x"})
+        server._save_board({"positions": {"a": {"x": 1, "y": 2}}, "routes": [], "geysers": []})
+        (server.MAP_IMAGE_DIR / "map_image.png").write_bytes(b"png")
+        made = server._backup_make()
+        self.assertEqual([b["file"] for b in server._backups()], [made.name])
+        # things change, then the backup goes back
+        self.save("b")
+        (self.dir / "a.yaml").unlink()
+        was = supply.load_progress()
+        supply.save_progress({"machines": ["Smelter"]})
+        out = server._backup_restore(made.read_bytes())
+        self.assertEqual(out["factories"], 1)
+        self.assertEqual(sorted(p.stem for p in self.dir.glob("*.yaml")), ["a"])
+        self.assertEqual(len(server._history("a")), 1)
+        self.assertEqual(server._load_board()["positions"], {"a": {"x": 1.0, "y": 2.0}})
+        self.assertEqual(supply.load_progress(), was)
+        self.assertEqual((server.MAP_IMAGE_DIR / "map_image.png").read_bytes(), b"png")
+        self.assertTrue((server.BACKUP_DIR / out["before"]).exists())          # what was there is kept too
+        # anything else in a zip is refused
+        for names in (["../evil.yaml"], ["scenarios/../../x.yaml"], ["solver.py"], []):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                for n in names:
+                    z.writestr(n, "x")
+            with self.assertRaises(server._BadRequest):
+                server._backup_restore(buf.getvalue())
+        with self.assertRaises(server._BadRequest):
+            server._backup_restore(b"not a zip")
+        self.assertEqual(sorted(p.stem for p in self.dir.glob("*.yaml")), ["a"])
 
 
 class Save(unittest.TestCase):

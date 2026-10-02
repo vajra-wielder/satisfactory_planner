@@ -90,13 +90,14 @@ let TAB = 'factories';
 function showTab(tab) {
   TAB = tab;
   document.querySelectorAll('#bb-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  ['factories', 'flows', 'storage', 'power', 'build', 'map', 'splits'].forEach(t => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
+  ['factories', 'flows', 'storage', 'power', 'build', 'map', 'find', 'splits'].forEach(t => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
   if (tab === 'factories') drawRoutes();
   if (tab === 'power') renderPower();
   if (tab === 'build') renderBuild();
   if (tab === 'map') renderMapTab();
   if (tab === 'flows') renderFlows();
   if (tab === 'storage') renderStorage();
+  if (tab === 'find') renderFind();
 }
 
 function fillTierSelect(id, tiers, chosen) {
@@ -520,6 +521,57 @@ function renderStorage() {
     </table>
     <p class="bb-hint" style="margin-top:10px">Stored items are held out of every factory's "From factories" — solving a factory makes at least what it stores.</p>`;
   el.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
+}
+
+// ══════════════════════════════════════════════════════════
+// WHO MAKES — an item across every factory
+// ══════════════════════════════════════════════════════════
+
+function renderFind() {
+  if (!DATA) return;
+  const q = $('bb-find-q');
+  const all = new Set();
+  DATA.factories.forEach(f => [f.exports, f.surplus, f.inside, f.imports].forEach(o => Object.keys(o || {}).forEach(it => all.add(it))));
+  $('bb-find-items').innerHTML = [...all].sort().map(it => `<option value="${itemName(it)}">`).join('');
+  if (!q.dataset.wired) {
+    q.dataset.wired = '1';
+    q.addEventListener('input', renderFind);
+  }
+  const out = $('bb-find-out');
+  const want = q.value.trim().toLowerCase().replace(/_/g, ' ');
+  if (!want) { out.innerHTML = '<p class="bb-hint">Type an item.</p>'; return; }
+  const exact = [...all].filter(it => itemName(it).toLowerCase() === want);
+  const items = exact.length ? exact : [...all].filter(it => itemName(it).toLowerCase().includes(want)).sort().slice(0, 12);
+  if (!items.length) { out.innerHTML = '<p class="bb-hint">No factory makes or takes that.</p>'; return; }
+  const unit = it => (FLUIDS.has(it) ? ' m³' : '') + '/min';
+  out.innerHTML = items.map(it => {
+    const makers = DATA.factories.map(f => {
+      const made = it in (f.exports || {}) ? f.exports[it] : f.surplus?.[it];   // null: a goal not solved yet
+      const by = f.taken_by?.[it] || {};
+      const stored = by['@storage'] || 0;
+      const others = Object.entries(by).filter(([k]) => k !== '@storage');
+      const taken = others.reduce((s, [, r]) => s + r, 0);
+      return { f, made, stored, others, left: made == null ? null : made - taken - stored, inside: f.inside?.[it] || 0 };
+    }).filter(m => m.made !== undefined || m.inside > 0)
+      .sort((a, b) => (b.left ?? -1) - (a.left ?? -1) || (b.made || 0) - (a.made || 0));
+    const takers = DATA.factories.filter(f => (f.sources || []).some(s => s.item === it && !factory(s.factory)));
+    const free = makers.reduce((s, m) => s + Math.max(0, m.left || 0), 0);
+    const nm = k => `<span class="bb-name" data-key="${k}" style="font-weight:400">${factory(k)?.name || k}</span>`;
+    const rows = makers.map(m => {
+      const sends = m.made !== undefined;
+      return `<tr><td>${nm(m.f.key)}${m.f.solved ? '' : ' <span class="bb-hint">(not solved)</span>'}</td>
+        <td class="num">${sends ? (m.made == null ? 'max' : fmt(m.made)) : '—'}</td>
+        <td class="st-by">${m.others.length ? m.others.map(([k, r]) => `${nm(k)} ${fmt(r)}`).join(' · ') : ''}</td>
+        <td class="num">${m.stored ? fmt(m.stored) : ''}</td>
+        <td class="num ${m.left != null && m.left < -1e-6 ? 'bb-warn' : m.left > 1e-6 ? 'bb-ok' : ''}">${m.left == null ? '—' : fmt(m.left)}</td>
+        <td class="bb-hint">${m.inside > 0 && !sends ? `makes ${fmt(m.inside)} inside and uses it all` : m.inside > (m.made || 0) + 1e-6 ? `${fmt(m.inside)} made, ${fmt(m.inside - (m.made || 0))} used inside` : ''}</td></tr>`;
+    }).join('');
+    return `<div class="fd-item"><h4>${itemName(it)}${FLUIDS.has(it) ? ' 💧' : ''} <span class="bb-hint" style="font-weight:400">· ${fmt(free)}${unit(it)} free to import</span></h4>
+      ${makers.length ? `<table class="st-tab"><tr><th>Factory</th><th style="text-align:right">Sends out</th><th>Taken by</th>
+        <th style="text-align:right">Stored</th><th style="text-align:right">Free</th><th></th></tr>${rows}</table>` : '<p class="bb-hint">No saved factory makes it.</p>'}
+      ${takers.length ? `<p class="bb-hint">Also brought in from outside the planner by ${takers.map(f => nm(f.key)).join(', ')}.</p>` : ''}</div>`;
+  }).join('');
+  out.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
 }
 
 // ══════════════════════════════════════════════════════════

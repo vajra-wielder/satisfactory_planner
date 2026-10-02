@@ -78,6 +78,16 @@ class API(_Temp):
         _, b = self.call("GET", "/api/blackboard")
         self.assertEqual(b["layout"], {"positions": {}, "routes": [], "geysers": []})
 
+    def test_backups_and_history_refuse_bad_input(self):
+        self.assertEqual(self.call("POST", "/api/restore", raw=b"not a zip", ctype="application/zip")[0], 400)
+        self.assertEqual(self.call("POST", "/api/restore", {"file": "../server.py"})[0], 400)
+        self.assertEqual(self.call("GET", "/api/backup/..%2Fserver.py")[0], 404)
+        self.assertEqual(self.call("POST", "/api/history/x/../confirm", {"on": True})[0], 400)
+        self.assertEqual(self.call("POST", "/api/history/nope/v1/confirm", {"on": True})[0], 400)
+        code, b = self.call("POST", "/api/backup", {})
+        self.assertEqual((code, len(b["backups"])), (200, 1))
+        self.assertEqual(self.call("GET", "/api/grid-status")[0], 200)
+
     def test_map_settings_stay_numbers(self):
         _, st = self.call("POST", "/api/map-settings", {"dx": "abc", "scale": -1, "opacity": 7})
         self.assertEqual((st["dx"], st["scale"], st["opacity"]), (0.0, 0.05, 1.0))

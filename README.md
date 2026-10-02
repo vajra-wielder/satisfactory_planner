@@ -46,8 +46,17 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   it, solved sources first — each importer held to what its sources make now
 - Renaming a factory keeps its links: imports from it, its Blackboard place and
   routes, and its plan follow the new name
-- History: each save keeps the version it replaces (the last 20); restore any
-  from the Saved tab
+- History: each save that changes a factory keeps the version it replaces —
+  the 5 latest changes, plus up to 5 you confirm (kept until you unconfirm
+  them). Each version says what restoring it would change (goals, supply,
+  imports, storage, alternates, power cap…); restore any from the Saved tab
+- Grid alerts: the Saved tab says when the grid is short — on average or with
+  every geyser at its low — and which factories draw more than in their plan
+  before
+- Backups: one zip of everything that's yours (factories, their history and
+  plans, the Blackboard, unlocks, your save's nodes, your map picture), kept in
+  backups/; restore one from there or from a zip (what's there is backed up
+  first)
 - Production minimums, maximums, and exact requirements
 - Least raw resources first, then least machine space (machines weighed by the
   room they take — w × l × h from `size_m` in the recipe data, in Smelter units:
@@ -91,6 +100,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   still free. ⚡ Geothermal: click geysers to put a geothermal generator on
   them for the power grid (100 / 200 / 400 MW by purity), or add the ones your
   save has. Geysers belong to the grid, not to a factory.
+- Who makes: type an item — every factory that makes it, what it sends out,
+  who takes it, what's stored, what's still free to import, and what's made
+  and used up inside a factory.
 - Apply a network plan: what it sends between factories becomes their imports,
   the alternates it uses are switched on, then they're re-solved in order. A
   factory's own goals are always made in it.
@@ -193,6 +205,7 @@ satisfactory-planner/
 │   └── unlocked_alts.yaml      your unlocked alternates
 │   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*)
 ├── scenarios/            your factories (.results: cached plans; .history: earlier versions)
+├── backups/              your backups (git-ignored)
 └── tests/
 ```
 

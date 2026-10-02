@@ -11,7 +11,7 @@ Can also be run directly for browser-only use:
     python server.py 5001   # custom port
 """
 
-import gzip, json, os, re, sys, tempfile, threading
+import gzip, json, os, re, shutil, sys, tempfile, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -310,6 +310,12 @@ def _cache_store(key: str, sig: str, base_sig: str, styles, result: dict,
     without what's owed — owed is kept beside them (see _owed_ok)."""
     entry = {"sig": sig, "base_sig": base_sig, "styles": list(styles), "result": result,
              "owed": owed or {}, **({"owed_dropped": True} if dropped else {})}
+    # what its machines drew before, so the grid can say whose draw rose
+    old = _cache_read(key)
+    if old and old.get("result") and old.get("sig") != sig:
+        entry["prev_draw_mw"] = _draw(old["result"])
+    elif old and "prev_draw_mw" in old:
+        entry["prev_draw_mw"] = old["prev_draw_mw"]
     with _cache_lock:
         _mem_cache[sig] = entry
         _mem_cache.move_to_end(sig)
@@ -526,6 +532,15 @@ def _saved_factories(stale_ok: bool = False):
             continue
     return out, claims
 
+def _gross(result) -> dict:
+    """Everything a plan's machines put out, per minute, before its own use."""
+    out: dict = {}
+    for f in (result or {}).get("flows", []):
+        for it, q in (f.get("outputs") or {}).items():
+            if it != "Power":
+                out[it] = out.get(it, 0.0) + q
+    return {k: round(v, 3) for k, v in out.items() if v > 1e-4}
+
 def _blackboard_factories() -> list:
     saved, claims = _saved_factories()
     out = []
@@ -536,6 +551,7 @@ def _blackboard_factories() -> list:
                     "storage": {t["item"]: float(t.get("rate") or 0) for t in data.get("to_storage") or [] if t.get("item")},
                     "taken": {it: round(sum(by.values()), 3) for it, by in claims.get(key, {}).items()},
                     "taken_by": claims.get(key, {}),
+                    "inside": _gross(result),
                     "power": _power(data, result)})
     return out
 
@@ -579,6 +595,37 @@ def _grid() -> dict:
     mw = sum(g["mw"] for g in gs)
     cost = {it: a * len(gs) for it, a in supply.BUILD[supply.GEOTHERMAL].items()}
     return {"geysers": gs, "count": len(gs), "mw": mw, "low": mw * 0.5, "high": mw * 1.5, "cost": cost}
+
+def _draw(result) -> float:
+    """MW a plan's machines draw (generators not counted)."""
+    return round(sum(max(0.0, float(f.get("power_mw") or 0)) for f in (result or {}).get("flows", [])), 1)
+
+def _grid_status() -> dict:
+    """The grid's balance as the Power tab has it (factories with a current
+    plan, extractors, generators, geothermal) — on average and with every
+    geyser at its low — and, when it's short, the factories whose machines
+    draw more than in their plan before."""
+    saved, _ = _saved_factories()
+    grid = _grid()
+    used = made = geo = 0.0
+    rose = []
+    for key, data, result in saved:
+        p = _power(data, result)
+        used += p["machines"] + p["extractors"]
+        made += p["generators"] + p["geothermal"]
+        geo += p["geothermal"]
+        entry = _cache_read(_result_key(data.get("name", key))) if result else None
+        was = (entry or {}).get("prev_draw_mw")
+        if was is not None and p["machines"] > was + 0.5:
+            rose.append({"key": key, "name": data.get("name", key), "was": was, "now": p["machines"]})
+    made += grid["mw"]
+    geo += grid["mw"]
+    spare = made - used
+    low = spare - geo / 2
+    short = spare < -1e-6 or low < -1e-6
+    return {"made": round(made, 1), "used": round(used, 1), "spare": round(spare, 1),
+            "spare_low": round(low, 1), "spare_high": round(spare + geo / 2, 1), "geothermal": round(geo, 1),
+            "rose": sorted(rose, key=lambda r: r["was"] - r["now"]) if short else []}
 
 def _power(data: dict, result) -> dict:
     """A factory's power: what its machines draw and its generators make (from
@@ -716,6 +763,8 @@ def _rename(old: str, new: str, new_name: str) -> None:
     for src, dst in zip(_cache_paths(_result_key(old_name)), _cache_paths(_result_key(new_name))):
         if src.exists() and not dst.exists():
             os.replace(src, dst)
+    if (HISTORY_DIR / old).exists() and not (HISTORY_DIR / new).exists():
+        os.replace(HISTORY_DIR / old, HISTORY_DIR / new)
     old_p.unlink(missing_ok=True)
     for k in [k for k in _scenario_load_cache if k[0] == old]:
         del _scenario_load_cache[k]
@@ -851,46 +900,277 @@ def _apply_network(flows, alts) -> list:
             if touched:
                 data["available_resources"] = supply.available(data)
             if json.dumps(data, sort_keys=True, default=str) != before:
-                _history_keep(key)
+                _history_keep(key, data)
                 _write_yaml(SCENARIOS_DIR / f"{key}.yaml", data)
                 changed.append(key)
     return changed
 
 
 # ── History ───────────────────────────────────────────────────────────────────
-# Each save keeps the version it replaces (scenarios/.history/<key>/<time>.yaml,
-# the last _HISTORY_KEEP), so a change can be undone.
+# Each save that changes a scenario keeps the version it replaces
+# (scenarios/.history/<key>/<time>.yaml): the _HISTORY_KEEP latest, plus up to
+# _HISTORY_CONFIRMED you confirm (kept until you unconfirm them), so a change
+# can be undone.
 HISTORY_DIR = SCENARIOS_DIR / ".history"
-_HISTORY_KEEP = 20
+_HISTORY_KEEP = 5
+_HISTORY_CONFIRMED = 5
 
-def _history_keep(key: str) -> None:
+def _confirmed(key: str) -> list:
+    try:
+        v = json.loads((HISTORY_DIR / key / "confirmed.json").read_text())
+        return [x for x in v if isinstance(x, str) and _valid_key(x)]
+    except Exception:
+        return []
+
+def _same(a: dict, b: dict) -> bool:
+    return json.dumps(a or {}, sort_keys=True, default=str) == json.dumps(b or {}, sort_keys=True, default=str)
+
+def _history_prune(key: str) -> None:
+    d = HISTORY_DIR / key
+    keep = set(_confirmed(key))
+    for old in [f for f in sorted(d.glob("*.yaml")) if f.stem not in keep][:-_HISTORY_KEEP]:
+        old.unlink()
+
+def _history_keep(key: str, new: dict = None) -> str:
+    """Keep the saved version of key before it's replaced — unless new is the
+    same, or it's already the newest kept. Returns its id (or "")."""
     p = SCENARIOS_DIR / f"{key}.yaml"
     if not p.exists():
-        return
+        return ""
+    raw = p.read_bytes()
+    try:
+        old = yaml.safe_load(raw) or {}
+    except Exception:
+        old = None
+    if new is not None and old is not None and _same(old, new):
+        return ""
     import time as _t
     d = HISTORY_DIR / key
     d.mkdir(parents=True, exist_ok=True)
+    kept = sorted(d.glob("*.yaml"))
+    if kept and kept[-1].read_bytes() == raw:
+        return kept[-1].stem
     stamp = _t.strftime("%Y%m%d-%H%M%S")
     n, dst = 0, d / f"{stamp}.yaml"
     while dst.exists():
         n += 1
         dst = d / f"{stamp}-{n}.yaml"
-    dst.write_bytes(p.read_bytes())
-    for old in sorted(d.glob("*.yaml"))[:-_HISTORY_KEEP]:
-        old.unlink()
+    dst.write_bytes(raw)
+    _history_prune(key)
+    return dst.stem
+
+def _history_confirm(key: str, vid: str, on: bool) -> None:
+    """Confirm (keep for good) or unconfirm a version; "current" confirms the
+    scenario as it is now (kept as a version)."""
+    if vid == "current":
+        if not on:
+            raise _BadRequest("Nothing to unconfirm")
+        p = SCENARIOS_DIR / f"{key}.yaml"
+        if not p.exists():
+            raise _BadRequest("Save it first")
+        d = HISTORY_DIR / key
+        d.mkdir(parents=True, exist_ok=True)
+        kept = sorted(d.glob("*.yaml"))
+        if kept and kept[-1].read_bytes() == p.read_bytes():
+            vid = kept[-1].stem
+        else:
+            import time as _t
+            stamp = _t.strftime("%Y%m%d-%H%M%S")
+            n, dst = 0, d / f"{stamp}.yaml"
+            while dst.exists():
+                n += 1
+                dst = d / f"{stamp}-{n}.yaml"
+            dst.write_bytes(p.read_bytes())
+            vid = dst.stem
+    if not (HISTORY_DIR / key / f"{vid}.yaml").exists():
+        raise _BadRequest("No such version")
+    c = [x for x in _confirmed(key) if x != vid]
+    if on:
+        if len(c) >= _HISTORY_CONFIRMED:
+            raise _BadRequest(f"{_HISTORY_CONFIRMED} versions are confirmed already — unconfirm one first")
+        c.append(vid)
+    (HISTORY_DIR / key / "confirmed.json").write_text(json.dumps(sorted(c)))
+    _history_prune(key)
+
+def _nice(x) -> str:
+    return str(x).replace("_", " ")
+
+def _rate(v) -> str:
+    v = float(v or 0)
+    return f"{v:g}" if v == int(v) else f"{v:.4g}"
+
+def _diff(cur: dict, old: dict, most: int = 8) -> list:
+    """What restoring old over cur changes, a short line each (cur → old)."""
+    cur, old = cur or {}, old or {}
+    out = []
+
+    def nums(label, a, b, unit=""):
+        for k in sorted(set(a) | set(b), key=str):
+            x, y = a.get(k), b.get(k)
+            if x is None:
+                out.append(f"+ {label}{_nice(k)} {_rate(y)}{unit}")
+            elif y is None:
+                out.append(f"− {label}{_nice(k)}")
+            elif abs(float(x) - float(y)) > 1e-6:
+                out.append(f"{label}{_nice(k)}: {_rate(x)} → {_rate(y)}{unit}")
+
+    if (cur.get("name") or "") != (old.get("name") or ""):
+        out.append(f"name: {cur.get('name')} → {old.get('name')}")
+    for k, label in (("objective", "goal "), ("must_produce", "exactly "), ("min_produce", "at least "),
+                     ("max_produce", "at most ")):
+        nums(label, cur.get(k) or {}, old.get(k) or {}, "" if k == "objective" else "/min")
+    bare = lambda d: supply.available({**d, "from_factories": []}) if d.get("resource_nodes") is not None \
+        else {k: v for k, v in (d.get("available_resources") or {}).items()
+              if k not in {f.get("item") for f in d.get("from_factories") or []}}
+    nums("supply ", bare(cur), bare(old), "/min")
+    imp = lambda d: {f"{f.get('item')} from {f.get('factory')}": f.get("rate") for f in d.get("from_factories") or []}
+    nums("", imp(cur), imp(old), "/min")
+    sto = lambda d: {f"{t.get('item')} to storage": t.get("rate") for t in d.get("to_storage") or []}
+    nums("", sto(cur), sto(old), "/min")
+    for k, label in (("alternate_recipes_enabled", ""), ("enabled_machines", "machine "), ("unlimited_resources", "unlimited ")):
+        a, b = set(cur.get(k) or []), set(old.get(k) or [])
+        out += [f"+ {label}{_nice(x)}" for x in sorted(b - a)] + [f"− {label}{_nice(x)}" for x in sorted(a - b)]
+    for k, label in (("max_power_mw", "power cap"), ("power_shards_available", "shards"),
+                     ("somersloops_available", "sloops"), ("minimize_new_alts", "min new alts"),
+                     ("machines_first", "min machines"), ("sloop_search", "sloop search")):
+        if cur.get(k) != old.get(k) and not (not cur.get(k) and not old.get(k)):
+            show = lambda v: "—" if v in (None, "") else ("on" if v is True else "off" if v is False
+                                                          else _rate(v) if isinstance(v, (int, float)) else v)
+            out.append(f"{label}: {show(cur.get(k))} → {show(old.get(k))}")
+    for k in ("description", "notes"):
+        if (cur.get(k) or "") != (old.get(k) or ""):
+            out.append(f"{k} differ")
+    if len(out) > most:
+        out = out[:most] + [f"and {len(out) - most} more"]
+    return out
 
 def _history(key: str) -> list:
+    """Kept versions, newest first: when, confirmed, and what restoring each changes."""
+    try:
+        cur = yaml.safe_load((SCENARIOS_DIR / f"{key}.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        cur = {}
+    conf = set(_confirmed(key))
     out = []
     for f in sorted((HISTORY_DIR / key).glob("*.yaml"), reverse=True):
         try:
             data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
         except Exception:
             continue
-        out.append({"id": f.stem, "name": data.get("name", key),
-                    "goals": sorted({**(data.get("objective") or {}), **(data.get("must_produce") or {})})[:4],
-                    "imports": len(data.get("from_factories") or []),
-                    "nodes": len(data.get("resource_nodes") or [])})
+        out.append({"id": f.stem, "name": data.get("name", key), "confirmed": f.stem in conf,
+                    "changes": _diff(cur, data)})
     return out
+
+
+# ── Backup ────────────────────────────────────────────────────────────────────
+# Everything that's yours in one zip: the factories, their history and plans,
+# the board, progress, unlocks, your save's nodes and your map picture. Kept in
+# backups/ (git-ignored); restoring first backs up what's there now.
+BACKUP_DIR = HERE / "backups"
+_BACKUP_MAX = 300 * 2**20          # unpacked, at most
+_BACKUP_BEFORE_KEEP = 3            # the automatic "before restore" ones kept
+
+def _backup_files() -> list:
+    """[(name in the zip, path)] of what's yours now."""
+    out = [(f"scenarios/{p.name}", p) for p in sorted(SCENARIOS_DIR.glob("*.yaml"))]
+    for base, d in (("scenarios/.history", HISTORY_DIR), ("scenarios/.results", RESULTS_DIR)):
+        if d.exists():
+            out += [(f"{base}/{p.relative_to(d).as_posix()}", p) for p in sorted(d.rglob("*")) if p.is_file()
+                    and not p.name.endswith(".tmp")]
+    for name, p in (("data/blackboard.yaml", BOARD_PATH), ("data/progress.yaml", supply.PROGRESS_PATH),
+                    ("data/unlocked_alts.yaml", UNLOCKED_PATH), ("data/save_nodes.json", SAVE_NODES_PATH),
+                    ("data/map_image.json", MAP_SETTINGS_PATH)):
+        if p.exists():
+            out.append((name, p))
+    out += [(f"data/{p.name}", p) for p in sorted(MAP_IMAGE_DIR.glob("map_image.*"))
+            if p.suffix[1:] in _IMAGE_TYPES.values()]
+    return out
+
+_BACKUP_NAME = re.compile(r"(scenarios/[A-Za-z0-9_-]{1,120}\.yaml"
+                          r"|scenarios/\.history/[A-Za-z0-9_-]{1,120}/([A-Za-z0-9_-]{1,120}\.yaml|confirmed\.json)"
+                          r"|scenarios/\.results/[A-Za-z0-9_-]{1,120}\.json(\.gz)?"
+                          r"|data/(blackboard\.yaml|progress\.yaml|unlocked_alts\.yaml|save_nodes\.json|map_image\.json"
+                          r"|map_image\.(png|jpg|webp)))")
+
+def _backup_target(name: str) -> Path:
+    """Where a file in a backup goes (its name already checked)."""
+    if name.startswith("scenarios/.history/"):
+        return HISTORY_DIR / name[len("scenarios/.history/"):]
+    if name.startswith("scenarios/.results/"):
+        return RESULTS_DIR / name[len("scenarios/.results/"):]
+    if name.startswith("scenarios/"):
+        return SCENARIOS_DIR / name[len("scenarios/"):]
+    fixed = {"data/blackboard.yaml": BOARD_PATH, "data/progress.yaml": supply.PROGRESS_PATH,
+             "data/unlocked_alts.yaml": UNLOCKED_PATH, "data/save_nodes.json": SAVE_NODES_PATH,
+             "data/map_image.json": MAP_SETTINGS_PATH}
+    return fixed.get(name) or MAP_IMAGE_DIR / name[len("data/"):]
+
+def _backup_make(prefix: str = "planner") -> Path:
+    import time as _t
+    import zipfile
+    BACKUP_DIR.mkdir(exist_ok=True)
+    stamp = _t.strftime("%Y%m%d-%H%M%S")
+    n, dst = 0, BACKUP_DIR / f"{prefix}-{stamp}.zip"
+    while dst.exists():
+        n += 1
+        dst = BACKUP_DIR / f"{prefix}-{stamp}-{n}.zip"
+    tmp = dst.with_suffix(".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, p in _backup_files():
+            z.write(p, name)
+    os.replace(tmp, dst)
+    if prefix == "before-restore":
+        for old in sorted(BACKUP_DIR.glob("before-restore-*.zip"))[:-_BACKUP_BEFORE_KEEP]:
+            old.unlink()
+    return dst
+
+def _backups() -> list:
+    if not BACKUP_DIR.exists():
+        return []
+    out = []
+    for p in sorted(BACKUP_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            import zipfile
+            with zipfile.ZipFile(p) as z:
+                n = sum(1 for i in z.namelist() if re.fullmatch(r"scenarios/[^/]+\.yaml", i))
+        except Exception:
+            continue
+        out.append({"file": p.name, "factories": n, "size": p.stat().st_size,
+                    "auto": p.name.startswith("before-restore-")})
+    return out
+
+def _backup_restore(raw: bytes) -> dict:
+    """Put a backup back: what's yours now is replaced by what's in it (and
+    first backed up itself). Anything in the zip that isn't a planner file is
+    refused, not skipped."""
+    import io
+    import zipfile
+    try:
+        z = zipfile.ZipFile(io.BytesIO(raw))
+        infos = [i for i in z.infolist() if not i.is_dir()]
+    except Exception:
+        raise _BadRequest("That isn't a zip file")
+    bad = [i.filename for i in infos if not _BACKUP_NAME.fullmatch(i.filename)]
+    if bad:
+        raise _BadRequest(f"Not a planner backup — it has {bad[0]}")
+    if not any(i.filename.startswith("scenarios/") or i.filename.startswith("data/") for i in infos):
+        raise _BadRequest("That backup is empty")
+    if sum(i.file_size for i in infos) > _BACKUP_MAX:
+        raise _BadRequest("That backup is too big")
+    files = {i.filename: z.read(i) for i in infos}
+    before = _backup_make("before-restore")
+    for _, p in _backup_files():
+        p.unlink(missing_ok=True)
+    for d in (HISTORY_DIR, RESULTS_DIR):
+        shutil.rmtree(d, ignore_errors=True)
+    for name, data in files.items():
+        t = _backup_target(name)
+        t.parent.mkdir(parents=True, exist_ok=True)
+        t.write_bytes(data)
+    for c in (_mem_cache, _read_memo, _scenario_list_cache, _scenario_load_cache):
+        c.clear()
+    return {"factories": sum(1 for n in files if re.fullmatch(r"scenarios/[^/]+\.yaml", n)),
+            "files": len(files), "before": before.name}
 
 
 # ── Your save and your map ───────────────────────────────────────────────────
@@ -1308,6 +1588,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"running": _chain["running"], "todo": _chain["todo"], "steps": list(_chain["steps"])})
             return
 
+        if path == "/api/backups":
+            self._json(200, {"backups": _backups(), "folder": str(BACKUP_DIR)})
+            return
+
+        if path.startswith("/api/backup/"):
+            name = path[len("/api/backup/"):]
+            f = BACKUP_DIR / name
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}\.zip", name) or not f.exists():
+                self._json(404, {"error": "No such backup"})
+                return
+            body = f.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/api/grid-status":
+            self._json(200, _grid_status())
+            return
+
         if path.startswith("/api/history/"):
             key = path[len("/api/history/"):]
             if not _valid_key(key):
@@ -1431,6 +1734,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
             return
 
+        if path.startswith("/api/history/") and path.endswith("/confirm"):
+            parts = path[len("/api/history/"):-len("/confirm")].split("/")
+            if len(parts) != 2 or not all(_valid_key(x) for x in parts):
+                self._json(400, {"error": "Bad key"})
+                return
+            body = self._read_obj()
+            with _save_lock:
+                _history_confirm(parts[0], parts[1], bool(body.get("on", True)))
+            self._json(200, {"versions": _history(parts[0])})
+            return
+
         if path.startswith("/api/history/") and path.endswith("/restore"):
             parts = path[len("/api/history/"):-len("/restore")].split("/")
             if len(parts) != 2 or not all(_valid_key(x) for x in parts):
@@ -1442,11 +1756,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "No such version"})
                 return
             with _save_lock:
-                _history_keep(key)
-                (SCENARIOS_DIR / f"{key}.yaml").write_bytes(src.read_bytes())
+                raw = src.read_bytes()   # before keeping the current one can prune it
+                _history_keep(key, yaml.safe_load(raw) or {})
+                (SCENARIOS_DIR / f"{key}.yaml").write_bytes(raw)
                 for k in [k for k in _scenario_load_cache if k[0] == key]:
                     del _scenario_load_cache[k]
             self._json(200, {"restored": vid})
+            return
+
+        if path == "/api/backup":
+            with _save_lock:
+                f = _backup_make()
+            self._json(200, {"file": f.name, "backups": _backups(), "folder": str(BACKUP_DIR)})
+            return
+
+        if path == "/api/restore":
+            # a backup: one from backups/ by name ({"file"}), or the zip itself
+            if (self.headers.get("Content-Type") or "").startswith("application/json"):
+                name = self._read_obj().get("file")
+                f = BACKUP_DIR / str(name)
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,120}\.zip", name) or not f.exists():
+                    raise _BadRequest("No such backup")
+                raw = f.read_bytes()
+            else:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                if not length or length > _BACKUP_MAX:
+                    raise _BadRequest("No backup sent" if not length else "That backup is too big")
+                raw = self.rfile.read(length)
+            with _save_lock:
+                out = _backup_restore(raw)
+            self._json(200, {**out, "backups": _backups()})
             return
 
         if path == "/api/save-file":
@@ -1593,7 +1932,7 @@ class Handler(BaseHTTPRequestHandler):
                 renamed = None
             with _save_lock:
                 cut = _hold_claims(name, data)
-                _history_keep(name)
+                _history_keep(name, data)
                 _write_yaml(p, data)
                 for k in [k for k in _scenario_load_cache if k[0] == name]:
                     del _scenario_load_cache[k]

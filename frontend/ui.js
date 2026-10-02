@@ -149,7 +149,7 @@ export function renderBuildCost() {
 // ══════════════════════════════════════════════════════════
 export function renderSaved(saved, onLoad, onDelete, onRestore) {
   const el = document.getElementById('savedlist');
-  if (!saved.length) { el.innerHTML = '<p style="font-size:12px;color:var(--t3)">No saved scenarios.</p>'; return; }
+  if (!saved.length) { el.innerHTML = '<p style="font-size:12px;color:var(--t3)">No saved scenarios.</p>'; el.appendChild(backupBox()); return; }
   el.innerHTML = '';
   const stale = saved.filter(s => !s.fresh).length;
   const bar = document.createElement('div');
@@ -157,9 +157,13 @@ export function renderSaved(saved, onLoad, onDelete, onRestore) {
   bar.innerHTML = `<button class="bsm ${stale ? 'act' : ''}" id="sv-chain" ${stale ? '' : 'disabled'}
       title="Solve every factory without a current plan, and everything that takes from them — sources first">↻ Re-solve out of date (${stale})</button>`;
   el.appendChild(bar);
+  const gridBox = document.createElement('div');
+  el.appendChild(gridBox);
+  const rowsBy = {};
   saved.forEach(s => {
     const row = document.createElement('div');
     row.className = 'sv-row';
+    rowsBy[s.key] = row;
     row.innerHTML = `
       <div style="display:flex;align-items:center;gap:5px">
         <div style="flex:1;min-width:0">
@@ -180,22 +184,86 @@ export function renderSaved(saved, onLoad, onDelete, onRestore) {
       if (box.style.display !== 'none') { box.style.display = 'none'; return; }
       box.style.display = '';
       box.innerHTML = '<span class="n-hint">Loading…</span>';
-      fetch(`/api/history/${s.key}`).then(r => r.json()).then(d => {
-        if (!d.versions.length) { box.innerHTML = '<span class="n-hint">No earlier versions yet — each save keeps the one it replaces.</span>'; return; }
-        box.innerHTML = d.versions.map(v => {
+      const draw = versions => {
+        const conf = versions.filter(v => v.confirmed).length;
+        const cur = `<div class="sv-v"><span>Now</span><span class="n-hint">${conf}/5 confirmed</span>
+          <button class="bsm" data-c="current" ${conf >= 5 ? 'disabled' : ''} title="Keep this version for good (up to 5)">✓ Confirm</button></div>`;
+        box.innerHTML = cur + (versions.length ? versions.map(v => {
           const t = v.id.replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d).*$/, '$1-$2-$3 $4:$5');
-          return `<div class="sv-v"><span>${t}${v.name !== s.name ? ` · ${v.name}` : ''}</span>
-            <span class="n-hint">${v.nodes} supply · ${v.imports} imports</span><button class="bsm" data-v="${v.id}">Restore</button></div>`;
-        }).join('');
+          const ch = v.changes.length ? v.changes.map(c => `<div>${c}</div>`).join('') : '<div>the same as now</div>';
+          return `<div class="sv-v${v.confirmed ? ' sv-conf' : ''}"><span>${v.confirmed ? '✓ ' : ''}${t}${v.name !== s.name ? ` · ${v.name}` : ''}</span>
+            <button class="bsm" data-c="${v.id}" data-on="${v.confirmed ? 0 : 1}" ${!v.confirmed && conf >= 5 ? 'disabled' : ''}
+              title="${v.confirmed ? 'Unconfirm: it goes once 5 newer changes are kept' : 'Keep it for good (up to 5)'}">${v.confirmed ? 'Unconfirm' : '✓'}</button>
+            <button class="bsm" data-v="${v.id}">Restore</button>
+            <div class="sv-ch" title="What restoring it changes">${ch}</div></div>`;
+        }).join('') : '<span class="n-hint">No earlier versions yet — each save that changes it keeps the one it replaces.</span>')
+          + '<div class="n-hint" style="margin-top:4px">Kept: the 5 you confirm and the 5 latest changes.</div>';
         box.querySelectorAll('[data-v]').forEach(b => b.addEventListener('click', () => {
           if (confirm(`Restore "${s.name}" to how it was at ${b.parentNode.firstElementChild.textContent}? The current version is kept in its history.`))
             onRestore(s.key, b.dataset.v);
         }));
-      });
+        box.querySelectorAll('[data-c]').forEach(b => b.addEventListener('click', () =>
+          fetch(`/api/history/${s.key}/${b.dataset.c}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ on: b.dataset.on !== '0' }) }).then(r => r.json())
+            .then(d => d.error ? alert(d.error) : draw(d.versions))));
+      };
+      fetch(`/api/history/${s.key}`).then(r => r.json()).then(d => draw(d.versions));
     });
     el.appendChild(row);
   });
   const box = document.createElement('div');
   box.id = 'sv-chain-box';
   el.appendChild(box);
+  el.appendChild(backupBox());
+  // The power grid: short on average, or with every geyser at its low — and whose draw rose
+  fetch('/api/grid-status').then(r => r.json()).then(g => {
+    const f = v => Math.round(Math.abs(v)).toLocaleString();
+    const msg = g.spare < 0 ? `the grid is ${f(g.spare)} MW short`
+      : g.spare_low < 0 ? `with every geyser at its low the grid is ${f(g.spare_low)} MW short (${f(g.spare)} MW spare on average)` : '';
+    if (!msg || !(g.made > 0)) return;   // no power in the planner yet: nothing to balance
+    gridBox.className = 'sv-grid';
+    gridBox.innerHTML = `⚡ ${msg[0].toUpperCase() + msg.slice(1)}.${g.rose.length ? ` Drawing more than before: ${
+      g.rose.map(r => `${r.name} +${f(r.now - r.was)} MW`).join(', ')}.` : ''} <span class="n-hint">See the Blackboard's Power tab.</span>`;
+    g.rose.forEach(r => {
+      const name = rowsBy[r.key]?.querySelector('div > div > div');
+      if (name) name.insertAdjacentHTML('beforeend', ` <span class="sv-alert" title="Its machines draw ${f(r.was)} → ${f(r.now)} MW since its plan before, and the grid is short">⚡ +${f(r.now - r.was)} MW</span>`);
+    });
+  }).catch(() => {});
+}
+
+// Backups: everything that's yours (factories, history, plans, board, unlocks,
+// save nodes, map picture) in one zip, kept in the planner's backups/ folder
+function backupBox() {
+  const el = document.createElement('div');
+  el.className = 'sv-bk';
+  const kb = n => n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`;
+  const when = f => f.replace(/^.*?(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)\d\d.*$/, '$1-$2-$3 $4:$5');
+  const restore = (body, ctype, what) => {
+    if (!confirm(`Restore ${what}? Every factory, its history, the board and your unlocks become what's in it. What's here now is backed up first.`)) return;
+    fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': ctype }, body }).then(r => r.json()).then(d => {
+      if (d.error) { alert(d.error); return; }
+      alert(`Restored ${d.factories} ${d.factories === 1 ? 'factory' : 'factories'}. What was here is in ${d.before}.`);
+      location.reload();
+    });
+  };
+  const draw = d => {
+    el.innerHTML = `<div class="sv-bk-h"><span>Backups</span>
+        <button class="bsm" id="bk-make" title="Zip every factory, its history and plans, the board, unlocks, your save's nodes and map picture">💾 Back up now</button>
+        <label class="bsm" title="Restore from a backup zip">Restore a zip…<input type="file" accept=".zip" id="bk-file" hidden></label></div>
+      ${d.backups.length ? d.backups.slice(0, 8).map(b => `<div class="sv-v"><span>${when(b.file)}<br><span class="n-hint">${
+          b.factories} ${b.factories === 1 ? 'factory' : 'factories'} · ${kb(b.size)}${b.auto ? ' · before a restore' : ''}</span></span>
+        <a class="bsm" href="/api/backup/${b.file}" download="${b.file}">Save as…</a>
+        <button class="bsm" data-f="${b.file}">Restore</button></div>`).join('') : '<div class="n-hint">None yet.</div>'}
+      <div class="n-hint" style="margin-top:3px">In ${d.folder}</div>`;
+    el.querySelector('#bk-make').addEventListener('click', () =>
+      fetch('/api/backup', { method: 'POST' }).then(r => r.json()).then(draw));
+    el.querySelector('#bk-file').addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (f) restore(f, 'application/zip', f.name);
+    });
+    el.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () =>
+      restore(JSON.stringify({ file: b.dataset.f }), 'application/json', `the backup from ${when(b.dataset.f)}`)));
+  };
+  fetch('/api/backups').then(r => r.json()).then(draw).catch(() => {});
+  return el;
 }

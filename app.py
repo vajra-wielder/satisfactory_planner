@@ -151,6 +151,10 @@ def main():
             pass
         return
 
+    try:   # "Save as…" on a backup (pywebview 5+; otherwise it's still in backups/)
+        webview.settings["ALLOW_DOWNLOADS"] = True
+    except Exception:
+        pass
     window = webview.create_window(
         title     = "Satisfactory Factory Planner",
         url       = f"http://127.0.0.1:{port}/",

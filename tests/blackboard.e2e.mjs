@@ -113,6 +113,14 @@ try {
     assert.equal(layout.layout.geysers.length, 2);
     assert.equal(layout.grid.count, 2);
   });
+  check('who makes Iron Rod: sent out, taken, stored and free', async () => {
+    await page.click('#bb-tabs button[data-tab="find"]');
+    await page.fill('#bb-find-q', 'Iron Rod'); await sleep(200);
+    const t = await page.locator('#bb-find-out').innerText();
+    assert.match(t, /Iron Rod/); assert.match(t, /15\/min free to import/, t);
+    const row = await page.locator('#bb-find-out tr', { hasText: 'iron' }).first().innerText();
+    assert.match(row, /30\s+frames 5\s+10\s+15/, row);
+  });
   check('planning the network redraws the band from the plan', async () => {
     await page.click('#bb-tabs button[data-tab="factories"]'); await sleep(200);
     await page.click('#bb-plan');

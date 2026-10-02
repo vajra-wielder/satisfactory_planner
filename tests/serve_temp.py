@@ -24,6 +24,7 @@ def main(port: int) -> None:
     server.SAVE_NODES_PATH = d / ".data" / "save_nodes.json"
     server.MAP_SETTINGS_PATH = d / ".data" / "map_image.json"
     server.MAP_IMAGE_DIR = d / ".data"
+    server.BACKUP_DIR = d / ".backups"
     supply.PROGRESS_PATH = d / ".data" / "progress.yaml"
     supply.save_progress({"machines": ["Smelter", "Constructor", "Assembler", "Foundry", "Coal_Generator"]})
     try:

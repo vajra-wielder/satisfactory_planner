@@ -22,3 +22,4 @@ data/save_nodes.json
 data/map_image.*
 scenarios/.history/
 data/.recipes_complete_cache.json
+backups/

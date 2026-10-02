@@ -157,6 +157,30 @@ try {
     await page.click('#btn-close-analysis');
   });
 
+  await step('history keeps only changes, says what they were, and can be confirmed', async () => {
+    await page.click('.tabbt[data-tab="saved"]'); await sleep(500);
+    const row = () => page.locator('.sv-row', { hasText: 'Round Trip' });
+    await row().locator('.sv-h').click(); await sleep(400);
+    assert.match(await row().locator('.sv-hist').innerText(), /No earlier versions/);   // saved twice, the same
+    await page.click('.tabbt[data-tab="build"]');
+    await open('nt', '#sc-nt'); await page.fill('#sc-nt', 'Notes changed.'); await page.dispatchEvent('#sc-nt', 'change');
+    await page.click('#bsave'); await sleep(900);
+    await page.click('.tabbt[data-tab="saved"]'); await sleep(500);
+    await row().locator('.sv-h').click(); await sleep(400);
+    const h = await row().locator('.sv-hist').innerText();
+    assert.match(h, /notes differ/, h); assert.match(h, /0\/5 confirmed/);
+    await row().locator('.sv-hist [data-c]:not([data-c="current"])').first().click(); await sleep(400);
+    assert.match(await row().locator('.sv-hist').innerText(), /1\/5 confirmed/);
+    assert.equal(await row().locator('.sv-conf').count(), 1);
+  });
+
+  await step('a backup is made and listed', async () => {
+    await page.click('#bk-make'); await sleep(600);
+    const b = await page.locator('.sv-bk').innerText();
+    assert.match(b, /3 factories/, b);
+    assert.equal(await page.locator('.sv-bk [data-f]').count(), 1);
+  });
+
   await step('a power plant reads in MW', async () => {
     await page.click('.tabbt[data-tab="saved"]'); await sleep(500);
     await page.locator('.sv-row', { hasText: 'Plant' }).locator('button').first().click(); await sleep(1200);
