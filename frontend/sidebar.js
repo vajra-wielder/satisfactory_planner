@@ -73,7 +73,10 @@ export function activateTab(tab) {
 // ══════════════════════════════════════════════════════════
 // AUTOCOMPLETE  (shared helper — used by kv-panel.js too)
 // ══════════════════════════════════════════════════════════
-export function makeAC(input, onPick, dropParent, source = null) {
+// opts.commit: typed text that names an item commits when you leave the box
+// (not only a pick from the list); text that names none stays, marked, for you
+// to fix, and opts.onType(text) keeps it across a redraw.
+export function makeAC(input, onPick, dropParent, source = null, opts = {}) {
   let drop = null, cursor = -1;
   let _lastQ = null, _lastSuggestions = null;
 
@@ -150,6 +153,32 @@ export function makeAC(input, onPick, dropParent, source = null) {
     input.value = itemName(key);
     onPick(key);
     closeDrop();
+  }
+
+  // The item typed text names: its name or key exactly, in the list first, then any item
+  function named(text) {
+    const t = text.trim().toLowerCase();
+    if (!t) return null;
+    const is = k => itemName(k).toLowerCase() === t || k.toLowerCase() === t.replace(/\s+/g, '_');
+    return (source ? source() : []).find(is) || ALL_ITEMS.find(is) || null;
+  }
+  const mark = () => {
+    const bad = !!input.value.trim() && !named(input.value);
+    input.classList.toggle('ac-bad', bad);
+    input.title = bad ? 'Not an item — pick one from the list' : '';
+  };
+  if (opts.commit) {
+    input.addEventListener('change', () => {
+      opts.onType?.(input.value);
+      const key = named(input.value);
+      if (key && (itemName(key) !== input.value || opts.current?.() !== key)) {
+        input.value = itemName(key);
+        (opts.onCommit || onPick)(key);   // in place, so the click that left the box still lands
+      }
+      mark();
+    });
+    input.addEventListener('input', () => { opts.onType?.(input.value); input.classList.remove('ac-bad'); });
+    mark();
   }
 
   let _inputTimer = null;

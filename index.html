@@ -791,6 +791,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 
 
 
+input.ac-bad { border-color: var(--warn, #f87171) !important; box-shadow: 0 0 0 1px rgba(248,113,113,.35); }
 /* ── Getting around (nav.js) ── */
 kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px solid var(--b2); border-bottom-width: 2px; border-radius: 4px; color: var(--t2); background: var(--p3); }
 .tb-action-btn kbd { margin-left: 4px; font-size: 9px; }
@@ -920,7 +921,7 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
           Resources / Minute <span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
-          <p class="n-hint">The nodes this factory mines — nothing else enters but what it takes from other factories.</p>
+          <p class="n-hint">What comes in: the nodes this factory mines, and what it takes from other factories.</p>
           <div class="n-tools">
             <button class="bsm act" id="btn-map-pick" title="Pick the nodes this factory mines on the world map  (Ctrl+M)">🗺 Pick on map</button>
             <span class="n-tools-sh">⚡ <input type="number" id="sh-spread" min="0" step="1" placeholder="0" title="Power shards for the extractors"/>
@@ -937,12 +938,6 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
               <button class="arb" id="add-leftovers" style="flex:1" title="Import everything your other factories have left over">+ All leftovers</button>
             </div>
           </div>
-          <div class="goals-group" style="margin-top:8px">
-            <div style="font-size:11px;color:var(--t3);margin-bottom:4px">To storage <span style="color:var(--t4);font-size:10px">— a Dimensional Depot, a stockpile; no other factory can take it</span></div>
-            <div id="kv-sto"></div>
-            <button class="arb" id="add-sto">+ Add to Storage</button>
-          </div>
-          <div id="sent-out"></div>
           <div id="res-total" class="n-hint"></div>
         </div>
       </div>
@@ -972,6 +967,12 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
             <div id="kv-max"></div>
             <button class="arb" id="add-max">+ Add</button>
           </div>
+          <div class="goals-group">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:4px">To storage <span style="color:var(--t4);font-size:10px">— out of what it makes, into a Dimensional Depot or a stockpile; it makes at least this</span></div>
+            <div id="kv-sto"></div>
+            <button class="arb" id="add-sto">+ Add to Storage</button>
+          </div>
+          <div id="sent-out"></div>
         </div>
       </div>
       <div class="pc" id="sec-oc">

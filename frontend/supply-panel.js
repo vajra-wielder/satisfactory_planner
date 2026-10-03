@@ -177,6 +177,16 @@ const madeItems = () => {
   (OUTPUTS?.factories || []).forEach(f => { if (f.key !== ownKey()) Object.keys(f.made).forEach(i => s.add(i)); });
   return [...s].sort((a, b) => itemName(a).localeCompare(itemName(b)));
 };
+// Text typed in a row's item box that isn't an item yet: kept across redraws, never saved
+const TYPED = new WeakMap();
+// What was last clicked: leaving an item box for its own rate box, you're about to type the rate
+let LAST_DOWN = null;
+document.addEventListener('mousedown', e => { LAST_DOWN = e.target; }, true);
+// What a storage row can take: what this factory makes, then its goals, then any item (solving makes it)
+const storeItems = () => {
+  const first = [...ownItems(), ...Object.keys({ ...SC.objective, ...SC.must_produce, ...SC.min_produce })];
+  return [...new Set([...first, ...ALL_ITEMS])];
+};
 const ownItems = () => Object.keys(ownMade()).filter(i => i !== 'Power').sort((a, b) => itemName(a).localeCompare(itemName(b)));
 // What other factories' own nodes give that their plans don't use, with what's
 // still free of it (others' imports off) and what this factory brings already
@@ -479,7 +489,7 @@ function renderFrom(focus = -1) {
     const makers = makersOf(f.item);
     row.innerHTML = `
       <div class="nrow-1 nrow-from">
-        <div class="acw"><input type="text" class="f-item" placeholder="Item…" value="${f.item ? itemName(f.item) : ''}"/></div>
+        <div class="acw"><input type="text" class="f-item" placeholder="Item…" value="${f.item ? itemName(f.item) : TYPED.get(f) || ''}"/></div>
         <input type="text" inputmode="decimal" class="f-rate" placeholder="/min" value="${f.rate ?? ''}"/>
         <button class="bi n-x" title="Remove">✕</button>
       </div>
@@ -495,8 +505,11 @@ function renderFrom(focus = -1) {
       note.classList.remove('n-warn');
       use.style.display = 'none';
       if (!f.factory || !o) {
-        note.textContent = f.factory && OUTPUTS ? 'not made there now' : '';
-        if (f.factory && OUTPUTS) note.classList.add('n-warn');
+        // a row without a factory to come from isn't saved: say so
+        note.textContent = f.factory ? (OUTPUTS ? 'not made there now' : '')
+          : f.item ? (makersOf(f.item).length ? 'pick the factory it comes from' : 'no saved factory makes it now — not saved') : '';
+        if (note.textContent) note.classList.add('n-warn');
+        note.title = note.textContent;
         return;
       }
       const takers = Object.keys(o.by).filter(k => k !== ownKey()).map(facName);
@@ -527,7 +540,19 @@ function renderFrom(focus = -1) {
       syncSupply(); renderFrom(ms.length > 1 ? -1 : i);
       if (ms.length > 1) requestAnimationFrame(() => $('kv-from').querySelectorAll('.nrow')[i]?.querySelector('.f-fac')?.focus());
     };
-    makeAC(row.querySelector('.f-item'), setItem, null, madeItems);
+    makeAC(row.querySelector('.f-item'), key => { TYPED.delete(f); setItem(key); }, null, madeItems,
+      { commit: true, current: () => f.item,
+        onCommit: key => {   // in place: the factory list for this item, and its rate if none yet
+          f.item = key; TYPED.delete(f);
+          const ms = makersOf(key);
+          if (!ms.some(m => m.key === f.factory)) f.factory = ms.length === 1 ? ms[0].key : '';
+          const sel = row.querySelector('.f-fac');
+          sel.innerHTML = (f.factory ? '' : opt('', ms.length ? 'From factory…' : 'No saved factory makes it', true))
+            + ms.map(m => opt(m.key, m.name, m.key === f.factory)).join('');
+          if (f.factory && !(parseFloat(f.rate) > 0) && LAST_DOWN !== rin) rin.value = f.rate = down(offer(f.factory, key, f).left);
+          syncSupply(); PAINTS.forEach(p => p());
+        },
+        onType: v => { TYPED.set(f, v); if (f.item && v.trim() !== itemName(f.item)) { f.item = ''; syncSupply(); } } });
     row.querySelector('.f-fac').addEventListener('change', ev => {
       f.factory = ev.target.value;
       const of = offer(f.factory, f.item, f);
@@ -584,7 +609,7 @@ function renderStorage() {
     row.className = 'nrow';
     row.innerHTML = `
       <div class="nrow-1 nrow-from">
-        <div class="acw"><input type="text" class="f-item" placeholder="Item it makes…" value="${t.item ? itemName(t.item) : ''}"/></div>
+        <div class="acw"><input type="text" class="f-item" placeholder="Item it makes…" value="${t.item ? itemName(t.item) : TYPED.get(t) || ''}"/></div>
         <input type="text" inputmode="decimal" class="f-rate" placeholder="/min" value="${t.rate ?? ''}"/>
         <button class="bi n-x" title="Remove">✕</button>
       </div>
@@ -594,7 +619,12 @@ function renderStorage() {
       const o = t.item ? storeOffer(t.item, t) : null;
       note.classList.remove('n-warn');
       if (!t.item) { note.textContent = ''; return; }
-      if (!o) { note.textContent = 'not made here now — solve to check'; note.classList.add('n-warn'); return; }
+      if (!o) {
+        const solved = RESULT && String(RESULT.status || '').startsWith('Optimal');
+        note.textContent = solved ? "its plan doesn't make it — see the issues" : 'not made here yet — solve to check';
+        note.title = 'Storage is taken out of what this factory makes; solving makes at least this much of it';
+        note.classList.add('n-warn'); return;
+      }
       note.textContent = `up to ${fmt(o.left)}`;
       note.title = [`This factory makes ${fmt(o.made)}/min`,
         ...Object.entries(o.by).map(([k, v]) => `${facName(k)} takes ${fmt(v)}`),
@@ -604,11 +634,18 @@ function renderStorage() {
     };
     paint.storage = true;
     makeAC(row.querySelector('.f-item'), key => {
-      t.item = key;
+      t.item = key; TYPED.delete(t);
       const o = storeOffer(key, t);
-      if (o) t.rate = down(o.left);
+      if (o && !(parseFloat(t.rate) > 0)) t.rate = down(o.left);   // a rate you typed stays
       syncSupply(); renderStorage();
-    }, null, ownItems);
+    }, null, storeItems, { commit: true, current: () => t.item,
+      onCommit: key => {
+        t.item = key; TYPED.delete(t);
+        const o = storeOffer(key, t);
+        if (o && !(parseFloat(t.rate) > 0) && LAST_DOWN !== rin) rin.value = t.rate = down(o.left);
+        syncSupply(); PAINTS.forEach(p => p()); renderSentOut();
+      },
+      onType: v => { TYPED.set(t, v); if (t.item && v.trim() !== itemName(t.item)) { t.item = ''; syncSupply(); } } });
     rin.addEventListener('input', () => { t.rate = rin.value; syncSupply(); PAINTS.forEach(p => p()); renderSentOut(); });
     rin.addEventListener('blur', () => {
       let v = evalExpr(rin.value);

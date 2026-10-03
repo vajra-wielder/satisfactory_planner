@@ -269,6 +269,7 @@ node tests/sidebar.e2e.mjs                  # every input saved and reloaded, th
 node tests/blackboard.e2e.mjs               # every Blackboard tab (browser; needs Playwright)
 node tests/nav.e2e.mjs                      # getting around: palette, systems, shortcuts, map keys (browser)
 node tests/spare.e2e.mjs                    # unused node supply, brought to a factory nearby (browser)
+node tests/typing.e2e.mjs                   # typed items stay, commit and save; misspelt ones are marked (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```
@@ -284,7 +285,7 @@ A scenario may contain:
 
 - Resource Nodes (picked on the map, typed in, or fixed rates), extractor shards
 - Imports From Other Factories
-- Items Sent to Storage
+- Items Sent to Storage (under the goals: taken out of what it makes, so it makes at least that)
 - Objective Outputs (weighted; Power in MW for a power plant)
 - Exact, Minimum and Maximum Production Targets
 - Power Shards and Somersloops for its machines (Dive or Exact placement)

@@ -95,6 +95,7 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
     ki.type        = 'text';
     ki.placeholder = 'Item…';
     ki.value       = row.key ? itemName(row.key) : '';
+    if (row.key && !ALL_ITEMS.includes(row.key)) { ki.classList.add('ac-bad'); ki.title = 'Not an item — pick one from the list'; }
     ki.addEventListener('change', () => {
       const raw   = ki.value.trim().replace(/\s+/g, '_');
       const found = ALL_ITEMS.find(k =>
@@ -102,6 +103,10 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
         itemName(k).toLowerCase() === ki.value.trim().toLowerCase()
       );
       row.key = found || raw;
+      if (found) ki.value = itemName(found);
+      const bad = !!raw && !found;              // kept as typed, marked for you to fix
+      ki.classList.toggle('ac-bad', bad);
+      ki.title = bad ? 'Not an item — pick one from the list' : '';
       syncKv(name);
     });
     wrap.appendChild(ki);

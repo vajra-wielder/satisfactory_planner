@@ -520,7 +520,7 @@ function renderStorage() {
   }));
   const rows = Object.entries(items).sort((a, b) => b[1].total - a[1].total);
   if (!rows.length) {
-    el.innerHTML = '<p class="bb-hint">Nothing is stored yet — add "To storage" in a factory (Resources section).</p>';
+    el.innerHTML = '<p class="bb-hint">Nothing is stored yet — add "To storage" in a factory (under its Goals).</p>';
     return;
   }
   const max = rows[0][1].total;

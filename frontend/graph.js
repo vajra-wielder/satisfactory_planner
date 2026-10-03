@@ -526,7 +526,7 @@ export function initLayout({ keepView = false } = {}) {
     ...Object.entries(RESULT.error_sources         || {}).map(([i, r]) => ({ id: 'ERRSRC_' + i, type: 'errorsource', item: i, rate: r })),
   ];
   sinkDefs.forEach(({ id, type, item, rate }) => {
-    const related = (type === 'errorsource' ? consumers[item] : producers[item] || []).filter(k => posMap[k]);
+    const related = ((type === 'errorsource' ? consumers[item] : producers[item]) || []).filter(k => posMap[k]);
     let ty;
     if (related.length === 1) {
       const rn = posMap[related[0]]; ty = rn.y + rn.h / 2 - SRC_H / 2;
