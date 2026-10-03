@@ -424,7 +424,8 @@ export function pickOnMap(resource = null) {
   }));
   const pins = NODES.filter(n => n.at).map(n => ({ x: n.at[0], y: n.at[1], count: parseInt(n.count ?? 1, 10) || 1, shards: parseInt(n.shards, 10) || 0 }));
   openMapPicker({
-    resource, picked, shards, pins, taken: nodesTaken(), minerRate: MINER_TIERS[PROGRESS.miner], spare: spareOffers(),
+    // the nodes this factory has are its own, whatever it's saved under now
+    resource, picked, shards, pins, taken: Object.fromEntries(Object.entries(nodesTaken()).filter(([id]) => !picked.has(id))), minerRate: MINER_TIERS[PROGRESS.miner], spare: spareOffers(),
     onApply: (ids, sh, newPins, brought = []) => {
       // what's brought from other factories' unused nodes: their import rows here
       brought.forEach(b => {

@@ -44,7 +44,7 @@ let ZOOM = 1;
 let lastDpr = 1;
 
 // ── Scene ─────────────────────────────────────────────────
-let NODES   = [];  // {id, x, y, w, h, type, data, expanded, _hcache}
+let NODES   = [];  // {id, x, y, w, h, type, data, _hcache}
 let EDGES   = [];  // {src, tgt, item, rate, color, dashed, _path}
 let NODEMAP = {};  // id → node  (rebuilt each layout)
 let SPATGRID = null; // spatial hash
@@ -102,9 +102,6 @@ function nodeH(node) {
   const ioPart = (ins  > 0 ? DIV_H + ins  * IO_H : 0)
                + (outs > 0 ? DIV_H + outs * IO_H : 0);
   let h = HDR_H + STATS_H + ioPart + PAD_BOT;
-  if (node.expanded && f.layout_options?.length) {
-    h += 14 + f.layout_options.length * 28 + 16;
-  }
   node._hcache = h;
   node._hcache_exp_dirty = false;
   return h;
@@ -259,7 +256,7 @@ function collapseGroups(flows, groupOf, groups) {
       machines_final: members.reduce((s, f) => s + (f.machines_final || 0), 0),
       machines_float: members.reduce((s, f) => s + (f.machines_float || 0), 0),
       power_mw:       members.reduce((s, f) => s + (f.power_mw || 0), 0),
-      clock_pct: 100, hi_machines: 0, layout_options: [],
+      clock_pct: 100, hi_machines: 0,
       has_sloop: false, has_shard: false, inputs, outputs,
     });
   });
@@ -368,7 +365,7 @@ export function initLayout({ keepView = false } = {}) {
       let curY = top;
       layer.forEach(key => {
         const n = { id: key, x: colX(li), y: curY, w: NW, h: 0,
-                    type: 'recipe', data: flowMap[key], expanded: false };
+                    type: 'recipe', data: flowMap[key] };
         n.h = nodeH(n);
         NODES.push(n); posMap[key] = n;
         curY += n.h + YGAP;
@@ -1325,8 +1322,6 @@ function drawNode(n) {
     stat(shardLabel, '#3b82f6');
   }
   if (f.has_sloop) stat(`🔮${f.sloops_used} ×${(f.output_multiplier || 1).toFixed(2)}`, '#a855f7');
-  C.fillStyle = '#616880'; C.textAlign = 'right'; C.textBaseline = 'middle';
-  C.fillText(n.expanded ? '▲' : '▼', x + w - 7, cy + STATS_H / 2);
   C.textAlign = 'left'; C.textBaseline = 'alphabetic';
   cy += STATS_H;
 
@@ -1352,31 +1347,6 @@ function drawNode(n) {
   if (outs.length) {
     divider('Outputs' + (f.has_sloop ? ` ×${(f.output_multiplier || 1).toFixed(2)}` : ''));
     outs.forEach(([k, r]) => ioRow('→ ' + itemName(k), r, '#22c55e', k));
-  }
-
-  // Expanded layout options
-  if (n.expanded && f.layout_options?.length) {
-    C.strokeStyle = '#272d3d'; C.lineWidth = 0.5;
-    C.beginPath(); C.moveTo(x, cy); C.lineTo(x + w, cy); C.stroke();
-    cy += 4;
-    C.font = '9px Inter,sans-serif'; C.fillStyle = '#616880'; C.textBaseline = 'middle';
-    C.fillText('INTEGER LAYOUT OPTIONS', x + 10, cy + 7);
-    cy += 14; C.textBaseline = 'alphabetic';
-    f.layout_options.forEach(opt => {
-      // A layout option is "chosen" when its shard count and machine count match what the solver picked.
-      // Mixed layouts keep machines_final == ceil(LP) but use fewer shards than the all-or-nothing option.
-      const chosen = opt.shards_needed === f.shards_used && opt.machines === f.machines_final;
-      C.fillStyle = chosen ? 'rgba(245,158,11,.1)' : '#1f2435'; roundRectFill(x + 6, cy, w - 12, 24, 4);
-      C.strokeStyle = chosen ? '#f59e0b' : '#272d3d'; C.lineWidth = 0.5; roundRectStroke(x + 6, cy, w - 12, 24, 4);
-      C.font = '11px JetBrains Mono,monospace'; C.fillStyle = chosen ? '#f59e0b' : '#9aa0b4'; C.textBaseline = 'middle';
-      C.fillText(measureTrunc(opt.label, w - 72), x + 10, cy + 12);
-      C.fillStyle = '#fb923c'; C.textAlign = 'right';
-      C.fillText(`${opt.power_mw.toFixed(0)} MW`, x + w - 10, cy + 12);
-      C.textAlign = 'left'; C.textBaseline = 'alphabetic'; cy += 28;
-    });
-    C.font = '9px Inter,sans-serif'; C.fillStyle = '#616880'; C.textBaseline = 'middle';
-    C.fillText('Highlighted = chosen. Click to collapse.', x + 10, cy + 7);
-    cy += 12; C.textBaseline = 'alphabetic';
   }
 
   C.restore(); // end clip
@@ -1528,13 +1498,6 @@ export function initGraphEvents() {
     const node = hitNode(pos.x, pos.y);
     if (node && isFocusable(node)) {
       if (node.data?.isGroup) { toggleBand(node.data.groupId); return; }
-      if (node.type === 'recipe') {
-        node.expanded = !node.expanded;
-        node._hcache_exp_dirty = true;
-        node.h = nodeH(node);
-        buildSpatialHash();
-        cacheEdgePaths();
-      }
       centreOnNode(node.id);
     } else {
       // Double-clicking empty canvas or a faded node exits focus mode

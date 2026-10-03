@@ -123,6 +123,38 @@ try {
     assert.equal(await page.locator('#map-modal.show').count(), 0);
   });
 
+  await step('picking nodes for a factory that has some: the map opens on them; the wheel zooms in any units', async () => {
+    const all = (await api('/api/map-nodes')).nodes.filter(n => n.r === 'Coal' && !n.w);
+    // two neighbours, as a factory would mine
+    const pair = all.flatMap(a => all.filter(b => b.id > a.id).map(b => [a, b])).find(([a, b]) => Math.hypot(a.x - b.x, a.y - b.y) < 400 && Math.hypot(a.x - b.x, a.y - b.y) > 60);
+    const ids = pair.map(n => n.id);
+    await api('/api/scenarios/delta', { name: 'Delta', resource_nodes: [{ resource: 'Coal', extractor: 'Miner', nodes: ids }], objective: { Iron_Plate: 1 } });
+    await page.keyboard.press('Control+k'); await page.keyboard.type('delta'); await page.keyboard.press('Enter'); await sleep(800);
+    await page.keyboard.press('Control+m'); await page.waitForSelector('#mp-map [data-id]'); await sleep(400);
+    const box = await page.locator('#mp-map').boundingBox();
+    for (const id of ids) {                                   // both on screen, near the middle
+      const b = await page.locator(`#mp-map [data-id="${id}"]`).boundingBox();
+      assert.ok(b && b.x > box.x && b.x < box.x + box.width && b.y > box.y && b.y < box.y + box.height, `${id} on screen`);
+    }
+    assert.equal(await page.inputValue('#sc-name'), 'Delta');
+    assert.doesNotMatch(await page.locator('#mp-map .mp-level').innerText(), /Zoom in or pick/, 'zoomed in on them');
+    const apart = async () => {                               // the two nodes' distance on screen
+      const [a, b] = await Promise.all(ids.map(id => page.locator(`#mp-map [data-id="${id}"]`).boundingBox()));
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    const fitted = await apart();
+    await page.keyboard.press('0'); await sleep(100);                              // the whole map
+    const r0 = await apart();
+    assert.ok(fitted > r0 * 1.5, `opened zoomed in on them (${fitted.toFixed(0)} px apart vs ${r0.toFixed(0)} on the whole map)`);
+    // a mouse that reports lines, not pixels (Windows), still zooms a step a notch
+    await page.locator('#mp-map').dispatchEvent('wheel', { deltaY: -3, deltaMode: 1, clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
+    await page.locator('#mp-map').dispatchEvent('wheel', { deltaY: -3, deltaMode: 1, clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
+    await sleep(300);
+    const k = (await apart()) / r0;
+    assert.ok(k > 1.4 && k < 1.8, `two notches zoom about 1.6× (got ${k.toFixed(2)}×)`);
+    await page.keyboard.press('Escape');
+  });
+
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }
   await browser.close();
   console.log(failed ? `\n${failed} failed` : '\nall passed');

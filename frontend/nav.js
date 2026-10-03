@@ -139,10 +139,13 @@ export function openPalette() {
   PAL.sel = 0;
   renderPal();
   $('nav-pal-q').focus();
-  fetchScenarios().then(list => { PAL.factories = list; if (m.classList.contains('show')) renderPal(); }).catch(() => {});
+  PAL.loading = fetchScenarios().then(list => { PAL.factories = list; if (m.classList.contains('show')) renderPal(); })
+    .catch(() => {}).finally(() => { PAL.loading = null; });
 }
 function closePalette() { $('nav-pal')?.classList.remove('show'); }
 function runSel() {
+  // Enter before the factory list has come: wait for it, so a factory typed fast is found
+  if (PAL.loading) { PAL.loading.then(() => { renderPal(); runSel(); }); return; }
   const e = PAL.items[PAL.sel];
   if (!e) return;
   closePalette();

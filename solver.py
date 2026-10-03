@@ -130,11 +130,6 @@ class Scenario:
     machines_first: bool = False
 
 @dataclass
-class LayoutOption:
-    machines: int; clock_pct: float; shards_needed: int
-    power_mw: float; label: str
-
-@dataclass
 class FlowResult:
     recipe_key: str; display: str; machine: str
     machines_float: float
@@ -148,7 +143,6 @@ class FlowResult:
     power_mw: float
     inputs:  Dict[str,float]
     outputs: Dict[str,float]
-    layout_options: List[LayoutOption] = field(default_factory=list)
     has_shard: bool = False
     has_sloop: bool = False
     hi_machines: int = 0  # machines carrying shards
@@ -1366,16 +1360,6 @@ def _power_bound(usable: Dict[str, Recipe], var: Dict[Key, object]) -> Dict[Key,
     return out
 
 
-def _layout_label(groups: List[Tuple[int, float, int]]) -> str:
-    parts = []
-    for c, clk, s in groups:
-        t = f"{c} × {clk * 100:.1f}%"
-        if s:
-            t += f" ({s} shard{'s' if s > 1 else ''})"
-        parts.append(t)
-    return " + ".join(parts)
-
-
 def _layout_power(r: Recipe, level: int, groups: List[Tuple[int, float, int]]) -> float:
     # Generators (negative power) produce in proportion to their clock
     exp = 1.0 if r.base_power_mw < 0 else POWER_EXP
@@ -1388,30 +1372,6 @@ def _min_shards(q: float, n: int) -> Optional[int]:
     if q > n * MAX_CLOCK + 1e-9:
         return None
     return max(0, math.ceil(2.0 * (q - n) - 1e-6)) if q > n + 1e-9 else 0
-
-
-def _layout_options(r: Recipe, qv: float, level: int, chosen_n: int) -> List[LayoutOption]:
-    """
-    Integer layouts for this recipe: every machine count from ceil(q) (no
-    shards) down to the fewest machines 250% clocks allow, with the fewest
-    shards each needs. Always includes the chosen layout.
-    """
-    hi = math.ceil(qv - 1e-9)
-    lo = max(1, math.ceil(qv / MAX_CLOCK - 1e-9))
-    counts = list(range(hi, lo - 1, -1))
-    if len(counts) > 4:
-        counts = counts[:3] + [lo]
-    if chosen_n not in counts:
-        counts.append(chosen_n)
-    opts = []
-    for n in sorted(set(counts), reverse=True):
-        sh = _min_shards(qv, n)
-        if sh is None:
-            continue
-        g = _layout_groups(qv, n, sh)
-        opts.append(LayoutOption(n, round(max(c[1] for c in g) * 100, 1), sh,
-                                 round(_layout_power(r, level, g), 2), _layout_label(g)))
-    return opts
 
 
 # ── Main solve ────────────────────────────────────────────────────────────────
@@ -1589,9 +1549,6 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
             power_mw=round(pw, 2),
             inputs={item: round(r.inputs[item] * qv, 4) for item in r.inputs},
             outputs={item: round(r.outputs[item] * qv * mult, 4) for item in r.outputs},
-            # Integer layout alternatives only make sense for a single sloop group
-            layout_options=(_layout_options(r, qv, parts[0].level, n_k)
-                            if len(parts) == 1 else []),
             has_shard=sh_k > 0,
             has_sloop=sl_k > 0,
             hi_machines=sum(g["count"] for g in layout if g["shards"]),
@@ -2055,11 +2012,6 @@ def compute_build_cost(result: SolveResult, machine_meta: Dict) -> Dict[str,int]
 
 
 def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) -> dict:
-    def lo(o: Optional[LayoutOption]) -> Optional[dict]:
-        if o is None:
-            return None
-        return {"machines": o.machines, "clock_pct": o.clock_pct,
-                "shards_needed": o.shards_needed, "power_mw": o.power_mw, "label": o.label}
     return {
         "scenario_name":         scenario.name,
         "status":                result.status,
@@ -2110,7 +2062,6 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
             "power_mw":           f.power_mw,
             "inputs":             f.inputs,
             "outputs":            f.outputs,
-            "layout_options":     [lo(o) for o in f.layout_options],
             "has_shard":          f.has_shard,
             "has_sloop":          f.has_sloop,
             "hi_machines":        f.hi_machines,

@@ -188,15 +188,22 @@ function makeMap(el, M) {
     el.querySelector('.mp-level').textContent = ['Zoom in or pick one resource for purity', 'Zoom in more for names and owners', ''][lv];
   }
 
-  const zoomAt = (k, px = el.clientWidth / 2, py = el.clientHeight / 2) => {
+  // One redraw a frame, however many wheel or drag events come in
+  let queued = false;
+  const soon = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; draw(); }); } };
+  const zoomAt = (k, px = el.clientWidth / 2, py = el.clientHeight / 2, now = true) => {
     const v = M.view, ns = Math.min(Math.max(v.scale * k, (M.fitScale || 0.05) * 0.6), 3);
     v.ox = px - (px - v.ox) * ns / v.scale; v.oy = py - (py - v.oy) * ns / v.scale; v.scale = ns;
-    draw();
+    now ? draw() : soon();
   };
+  // The wheel zooms where the pointer is: a notch is a quarter, whatever the
+  // mouse reports (pixels, lines or pages); a touchpad's small steps add up
   el.addEventListener('wheel', e => {
     e.preventDefault();
+    if (!M.view) return;
+    const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
     const r = el.getBoundingClientRect();
-    zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
+    zoomAt(Math.exp(-Math.max(-300, Math.min(300, dy)) * 0.0023), e.clientX - r.left, e.clientY - r.top, false);
   }, { passive: false, ...on });
   el.addEventListener('dblclick', e => {
     if (e.target.closest('[data-id],[data-pin],[data-spare],.mp-zoom')) return;
@@ -242,7 +249,7 @@ function makeMap(el, M) {
       if (box) {
         rect.setAttribute('x', Math.min(x0, x)); rect.setAttribute('y', Math.min(y0, y));
         rect.setAttribute('width', Math.abs(x - x0)); rect.setAttribute('height', Math.abs(y - y0));
-      } else { M.view.ox = v0.ox + x - x0; M.view.oy = v0.oy + y - y0; draw(); }
+      } else { M.view.ox = v0.ox + x - x0; M.view.oy = v0.oy + y - y0; soon(); }
     };
     const up = ev => {
       window.removeEventListener('mousemove', move);
@@ -294,7 +301,23 @@ function makeMap(el, M) {
   }, on);
   // the game's map arrives in the background the first time
   document.addEventListener('map-picture', () => draw(), on);
-  return { draw, refit: () => { M.view = null; draw(); } };
+  // Fit the view to points (m), at least `min` metres across, with a margin
+  const fitTo = (pts, min = 900) => {
+    M.fitReq = pts; M.touched = false;     // refit as the map settles in size, until it's moved
+    if (!pts.length) { M.view = null; draw(); return; }
+    if (!M.view) fit();
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const bw = Math.max(min, Math.max(...xs) - Math.min(...xs)) * 1.35, bh = Math.max(min, Math.max(...ys) - Math.min(...ys)) * 1.35;
+    const w = el.clientWidth, h = el.clientHeight;
+    const scale = Math.min(3, Math.max(M.fitScale, Math.min(w / bw, h / bh)));
+    M.view = { scale, ox: w / 2 - cx * scale, oy: h / 2 - cy * scale };
+    draw();
+  };
+  new ResizeObserver(() => { if (M.fitReq && !M.touched && el.clientWidth) fitTo(M.fitReq); }).observe(el);
+  ['wheel', 'mousedown', 'dblclick'].forEach(t => el.addEventListener(t, () => { M.touched = true; }, on));
+  window.addEventListener('keydown', () => { if (el.offsetParent) M.touched = true; }, on);
+  return { draw, fitTo, refit: () => { M.view = null; draw(); } };
 }
 
 // Filter chips for a map
@@ -435,7 +458,12 @@ export function openMapPicker(opts) {
     const redraw = () => { M.map.draw(); renderSpare(); };
     chips($('mp-filters'), M, redraw, PICKABLE);
     tools($('mp-tools'), redraw);
-    requestAnimationFrame(() => { M.map.refit(); renderList(); });
+    // A factory with nodes already: open on them, not the whole map
+    requestAnimationFrame(() => {
+      const pts = [...[...M.picked].map(id => BY[id]).filter(Boolean).map(n => [n.x, n.y]), ...M.pins.map(p => [p.x, p.y])];
+      M.map.fitTo(pts);
+      renderList();
+    });
   });
 }
 
