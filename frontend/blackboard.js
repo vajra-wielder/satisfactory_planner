@@ -704,6 +704,12 @@ function renderMapTab() {
   fetchFactoryOutputs().then(o => mountMapView(el, {
     owners: o.nodes || {}, factories: o.factories.map(f => ({ key: f.key, name: f.name })),
     pins: o.pins || [], onOpen: onOpenFactory,
+    // what each factory's nodes give that its plan doesn't use, less what others already take of it
+    spare: o.factories.flatMap(f => Object.entries(f.spare || {}).map(([item, v]) => {
+      const taken = Object.entries(o.claims[f.key]?.[item] || {}).reduce((a, [k, r]) => a + (k === f.key ? 0 : r), 0);
+      return { factory: f.key, name: f.name, item, left: Math.max(0, Math.min(v, f.made[item] ?? v) - taken), stale: f.stale,
+               ids: Object.entries(o.nodes || {}).filter(([, k]) => k === f.key).map(([id]) => id) };
+    })),
     // the grid's geothermal generators: saved with the board, at once
     grid: LAYOUT.geysers || [],
     onGrid: ids => { LAYOUT.geysers = ids; BUILD = null; saveNow(); },

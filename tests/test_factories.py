@@ -109,6 +109,38 @@ class Claims(_Temp):
         self.assertEqual(server._owed_short(plan, {"Iron_Ore": 120.0}, {"Iron_Ore": 300}), {"Iron_Ore": 20.0})
 
 
+class Spare(_Temp):
+    def test_unused_node_supply_can_be_taken_nearby(self):
+        ids = [k for k, v in supply.map_nodes().items() if v["r"] == "Iron_Ore" and not v.get("w")][:2]
+        src = self.save("src", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 300},
+                                               {"resource": "Water", "extractor": "fixed", "rate": 500}],
+                        unlimited_resources=["Water"], objective={"Iron_Ingot": 1}, max_produce={"Iron_Ingot": 100})
+        plan = {"flows": [{"machine": "Smelter", "inputs": {"Iron_Ore": 100.0}, "outputs": {"Iron_Ingot": 100.0}}],
+                "sink_nodes": {"Iron_Ingot": 100.0}, "status": "Optimal"}
+        self.plan("src", plan, src)
+        out = server._factory_outputs()
+        f = next(x for x in out["factories"] if x["key"] == "src")
+        self.assertEqual(f["spare"], {"Iron_Ore": 200.0})            # water is unlimited: not spare
+        self.assertEqual(f["made"]["Iron_Ore"], 200.0)
+        # a factory nearby takes it — no more than is spare
+        b = {"name": "b", "resource_nodes": [], "from_factories": [{"item": "Iron_Ore", "factory": "src", "rate": 250}]}
+        cut = server._hold_claims("b", b)
+        self.assertEqual(b["from_factories"][0]["rate"], 200.0)
+        self.assertEqual(cut[0]["kind"], "import")
+        self.save("b", **{k: v for k, v in b.items() if k != "name"})
+        # the source's plan still stands: it uses 100 of the 300 and sends 200 on
+        _, res = server._factory_plan("src")
+        self.assertIsNotNone(res)
+        self.assertEqual(server._owed("src", server._claims(server._scenario_files()), server._build_scenario(src)),
+                         {"Iron_Ore": 200.0})
+        # where a factory is: the middle of its nodes
+        w = self.save("w", resource_nodes=[{"resource": "Iron_Ore", "extractor": "Miner", "nodes": ids}])
+        known = supply.map_nodes()
+        self.assertEqual(server._where(w), [round((known[ids[0]]["x"] + known[ids[1]]["x"]) / 2),
+                                           round((known[ids[0]]["y"] + known[ids[1]]["y"]) / 2)])
+        self.assertIsNone(server._where(src))
+
+
 class Chain(_Temp):
     def test_sources_first(self):
         self.save("c", from_factories=[{"item": "X", "factory": "b", "rate": 1}])

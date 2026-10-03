@@ -20,6 +20,11 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   (0–3 each, +50% clock per shard) decide how much comes out; "Spread" puts a
   number of shards where they add the most. Water extractors are pins you drop where there's water. A fixed
   rate covers anything else
+- Unused node supply: what a factory's own nodes give that its plan doesn't
+  use is offered to the others. Picking nodes on the map, another factory's
+  nodes show "+230 unused"; click the tag (or set an amount in "Unused nearby",
+  nearest first) to bring some of it over as an import — the rest stays
+  theirs. Its plan holds: what's sent on comes off its own supply
 - Your save: read a .sav (Machines & Alts, or the map) to mark the nodes your
   game already mines, on the map and on the Blackboard's Map tab, so you can
   plan which to take next — and to see what it has unlocked (alternates,
@@ -263,6 +268,7 @@ node --test tests/*.test.mjs                # belt splits, Blackboard bands
 node tests/sidebar.e2e.mjs                  # every input saved and reloaded, the outputs (browser; needs Playwright)
 node tests/blackboard.e2e.mjs               # every Blackboard tab (browser; needs Playwright)
 node tests/nav.e2e.mjs                      # getting around: palette, systems, shortcuts, map keys (browser)
+node tests/spare.e2e.mjs                    # unused node supply, brought to a factory nearby (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```

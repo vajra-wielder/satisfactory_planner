@@ -107,6 +107,24 @@ function makeMap(el, M) {
       width: `${bw * M.view.scale}px`, height: `${bh * M.view.scale}px`, opacity: IMG.opacity });
   }
 
+  // What a factory's nodes give that its plan doesn't use: a tag on its nodes
+  // of that resource ("+230 unused"); in the picker, click it to bring it here
+  function spareTags() {
+    let out = '';
+    (M.spare || []).forEach((sp, i) => {
+      if (!M.filter.has(sp.item) || !(sp.left > 0.05)) return;
+      const ns = sp.ids.map(id => BY[id]).filter(Boolean);
+      if (!ns.length) return;
+      const x = sx(ns.reduce((a, n) => a + n.x, 0) / ns.length), y = sy(Math.min(...ns.map(n => n.y))) - 16;
+      if (x < -80 || y < -30 || x > el.clientWidth + 80 || y > el.clientHeight + 30) return;
+      const t = sp.bring > 0 ? `→ ${fmt(sp.bring)} of ${fmt(sp.left)} here` : `+${fmt(sp.left)}${sp.fluid ? ' m³' : ''} unused`;
+      const w = t.length * 6.3 + 14;
+      out += `<g data-spare="${i}" class="mp-spare ${sp.bring > 0 ? 'on' : ''} ${M.onSpare ? 'act' : ''}">
+        <rect x="${x - w / 2}" y="${y - 9}" width="${w}" height="18" rx="9"/><text x="${x}" y="${y + 4}">${t}</text></g>`;
+    });
+    return out;
+  }
+
   function draw() {
     if (!M.view) fit();
     const w = el.clientWidth, h = el.clientHeight;
@@ -156,7 +174,7 @@ function makeMap(el, M) {
         <text x="${x}" y="${y + 3.5}" text-anchor="middle">${p.count}</text></g>`;
       if (lv === 2 && p.label) labels += `<text class="mp-lbl" x="${x + 10}" y="${y + 3.5}">${p.count} water extractor${p.count > 1 ? 's' : ''} · ${p.label}</text>`;
     });
-    svg.innerHTML = g + labels;
+    svg.innerHTML = g + labels + spareTags(lv);
     el.querySelector('.mp-level').textContent = ['Zoom in or pick one resource for purity', 'Zoom in more for names and owners', ''][lv];
   }
 
@@ -171,7 +189,7 @@ function makeMap(el, M) {
     zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
   }, { passive: false, ...on });
   el.addEventListener('dblclick', e => {
-    if (e.target.closest('[data-id],[data-pin],.mp-zoom')) return;
+    if (e.target.closest('[data-id],[data-pin],[data-spare],.mp-zoom')) return;
     const r = el.getBoundingClientRect();
     zoomAt(e.shiftKey ? 0.5 : 2, e.clientX - r.left, e.clientY - r.top);
   }, on);
@@ -198,7 +216,7 @@ function makeMap(el, M) {
   }, on);
   el.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
-    if (e.target.closest('[data-id],[data-pin]') && !e.shiftKey) return;   // clicks handled on click
+    if (e.target.closest('[data-id],[data-pin],[data-spare]') && !e.shiftKey) return;   // clicks handled on click
     e.preventDefault();
     const r = el.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY - r.top;
     const v0 = { ...M.view }, box = e.shiftKey && M.onBox;
@@ -232,16 +250,22 @@ function makeMap(el, M) {
   }, on);
   el.addEventListener('click', e => {
     if (e.shiftKey) return;
+    const tag = e.target.closest('[data-spare]');
+    if (tag) { M.onSpare?.(+tag.dataset.spare); return; }
     const pin = e.target.closest('[data-pin]');
     if (pin && M.onPinClick) { M.onPinClick(+pin.dataset.pin); return; }
     const hit = e.target.closest('[data-id]');
     if (hit && M.onClick && !M.taken?.[hit.dataset.id]) M.onClick(hit.dataset.id);
   }, on);
   el.addEventListener('mousemove', e => {
-    const hit = e.target.closest('[data-id]'), pin = e.target.closest('[data-pin]');
-    if (!hit && !pin) { tip.style.display = 'none'; return; }
+    const hit = e.target.closest('[data-id]'), pin = e.target.closest('[data-pin]'), tag = e.target.closest('[data-spare]');
+    if (!hit && !pin && !tag) { tip.style.display = 'none'; return; }
     const r = el.getBoundingClientRect();
-    if (pin) {
+    if (tag) {
+      const sp = M.spare[+tag.dataset.spare];
+      tip.innerHTML = `<b>${sp.name}</b> leaves ${fmt(sp.left)}/min of ${nameOf(sp.item)} unused${sp.stale ? '<br><span class="n-warn">its plan is out of date</span>' : ''}
+        ${M.onSpare ? `<br><span>${sp.bring > 0 ? 'Click to leave it there' : 'Click to bring it here — as an import'}</span>` : ''}`;
+    } else if (pin) {
       const p = M.pins[+pin.dataset.pin];
       tip.innerHTML = `<b>${p.count} water extractor${p.count > 1 ? 's' : ''}</b>${p.label ? `<br><span>${p.label}</span>` : ''}`;
     } else {
@@ -249,6 +273,8 @@ function makeMap(el, M) {
       tip.innerHTML = `<b>${nameOf(n.r)}</b> · ${n.p}${n.w ? ' · well satellite' : ''}${n.r === 'Geyser' ? ` · ~${GEO_MW[n.p]} MW` : ''}<br>
         <span>${fmt(n.x)}, ${fmt(n.y)} m</span>${SAVE.has(n.id) ? '<br><span class="mp-save-t">mined in your save</span>' : ''}
         ${M.taken?.[n.id] ? `<br><span class="n-warn">mined by ${M.taken[n.id]}</span>` : ''}
+        ${(M.spare || []).filter(sp => sp.item === n.r && sp.ids.includes(n.id) && sp.left > 0.05)
+          .map(sp => `<br><span class="mp-spare-t">${fmt(sp.left)}/min of it unused there</span>`).join('')}
         ${M.owner?.[n.id] ? `<br><span>${M.ownerName(M.owner[n.id])}</span>` : ''}
         ${M.grid?.has(n.id) ? '<br><span class="mp-save-t">⚡ geothermal generator on the grid</span>' : ''}`;
     }
@@ -344,6 +370,7 @@ let S = null;   // the open picker
 export function openMapPicker(opts) {
   loadMap().then(() => {
     S = { ...opts, picked: new Set(opts.picked), shards: { ...opts.shards }, pins: (opts.pins || []).map(p => ({ ...p })),
+          spare: (opts.spare || []).map(sp => ({ ...sp, bring: sp.mine || 0, ids: sp.ids.filter(id => BY[id]?.r === sp.item) })),
           filter: opts.resource && PICKABLE.includes(opts.resource) ? new Set([opts.resource]) : new Set(PICKABLE),
           pinMode: false };
     let m = $('map-modal');
@@ -368,12 +395,16 @@ export function openMapPicker(opts) {
               <div class="mp-spread">⚡ Spread <input type="number" id="mp-spread-n" min="0" step="1" placeholder="0"/>
                 shards <button class="bsm" id="mp-spread">spread</button></div>
               <div id="mp-list"></div>
+              <div id="mp-spare"></div>
             </div>
           </div>
         </div>`;
       document.body.appendChild(m);
       $('mp-cancel').addEventListener('click', close);
-      $('mp-apply').addEventListener('click', () => { S.onApply(S.picked, S.shards, S.pins); close(); });
+      $('mp-apply').addEventListener('click', () => {
+        S.onApply(S.picked, S.shards, S.pins, S.spare.map(sp => ({ factory: sp.factory, item: sp.item, rate: sp.bring || 0 })));
+        close();
+      });
       $('mp-spread').addEventListener('click', () => { spread(parseInt($('mp-spread-n').value, 10) || 0); S.map.draw(); renderList(); });
       $('mp-pin').addEventListener('click', () => {
         S.pinMode = !S.pinMode;
@@ -388,8 +419,10 @@ export function openMapPicker(opts) {
     M.onBox = ids => { ids.forEach(id => M.picked.add(id)); M.map.draw(); renderList(); };
     M.onPin = (x, y) => { if (!M.pinMode) return; M.pins.push({ x, y, count: 1, shards: 0 }); M.map.draw(); renderList(); };
     M.onPinClick = i => { if (M.pinMode) { M.pins.splice(i, 1); M.map.draw(); renderList(); } };
+    // a tag on another factory's nodes: bring what it leaves unused here, or leave it
+    M.onSpare = i => { const sp = M.spare[i]; sp.bring = sp.bring > 0 ? 0 : sp.left; M.map.draw(); renderList(); };
     M.map = makeMap($('mp-map'), M);
-    const redraw = () => M.map.draw();
+    const redraw = () => { M.map.draw(); renderSpare(); };
     chips($('mp-filters'), M, redraw, PICKABLE);
     tools($('mp-tools'), redraw);
     requestAnimationFrame(() => { M.map.refit(); renderList(); });
@@ -438,7 +471,44 @@ function spread(budget) {
   }
 }
 
+// Where this factory is: the middle of the nodes and pins it has picked
+function here() {
+  const pts = [...[...S.picked].map(id => BY[id]).filter(Boolean).map(n => [n.x, n.y]), ...S.pins.map(p => [p.x, p.y])];
+  return pts.length ? [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length] : null;
+}
+
+// What other factories' nodes give that their plans don't use: bring some here
+function renderSpare() {
+  const el = $('mp-spare');
+  const list = S.spare.filter(sp => sp.left > 0.05 || sp.bring > 0);
+  if (!list.length) { el.innerHTML = ''; return; }
+  const at = here();
+  const dist = sp => {
+    const ns = sp.ids.map(id => BY[id]).filter(Boolean);
+    if (!at || !ns.length) return null;
+    return Math.hypot(ns.reduce((a, n) => a + n.x, 0) / ns.length - at[0], ns.reduce((a, n) => a + n.y, 0) / ns.length - at[1]);
+  };
+  const rows = list.map((sp, k) => ({ sp, i: S.spare.indexOf(sp), d: dist(sp) }))
+    .sort((a, b) => (a.d ?? 1e9) - (b.d ?? 1e9) || b.sp.left - a.sp.left);
+  el.innerHTML = `<div class="n-sent-t">Unused nearby</div>
+    <p class="n-hint">What other factories' nodes give that their plans don't use. Bring some here as an import; what you leave stays theirs.</p>`
+    + rows.map(({ sp, i, d }) => `<div class="mp-u mp-su ${S.filter.has(sp.item) ? '' : 'dim'}" data-s="${i}">
+        <i style="background:${COLORS[sp.item] || '#888'}"></i>
+        <span>${nameOf(sp.item)} · ${sp.name}<br><span class="n-hint">${fmt(sp.left)}/min unused${d != null ? ` · ${d >= 1000 ? (d / 1000).toFixed(1) + ' km' : Math.round(d) + ' m'} away` : ''}${sp.stale ? ' · its plan is out of date' : ''}</span></span>
+        <input type="number" class="mp-bring" min="0" max="${sp.left}" step="any" value="${sp.bring > 0 ? +sp.bring.toFixed(3) : ''}" placeholder="0" title="How much to bring here, per minute"/>
+        <button class="bsm ${sp.bring > 0 ? 'act' : ''}" title="${sp.bring > 0 ? 'Leave it there' : 'Bring all of it'}">${sp.bring > 0 ? '✓' : 'all'}</button></div>`).join('');
+  el.querySelectorAll('.mp-su').forEach(row => {
+    const sp = S.spare[+row.dataset.s];
+    const inp = row.querySelector('.mp-bring');
+    inp.addEventListener('change', () => { sp.bring = Math.min(sp.left, Math.max(0, parseFloat(inp.value) || 0)); S.map.draw(); renderSpare(); });
+    row.querySelector('button').addEventListener('click', () => { sp.bring = sp.bring > 0 ? 0 : sp.left; S.map.draw(); renderSpare(); });
+    row.addEventListener('mouseenter', () => sp.ids.forEach(id => $('mp-map').querySelector(`[data-id="${id}"]`)?.classList.add('hl')));
+    row.addEventListener('mouseleave', () => $('mp-map').querySelectorAll('.hl').forEach(x => x.classList.remove('hl')));
+  });
+}
+
 function renderList() {
+  renderSpare();
   const us = units(), el = $('mp-list');
   if (!us.length) { el.innerHTML = '<p class="n-hint">No nodes picked yet.</p>'; return; }
   const tot = {};
@@ -476,7 +546,7 @@ function renderList() {
 /** el: the container. owners: {node id: factory key}; factories: [{key, name}];
  *  pins: [{x, y, count, factory}]; grid: geyser ids with the grid's geothermal
  *  generators; onGrid(ids) when they change; onOpen(key). */
-export function mountMapView(el, { owners, factories, pins, grid = [], onGrid = () => {}, onOpen }) {
+export function mountMapView(el, { owners, factories, pins, grid = [], spare = [], onGrid = () => {}, onOpen }) {
   return loadMap().then(() => {
     const color = {};
     factories.forEach((f, i) => { color[f.key] = FACTORY_COLORS[i % FACTORY_COLORS.length]; });
@@ -485,7 +555,8 @@ export function mountMapView(el, { owners, factories, pins, grid = [], onGrid = 
       <div class="mp-main"><div class="mp-view"></div><div class="mp-side mp-legend"></div></div>`;
     const M = { filter: new Set(Object.keys(COLORS)), owner: owners, ownerColor: k => color[k] || '#fff', ownerName: name,
                 pins: pins.map(p => ({ ...p, color: color[p.factory], label: name(p.factory), mine: true })),
-                grid: new Set(grid), geoMode: false };
+                grid: new Set(grid), geoMode: false,
+                spare: spare.map(sp => ({ ...sp, ids: sp.ids.filter(id => BY[id]?.r === sp.item) })) };
     const setGrid = ids => { M.grid = new Set(ids); onGrid([...M.grid].sort()); redraw(); };
     // In geothermal mode a click on a geyser puts a generator on it (or takes it off)
     M.onClick = id => {
@@ -512,6 +583,10 @@ export function mountMapView(el, { owners, factories, pins, grid = [], onGrid = 
           <p class="n-hint">On average — a geyser swings between ½× and 1½×: ${fmt(mw / 2)}–${fmt(mw * 1.5)} MW.</p>`
           : '<p class="n-hint">No geothermal generators yet — ⚡ Geothermal, then click geysers.</p>'}
         ${saved.length ? `<button class="bsm" id="mp-geo-save">⚡ Add the ${saved.length} in your save</button>` : ''}
+        ${M.spare.some(sp => sp.left > 0.05) ? `<div class="n-sent-t" style="margin-top:10px">Unused at factories</div>
+          ${M.spare.filter(sp => sp.left > 0.05).sort((a, b) => b.left - a.left).map(sp => `<div class="mp-lg"><i style="background:${COLORS[sp.item] || '#888'};border:none"></i>
+            <span>${nameOf(sp.item)} · <span class="bb-name" data-key="${sp.factory}" style="font-weight:400">${sp.name}</span></span><b>+${fmt(sp.left)}</b></div>`).join('')}
+          <p class="n-hint">Bring it to a factory nearby: Pick on map there, or import it.</p>` : ''}
         <div class="n-sent-t" style="margin-top:10px">Factories</div>
         ${factories.filter(f => count[f.key]).map(f => `<div class="mp-lg"><i style="border-color:${color[f.key]}"></i>
           <span class="bb-name" data-key="${f.key}" style="font-weight:400">${f.name}</span><b>${count[f.key]}</b></div>`).join('')

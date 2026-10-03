@@ -178,6 +178,24 @@ const madeItems = () => {
   return [...s].sort((a, b) => itemName(a).localeCompare(itemName(b)));
 };
 const ownItems = () => Object.keys(ownMade()).filter(i => i !== 'Power').sort((a, b) => itemName(a).localeCompare(itemName(b)));
+// What other factories' own nodes give that their plans don't use, with what's
+// still free of it (others' imports off) and what this factory brings already
+function spareOffers() {
+  const out = [];
+  (OUTPUTS?.factories || []).forEach(f => {
+    if (f.key === ownKey()) return;
+    Object.keys(f.spare || {}).forEach(item => {
+      const o = offer(f.key, item);
+      if (!o) return;
+      const mine = FROM.filter(r => r.factory === f.key && r.item === item).reduce((a, r) => a + (parseFloat(r.rate) || 0), 0);
+      const ids = Object.entries(OUTPUTS.nodes || {}).filter(([, k]) => k === f.key).map(([id]) => id);   // the map keeps its own of `item`
+      // what's free for this factory: what's left once the others take theirs (its own rows count back in)
+      out.push({ factory: f.key, name: f.name, item, left: o.left + mine, mine, ids, stale: f.stale });
+    });
+  });
+  return out;
+}
+
 // Map nodes other factories mine: id → factory name
 const nodesTaken = () => Object.fromEntries(Object.entries(OUTPUTS?.nodes || {})
   .filter(([, k]) => k !== ownKey()).map(([id, k]) => [id, facName(k)]));
@@ -396,8 +414,17 @@ export function pickOnMap(resource = null) {
   }));
   const pins = NODES.filter(n => n.at).map(n => ({ x: n.at[0], y: n.at[1], count: parseInt(n.count ?? 1, 10) || 1, shards: parseInt(n.shards, 10) || 0 }));
   openMapPicker({
-    resource, picked, shards, pins, taken: nodesTaken(), minerRate: MINER_TIERS[PROGRESS.miner],
-    onApply: (ids, sh, newPins) => {
+    resource, picked, shards, pins, taken: nodesTaken(), minerRate: MINER_TIERS[PROGRESS.miner], spare: spareOffers(),
+    onApply: (ids, sh, newPins, brought = []) => {
+      // what's brought from other factories' unused nodes: their import rows here
+      brought.forEach(b => {
+        const rows = FROM.filter(r => r.factory === b.factory && r.item === b.item);
+        if (b.rate > 1e-6) {
+          if (rows.length) { rows[0].rate = down(b.rate); rows.slice(1).forEach(r => FROM.splice(FROM.indexOf(r), 1)); }
+          else FROM.push({ item: b.item, factory: b.factory, rate: down(b.rate) });
+        } else rows.forEach(r => FROM.splice(FROM.indexOf(r), 1));
+      });
+      if (brought.length) renderFrom();
       const kept = NODES.filter(n => !n.nodes?.length && !n.at);
       const byRes = {}, wells = {}, geysers = [];
       [...ids].forEach(id => {

@@ -546,7 +546,7 @@ def _blackboard_factories() -> list:
     out = []
     for key, data, result in saved:
         io = logistics.factory_io(data, result)
-        out.append({"key": key, "name": data.get("name", key), **io,
+        out.append({"key": key, "name": data.get("name", key), **io, "at": _where(data),
                     "sources": [f for f in data.get("from_factories") or [] if f.get("factory")],
                     "storage": {t["item"]: float(t.get("rate") or 0) for t in data.get("to_storage") or [] if t.get("item")},
                     "taken": {it: round(sum(by.values()), 3) for it, by in claims.get(key, {}).items()},
@@ -564,9 +564,12 @@ def _factory_outputs() -> dict:
     for key, data, result in saved:
         io = logistics.factory_io(data, result and {k: v for k, v in result.items() if k != "_stale"})
         # power goes over the grid, not to another factory or into storage
-        made[key] = {it: r for it, r in {**io["surplus"], **io["exports"]}.items() if r and it != "Power"}
+        # what others can take: its goals, its surplus, and what its nodes give that it doesn't use
+        made[key] = {it: r for it, r in {**io["spare"], **io["surplus"], **io["exports"]}.items() if r and it != "Power"}
         facs.append({"key": key, "name": data.get("name", key), "solved": io["solved"],
-                     "stale": bool(result and result.get("_stale")), "made": made[key]})
+                     "stale": bool(result and result.get("_stale")), "made": made[key],
+                     "spare": io["spare"], "at": _where(data),
+                     "uses": sorted(k for k in supply.available(data) if k in logistics._NODE)})
         for i in supply.nodes_of(data):
             nodes[i] = key
     alerts: dict = {}
@@ -585,6 +588,16 @@ def _factory_outputs() -> dict:
     pins = [{"x": n["at"][0], "y": n["at"][1], "count": int(n.get("count") or 1), "factory": key}
             for key, data, _ in saved for n in data.get("resource_nodes") or [] if n.get("at")]
     return {"factories": facs, "claims": claims, "nodes": nodes, "alerts": alerts, "pins": pins}
+
+def _where(data: dict):
+    """Where a factory is: the middle of the nodes it mines and its pins (m), or None."""
+    known = supply.map_nodes()
+    pts = [(known[i]["x"], known[i]["y"]) for i in supply.nodes_of(data) if i in known]
+    pts += [(float(n["at"][0]), float(n["at"][1])) for n in data.get("resource_nodes") or []
+            if isinstance(n.get("at"), (list, tuple)) and len(n["at"]) == 2]
+    if not pts:
+        return None
+    return [round(sum(p[0] for p in pts) / len(pts)), round(sum(p[1] for p in pts) / len(pts))]
 
 def _grid() -> dict:
     """The power grid's own geothermal generators (on the Blackboard's map):
