@@ -30,6 +30,11 @@ const COLORS = {
 const CAP = { Miner: 1200, Oil_Extractor: 600, Water_Extractor: 600 };
 const GEO_MW = { impure: 100, normal: 200, pure: 400 };
 const FACTORY_COLORS = ['#f59e0b', '#22c55e', '#38bdf8', '#f472b6', '#a78bfa', '#ef4444', '#14b8a6', '#eab308', '#fb923c', '#84cc16'];
+// Labels up close: the bubble already says the purity, so just a short name (none
+// when only one resource is shown) and whose it is
+const SHORT = { Iron_Ore: 'Iron', Copper_Ore: 'Copper', Caterium_Ore: 'Caterium', Raw_Quartz: 'Quartz', Uranium_Ore: 'Uranium',
+  Crude_Oil: 'Oil', Nitrogen_Gas: 'Nitrogen', Limestone: 'Lime' };
+const shortOf = r => SHORT[r] || nameOf(r);
 const DARK = new Set(['Coal', 'Crude_Oil', 'Bauxite', 'SAM', 'Copper_Ore']);   // purity letters in white on these
 const nameOf = r => (r === 'Geyser' ? 'Geyser' : itemName(r));
 // What a factory mines; geysers' generators go on the grid (the Blackboard's map)
@@ -146,9 +151,10 @@ function makeMap(el, M) {
       const cx = list.reduce((s, n) => s + n.x, 0) / list.length, cy = list.reduce((s, n) => s + n.y, 0) / list.length;
       const rad = Math.max(...list.map(n => Math.hypot(n.x - cx, n.y - cy))) * M.view.scale + 10;
       g += `<circle class="mp-well" cx="${sx(cx)}" cy="${sy(cy)}" r="${rad}"/>`;
-      if (lv === 2) labels += `<text class="mp-lbl" x="${sx(cx)}" y="${sy(cy) - rad - 5}" text-anchor="middle">${nameOf(list[0].r)} well · ${list.length} satellites</text>`;
+      if (lv === 2) labels += `<text class="mp-lbl" x="${sx(cx)}" y="${sy(cy) - rad - 5}" text-anchor="middle">${M.filter.size > 1 ? shortOf(list[0].r) + ' ' : ''}well ×${list.length}</text>`;
     });
     const order = { impure: 0, normal: 1, pure: 2 };
+    const placed = [];
     [...MAP].filter(n => M.filter.has(n.r)).sort((a, b) => order[a.p] - order[b.p]).forEach(n => {
       const x = sx(n.x), y = sy(n.y);
       if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
@@ -163,16 +169,20 @@ function makeMap(el, M) {
         ${M.grid?.has(n.id) ? `<text x="${x}" y="${y + 3.5}" class="mp-bolt">⚡</text>` : ''}
         ${taken ? `<path d="M${x - r} ${y - r}L${x + r} ${y + r}M${x + r} ${y - r}L${x - r} ${y + r}" class="mp-x"/>` : ''}</g>`;
       if (lv === 2 && !n.w) {
-        const who = taken ? `mined by ${taken}` : own ? M.ownerName(own) : M.grid?.has(n.id) ? '⚡ on the grid' : SAVE.has(n.id) ? 'in your save' : '';
-        labels += `<text class="mp-lbl" x="${x + r + 4}" y="${y - (who ? 1 : -3.5)}">${nameOf(n.r)} · ${n.p}${n.r === 'Geyser' ? ` · ${GEO_MW[n.p]} MW` : ''}</text>`
-          + (who ? `<text class="mp-lbl sub" x="${x + r + 4}" y="${y + 10}">${who}</text>` : '');
+        let who = taken || (own ? M.ownerName(own) : M.grid?.has(n.id) ? '⚡ grid' : SAVE.has(n.id) ? 'in save' : '');
+        // whose it is, once per cluster: not again for a node of the same one close by
+        if (who && placed.some(q => q.who === who && Math.hypot(q.x - x, q.y - y) < 70)) who = '';
+        else if (who) placed.push({ who, x, y });
+        const what = [M.filter.size > 1 ? shortOf(n.r) : '', n.r === 'Geyser' ? `${GEO_MW[n.p]} MW` : ''].filter(Boolean).join(' ');
+        if (what) labels += `<text class="mp-lbl" x="${x + r + 3}" y="${y - (who ? 1 : -3.5)}">${what}</text>`;
+        if (who) labels += `<text class="mp-lbl sub" x="${x + r + 3}" y="${what ? y + 10 : y + 3.5}">${who}</text>`;
       }
     });
     (M.pins || []).forEach((p, i) => {
       const x = sx(p.x), y = sy(p.y), c = p.color || COLORS.Water;
       g += `<g data-pin="${i}" class="mp-pin"><rect x="${x - 7}" y="${y - 7}" width="14" height="14" rx="3" fill="${c}" stroke="${p.mine === false ? 'none' : '#fff'}" stroke-width="1.5"/>
         <text x="${x}" y="${y + 3.5}" text-anchor="middle">${p.count}</text></g>`;
-      if (lv === 2 && p.label) labels += `<text class="mp-lbl" x="${x + 10}" y="${y + 3.5}">${p.count} water extractor${p.count > 1 ? 's' : ''} · ${p.label}</text>`;
+      if (lv === 2 && p.label) labels += `<text class="mp-lbl" x="${x + 10}" y="${y + 3.5}">${p.label}</text>`;
     });
     svg.innerHTML = g + labels + spareTags(lv);
     el.querySelector('.mp-level').textContent = ['Zoom in or pick one resource for purity', 'Zoom in more for names and owners', ''][lv];
