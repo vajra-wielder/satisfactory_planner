@@ -40,4 +40,8 @@ def check(sc, r):
                 errs.append(f"slots {f.recipe_key}")
         if "sloops" in lay[0] and sum(g["count"] * g["sloops"] for g in lay) != f.sloops_used:
             errs.append(f"sloopsum {f.recipe_key}")
+    # no ghost leftovers: a byproduct or surplus shown is never a rounding crumb
+    for k, v in {**r.error_sinks, **r.surplus_intermediates}.items():
+        if v < 0.005:
+            errs.append(f"crumb {k} {v}")
     return errs

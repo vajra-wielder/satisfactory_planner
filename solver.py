@@ -294,6 +294,9 @@ def _output_mult(r: Recipe, spm_val: int) -> float:
 # ── Unlimited resources ───────────────────────────────────────────────────────
 _UNLIMITED = 1e9   # supply used for resources marked unlimited (never binding)
 
+_CRUMB = 0.005   # per minute: less than this left over is rounding, not a surplus
+
+
 def _with_unlimited(scenario: Scenario) -> Scenario:
     """Scenario whose unlimited resources get a supply that can never bind."""
     if not scenario.unlimited_resources:
@@ -1622,7 +1625,10 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
         produced = item_produced.get(item, 0.0)
         consumed = item_consumed.get(item, 0.0)
         net = supply + produced - consumed
-        if abs(net) > 1e-4:
+        # Rounding (each flow to 4 places) and the solver's tolerance leave
+        # crumbs: under 0.005/min, or a millionth-scale share of what flows,
+        # it's nothing — never a "0.00" byproduct
+        if abs(net) > max(_CRUMB, 1e-5 * max(supply, produced, consumed)):
             net_items[item] = round(net, 4)
         if supply > 0 and consumed > 1e-5:
             source_nodes[item] = supply

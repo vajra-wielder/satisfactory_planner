@@ -79,7 +79,7 @@ def spare_supply(scenario: dict, result: dict) -> Dict[str, float]:
         if k not in _NODE or k in unlimited or v <= 0:   # only what's mined or pumped
             continue
         left = v - used.get(k, 0.0)
-        if left > max(1e-3, v * 1e-6):
+        if left > max(0.005, v * 1e-5):          # not a rounding crumb (solver._CRUMB)
             out[k] = round(left, 3)
     return out
 
