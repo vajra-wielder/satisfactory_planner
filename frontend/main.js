@@ -44,6 +44,7 @@ import {
 } from './ui.js';
 
 import { initRecipeLookup } from './recipe-lookup.js';
+import { KVS, renderKv, syncKv } from './kv-panel.js';
 import { openAnalysis, closeAnalysis } from './analysis.js';
 
 import { initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './blackboard.js';
@@ -494,6 +495,22 @@ onChain(st => {
   _chainWasRunning = st.running;
 });
 document.addEventListener('resolve-chain', e => startChain(e.detail?.keys || null));
+
+// A fix from the issues list: change the factory, then solve again
+document.addEventListener('apply-fix', e => {
+  const f = e.detail;
+  if (f.kind === 'goal') {
+    const name = ['must', 'min'].find(n => KVS[n].rows.some(r => r.key === f.item));
+    if (!name) return;
+    KVS[name].rows.forEach(r => { if (r.key === f.item) r.val = String(f.rate); });
+    renderKv(name); syncKv(name);
+  } else if (f.kind === 'alts') {
+    SC.alternate_recipes_enabled = [...new Set([...(SC.alternate_recipes_enabled || []), ...f.keys])];
+    _machinesDirty = true;
+    renderMachinesIfNeeded();
+  }
+  handleSolve();
+});
 
 // Reading a save in Machines & Alts: what it mines, and its unlocks against the planner's
 function showSave(d) {

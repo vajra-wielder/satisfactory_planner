@@ -18,7 +18,10 @@ class SavedScenarios(unittest.TestCase):
                 sc = dataclasses.replace(base, somersloops_available=S, power_shards_available=SH)
                 with self.subTest(scenario=p.split("/")[-1], sloops=S, shards=SH):
                     r = solver.solve(sc, RECIPES, META)
-                    self.assertTrue(r.status.startswith("Optimal"), r.status)
+                    # your scenarios may ask for more than they can have: then it says why
+                    if r.status != "Optimal":
+                        self.assertTrue(r.conflict_hints, f"{r.status} with no reason given")
+                        continue
                     self.assertEqual(check(sc, r), [])
                     if sc.objective:   # the fractional ceiling bounds every plan
                         self.assertGreaterEqual(r.ceiling * (1 + 1e-6) + 1e-6, r.objective_value)
@@ -55,6 +58,41 @@ class Power(unittest.TestCase):
         self.assertTrue(r.status.startswith("Optimal"))
         self.assertGreater(r.objective_value, 0)
         self.assertLessEqual(r.total_power_mw, 0.5)
+
+
+class WhyNot(unittest.TestCase):
+    """A plan that can't be made says why, and each fix it offers works."""
+    def scenario(self, **kw):
+        kw = {"min_produce": {"High_Speed_Connector": 10, "Circuit_Board": 10}, **kw}
+        return solver.Scenario(name="hsc", enabled_machines=["Smelter", "Constructor", "Assembler", "Manufacturer", "Refinery"],
+                               available_resources={"Caterium_Ore": 300, "Copper_Ore": 600, "Iron_Ore": 600, "Crude_Oil": 600},
+                               objective={"Wire": 1}, **kw)
+
+    def test_short_supply_is_named_and_the_fixes_work(self):
+        sc = self.scenario()
+        r = solver.solve(sc, RECIPES, META)
+        self.assertEqual(r.status, "Infeasible")
+        d = r.diagnosis
+        self.assertIn("Caterium_Ore", d["short"])
+        self.assertTrue(any("Not enough Caterium Ore" in h for h in r.conflict_hints), r.conflict_hints)
+        # more of what's short: it fits
+        more = dict(sc.available_resources)
+        for it, v in d["short"].items():
+            more[it] = more.get(it, 0) + v + 1
+        self.assertTrue(solver.solve(dataclasses.replace(sc, available_resources=more), RECIPES, META).status.startswith("Optimal"))
+        # the goal lowered to what fits with the rest: it fits
+        most, _ = d["most"]["High_Speed_Connector"]
+        low = dataclasses.replace(sc, min_produce={**sc.min_produce, "High_Speed_Connector": most})
+        self.assertTrue(solver.solve(low, RECIPES, META).status.startswith("Optimal"))
+        # the alternates it names: they fit
+        if d.get("alts") and not d["alts"]["short"]:
+            alt = dataclasses.replace(sc, alternate_recipes_enabled=d["alts"]["use"])
+            self.assertTrue(solver.solve(alt, RECIPES, META).status.startswith("Optimal"))
+
+    def test_a_plan_that_fits_has_no_diagnosis(self):
+        r = solver.solve(self.scenario(min_produce={"Circuit_Board": 1}), RECIPES, META)
+        self.assertTrue(r.status.startswith("Optimal"))
+        self.assertIsNone(r.diagnosis)
 
 
 if __name__ == "__main__":

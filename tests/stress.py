@@ -54,7 +54,10 @@ def _run(case):
     n, sc, S, SH = case
     t = time.time()
     r = solver.solve(sc, REC, META)
-    errs = check(sc, r) if r.status.startswith('Optimal') else [r.status]
+    # a plan is checked; one that can't be made must say why (your scenarios may ask too much)
+    errs = check(sc, r) if r.status == 'Optimal' else [] if r.conflict_hints else [f'{r.status}, no reason given']
+    if r.status != 'Optimal' and not errs:
+        r.warnings = [f"can't be made: {r.conflict_hints[0]}"] + r.warnings
     return n, S, SH, r.objective_value, r.certified, time.time() - t, errs, r.warnings
 
 

@@ -107,6 +107,8 @@ _ITEM_DISPLAY_BYTES = json.dumps(
     ),
     default=str
 ).encode()
+import solver as _solver_mod
+_solver_mod.ITEM_NAMES.update(json.loads(_ITEM_DISPLAY_BYTES))   # the diagnosis speaks the game's names
 
 _BOOT_BYTES = None   # rebuilt after unlocked alts are loaded (done in Handler on first request)
 
@@ -1320,9 +1322,12 @@ def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None, owed=N
         d = result_to_dict(result, run, machine_meta)
         dropped = False
         if owed and not d.get("status", "").startswith("Optimal"):
-            result = solve(s, all_recipes, machine_meta)
-            d = result_to_dict(result, s, machine_meta)
-            run, dropped = s, True
+            retry = solve(s, all_recipes, machine_meta)
+            rd = result_to_dict(retry, s, machine_meta)
+            # without what's owed it works: that plan, with what it falls short of;
+            # if not, the first answer says why — it has every goal in it
+            if rd.get("status", "").startswith("Optimal"):
+                result, d, run, dropped = retry, rd, s, True
         d = _owed_fields(d, owed, data)
         _set_dual_cache(run, d, getattr(result, "usable", None))
         if cache is not None and d.get("status", "").startswith("Optimal"):

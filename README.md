@@ -13,6 +13,10 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Every plan against its fractional ceiling — the goal with machines, shards and
   somersloops in fractions, which no buildable plan can pass — shown in the
   results bar
+- When the goals can't all be met, it says why and what would work: what's
+  short (e.g. "Not enough Caterium Ore: about 86/min more"), how much of each
+  goal fits with the rest met, and alternates you haven't unlocked that would
+  close the gap — each a one-click Apply that re-solves
 - Weighted multi-item objectives
 - Resources as nodes: pick the nodes a factory mines on the 1.0 world map (every
   node and resource-well satellite, with its purity), or type them in. Nodes one
@@ -270,6 +274,7 @@ node tests/blackboard.e2e.mjs               # every Blackboard tab (browser; nee
 node tests/nav.e2e.mjs                      # getting around: palette, systems, shortcuts, map keys (browser)
 node tests/spare.e2e.mjs                    # unused node supply, brought to a factory nearby (browser)
 node tests/typing.e2e.mjs                   # typed items stay, commit and save; misspelt ones are marked (browser)
+node tests/infeasible.e2e.mjs               # goals that can't be met: why, and a fix that works (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```

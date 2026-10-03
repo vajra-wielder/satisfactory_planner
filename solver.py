@@ -176,6 +176,7 @@ class SolveResult:
     certified: Optional[float] = None   # goal ≥ this fraction of the best possible (proven)
     power_bound_mw: Optional[float] = None   # the model's bound on power (with a cap)
     ceiling: Optional[float] = None   # the goal with machines, shards and sloops fractional — no plan beats it
+    diagnosis: Optional[dict] = None   # when it can't be made: what's short, and what would help (diagnose)
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -1106,6 +1107,165 @@ _POLISH_BELOW = 0.99  # below this, give the exact goal search a short try too
 _POLISH_NODES = 300
 
 
+# ── Why a plan can't be made ─────────────────────────────────────────────────
+# When the goals can't all be met, a quick continuous model (machines
+# fractional, no shards or sloops) says by how much: the least extra supply
+# that would meet every exact and minimum goal, how much of each such goal
+# what you have can make on its own, and which alternates you haven't
+# unlocked would close the gap.
+_RAW_ITEMS: Dict[int, Set[str]] = {}
+
+def _raw_items(all_recipes: Dict[str, Recipe]) -> Set[str]:
+    """Items no recipe makes: ores, oil, water, gases."""
+    key = id(all_recipes)
+    if key not in _RAW_ITEMS:
+        made = {it for r in all_recipes.values() for it in r.outputs}
+        _RAW_ITEMS[key] = {it for r in all_recipes.values() for it in r.inputs} - made
+    return _RAW_ITEMS[key]
+
+def _relaxed(scenario: Scenario, all_recipes: Dict[str, Recipe], slack: bool,
+             most: Optional[str] = None, alts: Set[str] = frozenset(), alone: bool = False) -> Optional[dict]:
+    """The continuous model. slack: extra supply allowed (raw items and imports),
+    its total minimised — {"short": {item: extra/min}, "recipes": {key: rate}}.
+    most: no slack — the most of that item it can make with the other goals
+    met (alone: with no other goals)."""
+    sc = _dc_replace(scenario, objective={} if most is None else {most: 1.0},
+                     alternate_recipes_enabled=sorted(set(scenario.alternate_recipes_enabled) | set(alts)))
+    if most is not None:           # its own goal goes; the others stay unless `alone`
+        sc = _dc_replace(sc, must_produce={} if alone else {k: v for k, v in sc.must_produce.items() if k != most},
+                         min_produce={} if alone else {k: v for k, v in sc.min_produce.items() if k != most})
+    raws = _raw_items(all_recipes)
+    res = dict(sc.available_resources)
+    unlimited = set(sc.unlimited_resources)
+    # recipes reachable if any raw were supplied, so a missing ore still shows up
+    usable, _ = prune_recipes(_dc_replace(sc, available_resources={**{r: _UNLIMITED for r in raws}, **res}), all_recipes)
+    if not usable:
+        return None
+    s = pywraplp.Solver.CreateSolver("GLOP")
+    if s is None:
+        return None
+    inf = s.infinity()
+    q = {k: s.NumVar(0, inf, "") for k in usable}
+    net: Dict[str, Dict[str, float]] = {}
+    for k, r in usable.items():
+        for it, a in r.outputs.items():
+            net.setdefault(it, {})[k] = net.setdefault(it, {}).get(k, 0.0) + a
+        for it, a in r.inputs.items():
+            net.setdefault(it, {})[k] = net.setdefault(it, {}).get(k, 0.0) - a
+    obj = s.Objective()
+    x: Dict[str, object] = {}
+    for it, coeffs in net.items():
+        if it in unlimited:
+            continue
+        A = res.get(it, 0.0)
+        if it in sc.must_produce:
+            lo = hi = sc.must_produce[it] - A
+        else:
+            lo = sc.min_produce[it] - A if it in sc.min_produce else (-A if it in res else 0.0)
+            hi = sc.max_produce[it] - A if it in sc.max_produce else inf
+        if most is None and it not in res and it not in raws and lo <= 0 and hi == inf:
+            lo = 0.0
+        c = s.Constraint(lo, hi)
+        for k, a in coeffs.items():
+            c.SetCoefficient(q[k], a)
+        if slack and (it in raws or it in res):
+            v = x[it] = s.NumVar(0, inf, "")
+            c.SetCoefficient(v, 1.0)
+            obj.SetCoefficient(v, 1.0 if A > 0 else 4.0)   # more of what it mines first
+    for k in q:
+        obj.SetCoefficient(q[k], obj.GetCoefficient(q[k]) + 1e-6)   # no idle loops
+    if most is not None:
+        for k, a in net.get(most, {}).items():
+            obj.SetCoefficient(q[k], a)
+        obj.SetMaximization()
+    else:
+        obj.SetMinimization()
+    if s.Solve() != pywraplp.Solver.OPTIMAL:
+        return None
+    if most is not None:
+        return {"most": max(0.0, sum(a * q[k].solution_value() for k, a in net.get(most, {}).items())
+                               + res.get(most, 0.0))}
+    return {"short": {it: v.solution_value() for it, v in x.items() if v.solution_value() > 0.01},
+            "recipes": {k: v.solution_value() for k, v in q.items() if v.solution_value() > 1e-6}}
+
+def diagnose(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
+    """Why the goals can't be met, and what would meet them:
+    {"short": {item: extra/min}, "has": {item: per min now},
+     "most": {goal: [most it can make with the other goals met, asked]},
+     "alone": {goal: [most on its own, asked]} (when the others can't be met anyway),
+     "alts": {"use": [alternates], "short": {item: extra still}} (alternates
+     you haven't unlocked that close or narrow the gap), "fits_relaxed": True
+     when the continuous model fits — then it's whole machines, the power cap,
+     shards or sloops}."""
+    sc = _with_unlimited(scenario)
+    base = _relaxed(sc, all_recipes, slack=True)
+    if base is None:
+        return {}
+    out: dict = {"short": {k: round(v, 1) for k, v in base["short"].items()},
+                 "has": {k: round(sc.available_resources.get(k, 0.0), 1) for k in base["short"]}}
+    if not base["short"]:
+        out["fits_relaxed"] = True
+        return out
+    # each goal: the most of it there can be with the rest met — lowered to
+    # that, the plan fits; failing that, the most on its own
+    most, alone = {}, {}
+    for g, qty in {**scenario.min_produce, **scenario.must_produce}.items():
+        m = _relaxed(sc, all_recipes, slack=False, most=g)
+        if m is not None:
+            if m["most"] < qty * (1 - 1e-3) - 1e-3:
+                most[g] = [math.floor(m["most"] * 10) / 10, qty]
+        else:
+            a = _relaxed(sc, all_recipes, slack=False, most=g, alone=True)
+            if a is not None and a["most"] < qty * (1 - 1e-3) - 1e-3:
+                alone[g] = [math.floor(a["most"] * 10) / 10, qty]
+    if most:
+        out["most"] = most
+    if alone:
+        out["alone"] = alone
+    known = set(scenario.alternate_recipes_enabled) | set(scenario.unlocked_alt_recipes)
+    locked = {k for k, r in all_recipes.items() if r.alternate and k not in known}
+    total = sum(base["short"].values())
+    if locked:
+        alt = _relaxed(sc, all_recipes, slack=True, alts=locked)
+        if alt is not None and sum(alt["short"].values()) < total - 0.5:
+            use = sorted(k for k in alt["recipes"] if k in locked)
+            best = sum(alt["short"].values())
+            for k in list(use):                      # the fewest that do as well
+                trial = _relaxed(sc, all_recipes, slack=True, alts=set(use) - {k})
+                if trial is not None and sum(trial["short"].values()) <= best + 0.5:
+                    use.remove(k)
+                    best = sum(trial["short"].values())
+            final = _relaxed(sc, all_recipes, slack=True, alts=set(use))
+            out["alts"] = {"use": use, "short": {k: round(v, 1) for k, v in (final or alt)["short"].items()}}
+    return out
+
+ITEM_NAMES: Dict[str, str] = {}   # in-game item names, where they differ (server.py fills it)
+
+def diagnosis_hints(d: dict, name=None, recipe=lambda k: k) -> List[str]:
+    """The diagnosis in words, for the issues list."""
+    name = name or (lambda k: ITEM_NAMES.get(k, k.replace("_", " ")))
+    out = []
+    f = lambda v: f"{v:,.1f}".rstrip("0").rstrip(".")
+    for it, v in sorted(d.get("short", {}).items(), key=lambda kv: -kv[1]):
+        has = d.get("has", {}).get(it, 0.0)
+        out.append(f"Not enough {name(it)}: the goals need about {f(v)}/min more"
+                   + (f" than the {f(has)}/min it has." if has > 0 else " — it has none."))
+    for g, (most, asked) in d.get("most", {}).items():
+        out.append(f"{name(g)}: at most {f(most)}/min with the other goals met (asked {f(asked)}/min) — "
+                   "lower it to that, or bring in more.")
+    for g, (most, asked) in d.get("alone", {}).items():
+        out.append(f"{name(g)}: at most {f(most)}/min even on its own (asked {f(asked)}/min).")
+    a = d.get("alts")
+    if a:
+        names = ", ".join(recipe(k) for k in a["use"])
+        out.append(f"Alternates you haven't unlocked would {'make it work' if not a['short'] else 'narrow the gap'}: {names}"
+                   + ("." if not a["short"] else f" (still short: {', '.join(f'{name(k)} {f(v)}/min' for k, v in a['short'].items())})."))
+    if d.get("fits_relaxed"):
+        out.append("The goals fit with fractional machines but not whole ones — loosen an exact amount, "
+                   "raise the power cap, or allow more shards.")
+    return out
+
+
 def _fractional_ceiling(scenario: Scenario, usable: Dict[str, Recipe]) -> Optional[float]:
     """The goal of the continuous relaxation: whole machines, shards and sloops
     made fractional. A bound no buildable plan can pass."""
@@ -1517,6 +1677,17 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
         else "Optimal (with errors)" if status == "Optimal"
         else "Infeasible"
     )
+    diagnosis = None
+    if final_status == "Infeasible" and not error_sources:
+        try:
+            diagnosis = diagnose(scenario, all_recipes)
+        except Exception as e:      # a diagnosis never breaks a solve
+            diagnosis = {"error": str(e)}
+        names = {k: r.display for k, r in all_recipes.items()}
+        conflict_hints.extend(diagnosis_hints(diagnosis, recipe=lambda k: names.get(k, k)) if diagnosis else [])
+        if not conflict_hints:
+            conflict_hints.append("These goals can't all be met together, and no single shortage explains it — "
+                                  "try removing exact amounts one at a time.")
 
     result = SolveResult(
         status=final_status, objective_value=round(obj_val, 4),
@@ -1536,6 +1707,7 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
         power_bound_mw=None if plan is None or plan.power_bound is None else round(plan.power_bound, 2),
         ceiling=None if frac_ceiling is None else round(frac_ceiling, 6),
         usable=usable,
+        diagnosis=diagnosis,
     )
     return result
 
@@ -1896,6 +2068,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "sloops_used":           result.sloops_used,
         "warnings":              result.warnings,
         "conflict_hints":        result.conflict_hints,
+        "diagnosis":             result.diagnosis,
         "error_sources":         result.error_sources,
         "error_sinks":           result.error_sinks,
         "surplus_intermediates": result.surplus_intermediates,

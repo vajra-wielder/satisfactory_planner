@@ -3,7 +3,7 @@
  * Extracted from sidebar.js so sidebar.js only handles sidebar concerns.
  */
 
-import { RESULT, itemName, perMin } from './state.js';
+import { RESULT, RECIPES, itemName, perMin } from './state.js';
 
 // ══════════════════════════════════════════════════════════
 // WARNINGS MODAL
@@ -22,6 +22,18 @@ export function openWarn() {
   const ICO = { error:'✕', warning:'⚠', info:'ℹ', surplus:'↗' };
   document.getElementById('wmtit').textContent = `Solve Issues — ${items.length}`;
   const list = document.getElementById('wmit-list'); list.innerHTML = '';
+  // What would make it work, one click each (they change the factory, then it solves again)
+  const fixes = fixesOf(RESULT.diagnosis);
+  if (fixes.length) {
+    const box = document.createElement('div'); box.className = 'wm-fix';
+    box.innerHTML = '<div class="wm-fix-t">Any one of these makes it work</div>' + fixes.map((f, i) =>
+      `<div class="wm-fix-r"><span>${f.label}</span><button class="bsm act" data-fix="${i}">Apply</button></div>`).join('');
+    box.querySelectorAll('[data-fix]').forEach(b => b.addEventListener('click', () => {
+      closeWarn();
+      document.dispatchEvent(new CustomEvent('apply-fix', { detail: fixes[+b.dataset.fix] }));
+    }));
+    list.appendChild(box);
+  }
   items.forEach(({ t, txt }) => {
     const d = document.createElement('div'); d.className = 'wmit';
     d.style.cssText = `border:1px solid ${COL[t]};background:${BG[t]};color:${COL[t]}`;
@@ -29,6 +41,18 @@ export function openWarn() {
     list.appendChild(d);
   });
   document.getElementById('wo').classList.add('show');
+}
+// The diagnosis of a plan that can't be made, as changes to try: each goal
+// lowered to what fits with the rest, the alternates that would close the gap
+function fixesOf(d) {
+  if (!d) return [];
+  const f = v => (Math.round(v * 10) / 10).toLocaleString();
+  const out = Object.entries(d.most || {}).map(([g, [most]]) =>
+    ({ kind: 'goal', item: g, rate: most, label: `Lower ${itemName(g)} to ${f(most)}/min` }));
+  if (d.alts?.use?.length && !Object.keys(d.alts.short || {}).length)
+    out.push({ kind: 'alts', keys: d.alts.use,
+      label: `Turn on ${d.alts.use.map(k => RECIPES[k]?.display?.replace(/^Alternate: /, '') || k).join(', ')} (an alternate you haven't unlocked)` });
+  return out;
 }
 export function closeWarn() { document.getElementById('wo').classList.remove('show'); }
 
