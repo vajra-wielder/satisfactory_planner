@@ -39,7 +39,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   satisfactorymap project, lined up with the map's edges), or on your own
   picture (nudge it to line up). From afar the nodes are dots; zoom in, or
   pick one or two resources, and each shows its purity (P / N / I); zoom in
-  further for its name and who mines it. Zoom with the wheel, + / −,
+  further for its name and who mines it. A factory that has nodes opens
+  the map on them. Zoom with the wheel, + / −,
   double-click or the buttons; 0 shows the whole map; arrows pan
 - Shared unlocks, for every factory: the machines, the miner tier (miners always
   run at it), the best belt and pipe
