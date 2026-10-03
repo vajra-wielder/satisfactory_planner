@@ -17,6 +17,11 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   short (e.g. "Not enough Caterium Ore: about 86/min more"), how much of each
   goal fits with the rest met, and alternates you haven't unlocked that would
   close the gap — each a one-click Apply that re-solves
+- Alternates worth unlocking (Analysis, Ctrl+I): every alternate you haven't
+  unlocked, tried on its own with the factory's supply and goals — the output
+  it would add, the resources it would save for the same output, and the
+  machine space (at no more resources) — best first, and the best few
+  together; Try it turns one on for the factory and solves again
 - Weighted multi-item objectives
 - Resources as nodes: pick the nodes a factory mines on the 1.0 world map (every
   node and resource-well satellite, with its purity), or type them in. Nodes one
@@ -276,6 +281,7 @@ node tests/nav.e2e.mjs                      # getting around: palette, systems, 
 node tests/spare.e2e.mjs                    # unused node supply, brought to a factory nearby (browser)
 node tests/typing.e2e.mjs                   # typed items stay, commit and save; misspelt ones are marked (browser)
 node tests/infeasible.e2e.mjs               # goals that can't be met: why, and a fix that works (browser)
+node tests/newalts.e2e.mjs                  # alternates worth unlocking, and Try it (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```

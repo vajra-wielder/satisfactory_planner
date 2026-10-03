@@ -95,5 +95,25 @@ class WhyNot(unittest.TestCase):
         self.assertIsNone(r.diagnosis)
 
 
+class WorthUnlocking(unittest.TestCase):
+    """The alternates you haven't unlocked that would help: what each is said
+    to add is what the full solve gets with it on."""
+    def test_the_best_one_gives_what_it_says(self):
+        sc = solver.Scenario(name="plates", enabled_machines=["Smelter", "Constructor", "Assembler", "Foundry"],
+                             available_resources={"Iron_Ore": 480, "Copper_Ore": 240}, objective={"Iron_Plate": 1})
+        r = solver.solve(sc, RECIPES, META)
+        a = solver.analyse(sc, RECIPES, [dataclasses.asdict(f) for f in r.flows], r.usable, r.objective_value)
+        self.assertTrue(a["new_alts"], a.get("new_alts_error"))
+        best = a["new_alts"][0]
+        self.assertGreater(best["output"], 0)
+        r1 = solver.solve(dataclasses.replace(sc, alternate_recipes_enabled=[best["key"]]), RECIPES, META)
+        gained = 100 * (r1.objective_value / r.objective_value - 1)
+        self.assertAlmostEqual(gained, best["output"], delta=max(1.0, best["output"] * 0.05))
+        # one already turned on isn't suggested again
+        a2 = solver.analyse(dataclasses.replace(sc, alternate_recipes_enabled=[best["key"]]), RECIPES,
+                            [dataclasses.asdict(f) for f in r1.flows], r1.usable, r1.objective_value)
+        self.assertNotIn(best["key"], [x["key"] for x in a2["new_alts"]])
+
+
 if __name__ == "__main__":
     unittest.main()

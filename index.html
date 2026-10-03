@@ -656,6 +656,9 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
   letter-spacing: .04em;
 }
 .ra-delta { font-family: var(--mono); font-size: 11px; flex-shrink: 0; min-width: 70px; text-align: right; }
+.ra-row.nalt { flex-wrap: wrap; align-items: center; row-gap: 3px; }
+.ra-row.nalt .ra-delta { order: 5; flex-basis: 100%; text-align: left; padding-left: 26px; min-width: 0; }
+.ra-row.nalt .bsm { white-space: nowrap; }
 #analysis-modal {
   display: none; position: fixed; inset: 0; z-index: 1000;
   background: rgba(0,0,0,.65); backdrop-filter: blur(4px);

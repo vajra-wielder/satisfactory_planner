@@ -1756,6 +1756,122 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 
     goal_held = goal_best if plan_goal is None or goal_best is None else min(goal_best, plan_goal)
     out.update(_alt_value(lp, sc, usable, used, finite, goal_best, goal_held))
+    try:
+        out.update(_new_alt_value(scenario, all_recipes, plan_goal))
+    except Exception as e:          # the rest of the analysis stands without it
+        out["new_alts_error"] = str(e)
+    return out
+
+
+# ── Alternates worth unlocking ────────────────────────────────────────────────
+# The alternates you haven't unlocked (nor turned on here), each tried alone in
+# the analysis model with every other one off: what it would add —
+#   output     more of the goal with your supply and limits (% of now)
+#   resources  less of your resources for the same output (%, supply uncapped)
+#   machines   less machine space for that output, using no more of your
+#              resources than now (Smelter units)
+# and the best few turned on together (some only pay off as a pair).
+_NEW_ALTS_TOP = 12
+
+def _new_alt_value(scenario: Scenario, all_recipes: Dict[str, Recipe],
+                   plan_goal: Optional[float] = None) -> dict:
+    out: dict = {"new_alts": [], "new_alts_together": None}
+    known = set(scenario.alternate_recipes_enabled) | set(scenario.unlocked_alt_recipes)
+    locked_all = {k for k, r in all_recipes.items() if r.alternate and k not in known}
+    if not locked_all:
+        return out
+    sc = _with_unlimited(_dc_replace(scenario, minimize_new_alts=False,
+                                     alternate_recipes_enabled=sorted(set(scenario.alternate_recipes_enabled) | locked_all)))
+    usable, _ = prune_recipes(sc, all_recipes)
+    locked = sorted(k for k in usable if k in locked_all)
+    if not locked:
+        return out
+    lp = _Model(sc, usable, integer=False)
+    T = _STAGE_TIME_S[0]
+    cols = {k: [lp.var[("q", k, l)] for l in lp.levels[k]] for k in locked}
+
+    def only(on: Set[str]) -> None:
+        for k, vs in cols.items():
+            for v in vs:
+                v.SetUb(lp.inf if k in on else 0.0)
+
+    unlimited = set(scenario.unlimited_resources)
+    finite = [it for it, v in sc.available_resources.items() if v > 0 and it not in unlimited and it in lp.res_ct]
+    score: Dict[Key, float] = {}
+    for it in finite:
+        w = 1.0 / len(finite) / sc.available_resources[it]
+        for key, c in lp.net.get(it, {}).items():
+            score[key] = score.get(key, 0.0) - c * w
+    caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
+    if "power" in lp.budget_ct:
+        caps.append(lp.budget_ct["power"])
+
+    def goal_now() -> Optional[float]:
+        return lp.value(lp.goal) if lp.run(lp.goal, True, T) is not None else None
+
+    def cost_now(target: Optional[float], within: Optional[float] = None) -> Optional[Tuple[float, float]]:
+        """(least resource score, least machine space using no more resources
+        than `within` — or than the least), for the target output, caps lifted."""
+        ubs = [ct.ub() for ct in caps]
+        for ct in caps:
+            ct.SetUb(lp.inf)
+        held = lp.ct(target - max(1e-9, abs(target) * 1e-7), lp.inf, lp.goal) if lp.goal and target is not None else None
+        try:
+            r, lock = 0.0, None
+            if score:
+                if lp.run(score, False, T) is None:
+                    return None
+                r = lp.value(score)
+                bound = r if within is None else max(r, within)
+                lock = lp.ct(-lp.inf, bound + abs(bound) * 1e-7 + 1e-9, score)
+            got = (r, lp.value(lp.space)) if lp.run(lp.space, False, T) is not None else None
+            if lock is not None:
+                lock.SetBounds(-lp.inf, lp.inf)
+            return got
+        finally:
+            if held is not None:
+                held.SetBounds(-lp.inf, lp.inf)
+            for ct, ub in zip(caps, ubs):
+                ct.SetUb(ub)
+
+    only(set())
+    g0 = goal_now() if lp.goal else None
+    if lp.goal and g0 is None:
+        return out                          # it can't be made as it is: the diagnosis says why
+    target = g0 if plan_goal is None or g0 is None else min(g0, plan_goal)
+    c0 = cost_now(target)
+    if c0 is None:
+        return out
+
+    def gain(on: Set[str]) -> Optional[dict]:
+        only(on)
+        m = {"output": 0.0, "resources": 0.0, "machines": 0.0}
+        if lp.goal and g0:
+            g = goal_now()
+            if g is None:
+                return None
+            m["output"] = 100.0 * (g - g0) / abs(g0)
+        c = cost_now(target, within=c0[0])     # space: at no more resources than now
+        if c is None:
+            return None
+        m["resources"] = 100.0 * (c0[0] - c[0]) / c0[0] if c0[0] > 1e-12 else 0.0
+        m["machines"] = c0[1] - c[1]
+        return m
+
+    rows = []
+    for k in locked:
+        m = gain({k})
+        if m and (m["output"] > 0.05 or m["resources"] > 0.05 or m["machines"] > 0.5):
+            rows.append({"key": k, "output": round(m["output"], 2), "resources": round(m["resources"], 2),
+                         "machines": round(m["machines"], 1)})
+    rows.sort(key=lambda x: (-x["output"], -x["resources"], -x["machines"], x["key"]))
+    out["new_alts"] = rows[:_NEW_ALTS_TOP]
+    best = [r["key"] for r in rows[:_NEW_ALTS_TOP]]
+    if len(best) > 1:
+        m = gain(set(best))
+        if m:
+            out["new_alts_together"] = {"keys": best, "output": round(m["output"], 2),
+                                        "resources": round(m["resources"], 2), "machines": round(m["machines"], 1)}
     return out
 
 

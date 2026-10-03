@@ -312,13 +312,21 @@ function renderAnalysis() {
     </div>
   `;
 
+  // ── Alternates worth unlocking ────────────────────────────────────────────
+  // The ones you haven't unlocked, each tried alone: what this factory would gain
+  section(el, 'Alternates Worth Unlocking');
+  const newBody = el.querySelector('.an-section:last-child .an-body');
+  newBody.id = 'an-new-alts';
+  if (RESULT.analysis) _renderNewAlts(RESULT.analysis);
+  else newBody.innerHTML = '<p style="font-size:11px;color:var(--t3)">Computing…</p>';
+
   // ── Alternate ranking ─────────────────────────────────────────────────────
   // What each alt this plan uses is worth: switched off in the analysis model
   // (the plan's continuous relaxation), the extra resources — then machines —
   // needed for the same output. Related pairs are tested together too.
   const activeAltKeys = new Set(altFlows.map(f => f.recipe_key));
   if (activeAltKeys.size > 0) {
-    section(el, 'Alternate Recipe Value');
+    section(el, 'Alternates This Plan Uses');
     const rankBody = el.querySelector('.an-section:last-child .an-body');
     rankBody.innerHTML = `
       <p style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:8px">
@@ -447,6 +455,48 @@ function _renderRanking(analysis) {
     });
   });
   gEl.innerHTML = h;
+}
+
+// What each alternate you haven't unlocked would do for this factory, best first
+function _renderNewAlts(analysis) {
+  const el = document.getElementById('an-new-alts');
+  if (!el) return;
+  const rows = analysis.new_alts || [];
+  const mono = (txt, col, tip) => `<span style="font-family:var(--mono);font-size:11px;color:${col}" title="${tip}">${txt}</span>`;
+  const cells = v => [
+    v.output > 0.05 ? mono(`+${v.output.toFixed(1)}% output`, 'var(--ok)', 'More of your goal, with your supply and limits') : '',
+    v.resources > 0.05 ? mono(`saves ${v.resources.toFixed(1)}% resources`, 'var(--ok)', 'Less of your resources for the same output') : '',
+    v.machines > 0.5 ? mono(`saves ${v.machines.toFixed(1)} space`, '#60a5fa', 'Less machine space for the same output, using no more resources (Smelter units)') : '',
+  ].filter(Boolean).join('<span style="margin-left:8px"></span>');
+  if (!rows.length) {
+    el.innerHTML = `<p style="font-size:11px;color:var(--t3);line-height:1.6">${analysis.new_alts_error
+      ? 'Could not test them: ' + analysis.new_alts_error
+      : "None of the alternates you haven't unlocked would help this factory — its plan is as good as the recipes get."}</p>`;
+    return;
+  }
+  const t = analysis.new_alts_together;
+  el.innerHTML = `
+    <p style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:8px">
+      Alternates you haven't unlocked, each tried on its own with this factory's supply and goals:
+      the output it would add, the resources it would save for the same output, and the machine
+      space. <b>Try it</b> turns it on for this factory and solves again.</p>
+    ${rows.map((v, i) => {
+      const r = RECIPES[v.key] || {}, color = mCol(r.machine);
+      return `<div class="ra-row nalt">
+        <span class="ra-rank">${i + 1}.</span>
+        <span class="ra-machine" style="background:${color}22;color:${color};border:1px solid ${color}44">${MABBR[r.machine] || r.machine || ''}</span>
+        <span class="ra-name">${_altDisplayName(v.key)}</span>
+        <span class="ra-delta">${cells(v)}</span>
+        <button class="bsm" data-try="${v.key}" title="Turn it on for this factory and solve again">Try it</button>
+      </div>`;
+    }).join('')}
+    ${t ? `<div style="border:1px solid var(--b);border-radius:var(--rsm);padding:6px 8px;margin-top:8px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;color:var(--t2);flex:1">All ${t.keys.length} together: ${cells(t) || 'no more than the best alone'}</span>
+        <button class="bsm" data-try="${t.keys.join(',')}">Try all</button></div>` : ''}`;
+  el.querySelectorAll('[data-try]').forEach(b => b.addEventListener('click', () => {
+    closeAnalysis();
+    document.dispatchEvent(new CustomEvent('apply-fix', { detail: { kind: 'alts', keys: b.dataset.try.split(',') } }));
+  }));
 }
 
 function _altDisplayName(key) {
