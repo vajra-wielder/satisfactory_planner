@@ -4,6 +4,7 @@
  */
 
 import { RESULT, RECIPES, itemName, perMin } from './state.js';
+import { gainText } from './new-alts.js';
 
 // ══════════════════════════════════════════════════════════
 // WARNINGS MODAL
@@ -120,6 +121,15 @@ export function renderResultsBar() {
     h += sep + st('Of ceiling', `${pct >= 99.995 ? '100' : pct.toFixed(2)}%`, pct >= 95 ? 'var(--ok)' : 'var(--warn)', tip);
   }
 
+  // New alternates worth unlocking: a click away (the sidebar's list)
+  const sg = RESULT.suggest;
+  if (sg?.steps?.length) {
+    const g = sg.all || {};
+    const val = g.output > 0.1 ? `+${g.output >= 10 ? g.output.toFixed(0) : g.output.toFixed(1)}%`
+      : g.resources > 0.1 ? `−${g.resources.toFixed(0)}%` : `−${Math.round(g.machines || 0)} u`;
+    h = `<div class="rbs rb-link" id="rb-na" title="${sg.steps.length} alternates you haven't unlocked would help: ${
+      gainText(g, false)} — click to see them"><div class="rbv" style="color:#34d399">${val}</div><div class="rbl">${sg.steps.length} new alts</div></div>` + sep + h;
+  }
   if (h === _rbLastHTML) { rb.style.display = 'flex'; return; }
   _rbLastHTML = h;
   rb.style.display = 'flex';

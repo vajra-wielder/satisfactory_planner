@@ -1691,16 +1691,11 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
                            exact: the least r that reaches the best goal with r
                            unlimited (None when more r never stops helping)
       limits[b]            goal gained per extra power shard / MW of power cap
-      alt_ranking          per alternate the plan uses: the output it provides,
-                           the resources and machines it saves
-      alt_groups           alternates that cover for each other ("either") or
-                           only pay off as a package ("together")
-    (see _alt_value)
+    (Which alternates to unlock: suggest_alts.)
     """
     if usable is None:
         usable, _ = prune_recipes(scenario, all_recipes)
-    out = {"shadow_prices": {}, "saturation_points": {}, "limits": {},
-           "alt_ranking": [], "alt_groups": []}
+    out = {"shadow_prices": {}, "saturation_points": {}, "limits": {}}
     if not usable:
         return out
     sc = _with_unlimited(scenario)
@@ -1754,43 +1749,44 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
             ct.SetUb(ub)
             out["saturation_points"][it] = sat
 
-    goal_held = goal_best if plan_goal is None or goal_best is None else min(goal_best, plan_goal)
-    out.update(_alt_value(lp, sc, usable, used, finite, goal_best, goal_held))
-    try:
-        out.update(_new_alt_value(scenario, all_recipes, plan_goal))
-    except Exception as e:          # the rest of the analysis stands without it
-        out["new_alts_error"] = str(e)
     return out
 
 
 # ── Alternates worth unlocking ────────────────────────────────────────────────
-# The alternates you haven't unlocked (nor turned on here), each tried alone in
-# the analysis model with every other one off: what it would add —
+# The best plan with every alternate you haven't unlocked, in the analysis
+# model (machines fractional), against the plan with none of them: the ones it
+# uses, in the order to unlock them — each the one that adds most on top of
+# those before it — with what each adds:
 #   output     more of the goal with your supply and limits (% of now)
 #   resources  less of your resources for the same output (%, supply uncapped)
 #   machines   less machine space for that output, using no more of your
 #              resources than now (Smelter units)
-# and the best few turned on together (some only pay off as a pair).
-_NEW_ALTS_TOP = 12
+# An alternate the factory has turned on but you haven't unlocked counts as
+# new: the baseline is your unlocked ones only.
+_SUGGEST_MAX = 12
+_GAIN = {"output": 0.1, "resources": 0.1, "machines": 0.5}   # less than this adds nothing
 
-def _new_alt_value(scenario: Scenario, all_recipes: Dict[str, Recipe],
-                   plan_goal: Optional[float] = None) -> dict:
-    out: dict = {"new_alts": [], "new_alts_together": None}
-    known = set(scenario.alternate_recipes_enabled) | set(scenario.unlocked_alt_recipes)
-    locked_all = {k for k, r in all_recipes.items() if r.alternate and k not in known}
-    if not locked_all:
+def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
+    """{"all": {output, resources, machines} with every one on,
+        "steps": [{key, output, resources, machines}] — in unlock order, each
+        what it adds to the ones above (as % of now / space units),
+        "on": [keys among them this factory has turned on]}"""
+    out: dict = {"all": None, "steps": [], "on": []}
+    unlocked = set(scenario.unlocked_alt_recipes)
+    new = {k for k, r in all_recipes.items() if r.alternate and k not in unlocked}
+    if not new:
         return out
     sc = _with_unlimited(_dc_replace(scenario, minimize_new_alts=False,
-                                     alternate_recipes_enabled=sorted(set(scenario.alternate_recipes_enabled) | locked_all)))
+                                     alternate_recipes_enabled=sorted(set(scenario.alternate_recipes_enabled) | new)))
     usable, _ = prune_recipes(sc, all_recipes)
-    locked = sorted(k for k in usable if k in locked_all)
-    if not locked:
+    cand = sorted(k for k in usable if k in new)
+    if not cand:
         return out
     lp = _Model(sc, usable, integer=False)
     T = _STAGE_TIME_S[0]
-    cols = {k: [lp.var[("q", k, l)] for l in lp.levels[k]] for k in locked}
+    cols = {k: [lp.var[("q", k, l)] for l in lp.levels[k]] for k in cand}
 
-    def only(on: Set[str]) -> None:
+    def only(on) -> None:
         for k, vs in cols.items():
             for v in vs:
                 v.SetUb(lp.inf if k in on else 0.0)
@@ -1809,9 +1805,10 @@ def _new_alt_value(scenario: Scenario, all_recipes: Dict[str, Recipe],
     def goal_now() -> Optional[float]:
         return lp.value(lp.goal) if lp.run(lp.goal, True, T) is not None else None
 
-    def cost_now(target: Optional[float], within: Optional[float] = None) -> Optional[Tuple[float, float]]:
-        """(least resource score, least machine space using no more resources
-        than `within` — or than the least), for the target output, caps lifted."""
+    def cost_now(target, within=None):
+        """(least resource score, least space using no more resources than
+        `within` — or than the least), for the target output, caps lifted;
+        and the candidates that plan runs."""
         ubs = [ct.ub() for ct in caps]
         for ct in caps:
             ct.SetUb(lp.inf)
@@ -1824,7 +1821,10 @@ def _new_alt_value(scenario: Scenario, all_recipes: Dict[str, Recipe],
                 r = lp.value(score)
                 bound = r if within is None else max(r, within)
                 lock = lp.ct(-lp.inf, bound + abs(bound) * 1e-7 + 1e-9, score)
-            got = (r, lp.value(lp.space)) if lp.run(lp.space, False, T) is not None else None
+            got = None
+            if lp.run(lp.space, False, T) is not None:
+                runs = {k for k, vs in cols.items() if any(v.solution_value() > 1e-6 for v in vs)}
+                got = (r, lp.value(lp.space), runs)
             if lock is not None:
                 lock.SetBounds(-lp.inf, lp.inf)
             return got
@@ -1837,13 +1837,13 @@ def _new_alt_value(scenario: Scenario, all_recipes: Dict[str, Recipe],
     only(set())
     g0 = goal_now() if lp.goal else None
     if lp.goal and g0 is None:
-        return out                          # it can't be made as it is: the diagnosis says why
-    target = g0 if plan_goal is None or g0 is None else min(g0, plan_goal)
-    c0 = cost_now(target)
+        return out                      # it can't be made without them: the diagnosis says which
+    c0 = cost_now(g0)
     if c0 is None:
         return out
 
-    def gain(on: Set[str]) -> Optional[dict]:
+    def value(on) -> Optional[dict]:
+        """What these on add to the plan with none: output, resources, space."""
         only(on)
         m = {"output": 0.0, "resources": 0.0, "machines": 0.0}
         if lp.goal and g0:
@@ -1851,266 +1851,51 @@ def _new_alt_value(scenario: Scenario, all_recipes: Dict[str, Recipe],
             if g is None:
                 return None
             m["output"] = 100.0 * (g - g0) / abs(g0)
-        c = cost_now(target, within=c0[0])     # space: at no more resources than now
+        c = cost_now(g0, within=c0[0])
         if c is None:
             return None
         m["resources"] = 100.0 * (c0[0] - c[0]) / c0[0] if c0[0] > 1e-12 else 0.0
         m["machines"] = c0[1] - c[1]
+        m["runs"] = c[2]
         return m
 
-    rows = []
-    for k in locked:
-        m = gain({k})
-        if m and (m["output"] > 0.05 or m["resources"] > 0.05 or m["machines"] > 0.5):
-            rows.append({"key": k, "output": round(m["output"], 2), "resources": round(m["resources"], 2),
-                         "machines": round(m["machines"], 1)})
-    rows.sort(key=lambda x: (-x["output"], -x["resources"], -x["machines"], x["key"]))
-    out["new_alts"] = rows[:_NEW_ALTS_TOP]
-    best = [r["key"] for r in rows[:_NEW_ALTS_TOP]]
-    if len(best) > 1:
-        m = gain(set(best))
-        if m:
-            out["new_alts_together"] = {"keys": best, "output": round(m["output"], 2),
-                                        "resources": round(m["resources"], 2), "machines": round(m["machines"], 1)}
-    return out
-
-
-# ── Alternate value and synergy ───────────────────────────────────────────────
-# What each alternate the plan uses is worth, in the planner's own terms — it
-# shows up either upstream or downstream:
-#   output     with your supply and limits, the share of the goal it provides
-#              (upstream: how much less you'd make without it)
-#   resources  for the same output with supply uncapped, how much more of your
-#              resources you'd need without it (downstream: the planner's
-#              resource score, as a % of the plan's)
-#   machines   extra machine space (Smelter units) for that same output (second, as in
-#              the planner — machines weighed by the room they take)
-# An alternate whose saving lands on a resource that isn't limiting shows no
-# output, only resources. "required" = the goals can't be met without it at
-# all; "short" = not at your supply (output counts as all at stake), but with
-# more resources they could.
-#
-# Alternates rarely act alone; see _alt_value for how groups that work
-# together (necessary or commutative synergy) are found.
-# A member alone is worth "about nothing" at ≤15% of the group's value; a
-# group is commutative when worth 15% more than its members alone, summed.
-# A group must also be worth at least _SYN_ABS (% output, % resources,
-# Smelter units of space) to count.
-_SYN_REL = 0.15
-_SYN_ABS = {"output": 0.1, "resources": 0.1, "machines": 0.5}
-_MAX_PAIRS = 800
-_ALL_PAIRS_UPTO = 30    # up to this many alternates, every pair is tested
-_MEASURES = ("output", "resources", "machines")
-
-
-def _alt_value(lp: "_Model", sc: Scenario, usable: Dict[str, Recipe],
-               used: Dict[str, dict], finite: List[str],
-               goal_max: Optional[float], goal_target: Optional[float]) -> dict:
-    out = {"alt_ranking": [], "alt_groups": []}
-    alts = sorted(k for k in used if k in usable and usable[k].alternate)
-    if not alts:
+    best = value(set(cand))
+    if best is None:
         return out
-    T = _STAGE_TIME_S[0]
-    upstream = bool(lp.goal) and goal_max is not None and abs(goal_max) > 1e-9
-    score: Dict[Key, float] = {}
-    for it in finite:
-        w = 1.0 / len(finite) / sc.available_resources[it]
-        for key, c in lp.net.get(it, {}).items():
-            score[key] = score.get(key, 0.0) - c * w
-    # Downstream cost is the same output with supply — and the power cap — lifted
-    caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
-    if "power" in lp.budget_ct:
-        caps.append(lp.budget_ct["power"])
-
-    def switched_off(off, fn):
-        cols = [lp.var[("q", k, l)] for k in off for l in lp.levels[k]]
-        ubs = [v.ub() for v in cols]
-        for v in cols:
-            v.SetUb(0.0)
-        try:
-            return fn()
-        finally:
-            for v, ub in zip(cols, ubs):
-                v.SetUb(ub)
-
-    def goal_now() -> Optional[float]:
-        """Best goal under the plan's own supply and limits."""
-        return lp.value(lp.goal) if lp.run(lp.goal, True, T) is not None else None
-
-    def cost_now() -> Optional[Tuple[float, float]]:
-        """(resource score, machines) for the held output, caps lifted."""
-        ubs = [ct.ub() for ct in caps]
-        for ct in caps:
-            ct.SetUb(lp.inf)
-        held = None
-        if lp.goal and goal_target is not None:
-            held = lp.ct(goal_target - max(1e-9, abs(goal_target) * 1e-7), lp.inf, lp.goal)
-        try:
-            r, lock = 0.0, None
-            if score:
-                if lp.run(score, False, T) is None:
-                    return None
-                r = lp.value(score)
-                lock = lp.ct(-lp.inf, r + abs(r) * 1e-7 + 1e-9, score)
-            got = (r, lp.value(lp.space)) if lp.run(lp.space, False, T) is not None else None
-            if lock is not None:
-                lock.SetBounds(-lp.inf, lp.inf)
-            return got
-        finally:
-            if held is not None:
-                held.SetBounds(-lp.inf, lp.inf)
-            for ct, ub in zip(caps, ubs):
-                ct.SetUb(ub)
-
-    cost0 = cost_now()
-    if cost0 is None:
+    # The best plan's own: what it runs at its best output (more output first)
+    used = set()
+    if lp.goal and g0:
+        only(set(cand))
+        g = goal_now()
+        if g is not None:
+            c = cost_now(g)
+            used = c[2] if c else set()
+    used |= best["runs"]
+    if not used:
         return out
-
-    def measure(off, need_cost=True) -> Optional[Dict[str, Optional[float]]]:
-        """Value lost with `off` switched off: output (% of goal), resources
-        (% more), machines (more). None = the goals can't be met."""
-        m: Dict[str, Optional[float]] = {"output": 0.0, "resources": None, "machines": None}
-        if upstream:
-            g = switched_off(off, goal_now)
-            if g is None:
-                # Its fixed outputs can't be met at your supply — but maybe with
-                # more of it: then it's short (all output at stake), not required
-                need_cost, m["output"], m["short"] = True, 100.0, True
-            else:
-                m["output"] = 100.0 * (goal_max - g) / abs(goal_max)
-        if need_cost:
-            c = switched_off(off, cost_now)
-            if c is None:
-                return None
-            m["resources"] = (100.0 * (c[0] - cost0[0]) / cost0[0]) if cost0[0] > 1e-12 else 0.0
-            m["machines"] = c[1] - cost0[1]
-        return m
-
-    seen: Dict[frozenset, Optional[Dict[str, Optional[float]]]] = {}
-    def measured(keys) -> Optional[Dict[str, Optional[float]]]:
-        """measure(), remembered per set (synergy re-measures subsets)."""
-        f = frozenset(keys)
-        if f not in seen:
-            seen[f] = measure(tuple(sorted(f)))
-        return seen[f]
-
-    def rounded(m) -> Dict[str, object]:
-        r: Dict[str, object] = {k: None if m is None or m[k] is None
-                                else round(m[k], 3 if k != "machines" else 2) for k in _MEASURES}
-        r["short"] = bool(m and m.get("short"))
-        return r
-
-    single: Dict[str, Optional[dict]] = {}
-    for k in alts:
-        single[k] = measure((k,))
-        out["alt_ranking"].append({"key": k, "required": single[k] is None, **rounded(single[k])})
-    out["alt_ranking"].sort(key=lambda x: (not x["required"],
-                                           *[-(x[m] or 0.0) for m in _MEASURES], x["key"]))
-
-    # ── synergy ──
-    # Each alternate's value alone, inside a group S, is what it gives with the
-    # rest of S absent: v(S) − v(S∖{i}), where v(T) is what the plan loses
-    # without all of T. (Its ranking number, v({i}), is what the plan loses
-    # without it with everything else present — for two that only work
-    # together, each looks as big as the pair.)
-    #   necessary    every member alone is worth (about) nothing, the group is
-    #   commutative  the group is worth clearly more than its members alone, summed
-    # Pairs are found first; pairs sharing a member chain into larger groups.
-    # A group is then cut to its core: a member goes when the group's synergy
-    # (its value beyond the members alone, summed) holds without it — so every
-    # member left is one the synergy needs. Pairs outside the core still count.
-    free = [k for k in alts if single[k] is not None]
-    if len(free) <= _ALL_PAIRS_UPTO:
-        pairs = [(a, b) for i, a in enumerate(free) for b in free[i + 1:]]
-    else:                          # big plans: related alternates (sharing an item)
-        items_of = {k: set(usable[k].inputs) | set(usable[k].outputs) for k in free}
-        pairs = [(a, b) for i, a in enumerate(free) for b in free[i + 1:]
-                 if items_of[a] & items_of[b]][:_MAX_PAIRS]
-    any_short = lambda keys: any(single[k].get("short") for k in keys)
-
-    def measure_for(v: Dict[str, Optional[float]], keys) -> Optional[str]:
-        """The first measure the group moves: output, else resources, else space
-        (output tells nothing when the group is short at your supply)."""
-        for m in (_MEASURES[1:] if any_short(keys) or v.get("short") else _MEASURES):
-            if v.get(m) is not None and v[m] > _SYN_ABS[m]:
-                return m
-        return None
-
-    def kind_of(m: str, value: float, alone: List[float]) -> Optional[str]:
-        if all(x <= _SYN_REL * value for x in alone):
-            return "necessary"
-        if value > sum(max(x, 0.0) for x in alone) * (1 + _SYN_REL) + _SYN_ABS[m]:
-            return "commutative"
-        return None
-
-    def entry(kind, m, keys, value, alone) -> dict:
-        return {"kind": kind, "by": m, "keys": list(keys), "value": round(value, 3),
-                "alone": {k: round(x, 3) for k, x in zip(keys, alone)}}
-
-    found: Dict[str, List[dict]] = {}          # measure → synergistic pairs
-    for a, b in pairs:
-        joint = measured((a, b))
-        if joint is None:                      # can't lose both (but each alone): no synergy
-            continue
-        m = measure_for(joint, (a, b))
-        if m is None:
-            continue
-        alone = [joint[m] - single[b][m], joint[m] - single[a][m]]
-        kind = kind_of(m, joint[m], alone)
-        if kind:
-            found.setdefault(m, []).append(entry(kind, m, (a, b), joint[m], alone))
-
-    for m, pair_entries in found.items():
-        parent: Dict[str, str] = {}
-        def find(x):
-            parent.setdefault(x, x)
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-        for e in pair_entries:
-            parent[find(e["keys"][0])] = find(e["keys"][1])
-        comps: Dict[str, List[str]] = {}
-        for k in sorted(parent):
-            comps.setdefault(find(k), []).append(k)
-        def split(keys) -> Optional[Tuple[float, List[float], float]]:
-            """(group value, members alone, synergy) in measure m."""
-            whole = measured(keys)
-            if whole is None or whole.get(m) is None:
-                return None
-            alone = []
-            for k in keys:
-                rest = measured([x for x in keys if x != k]) if len(keys) > 1 else {m: 0.0}
-                if rest is None or rest.get(m) is None:
-                    return None
-                alone.append(whole[m] - rest[m])
-            return whole[m], alone, whole[m] - sum(max(x, 0.0) for x in alone)
-
-        for keys in comps.values():
-            mine = [e for e in pair_entries if e["keys"][0] in keys]
-            if len(keys) == 2:
-                out["alt_groups"].extend(mine)
-                continue
-            core, got = list(keys), split(keys)
-            while got is not None and len(core) > 2:
-                cut = None                     # the member whose loss keeps most synergy
-                for k in core:
-                    sub = [x for x in core if x != k]
-                    g2 = split(sub)
-                    if g2 is not None and g2[2] >= got[2] * (1 - _SYN_REL) \
-                            and (cut is None or g2[2] > cut[1][2]):
-                        cut = (sub, g2)
-                if cut is None:
-                    break
-                core, got = cut
-            kind = got and kind_of(m, got[0], got[1])
-            if kind:
-                out["alt_groups"].append(entry(kind, m, core, got[0], got[1]))
-            # Pairs not touching the core are separate synergies
-            out["alt_groups"].extend(e for e in mine
-                                     if not kind or not set(e["keys"]) & set(core))
-    order = {m: i for i, m in enumerate(_MEASURES)}
-    out["alt_groups"].sort(key=lambda g: (order[g["by"]], g["kind"] != "necessary", -g["value"]))
+    rnd = lambda m: {k: round(m[k], 2 if k != "machines" else 1) for k in ("output", "resources", "machines")}
+    out["all"] = rnd(best)
+    chosen, now = [], {"output": 0.0, "resources": 0.0, "machines": 0.0}
+    # the next to unlock: most output added, then resources, then space —
+    # a gain too small to count (_GAIN) counts as none
+    key3 = lambda m: tuple((lambda a: a if a > _GAIN[d] else 0.0)(m[d] - now[d]) for d in ("output", "resources", "machines"))
+    left = set(used)
+    while left and len(chosen) < _SUGGEST_MAX:
+        best_k, best_m = None, None
+        for k in sorted(left):
+            m = value(set(chosen) | {k})
+            if m is not None and (best_m is None or key3(m) > key3(best_m)):
+                best_k, best_m = k, m
+        if best_k is None:
+            break
+        add = {d: best_m[d] - now[d] for d in now}
+        if not any(add[d] > _GAIN[d] for d in now):
+            break                       # the rest add nothing on top of these
+        chosen.append(best_k)
+        left.discard(best_k)
+        out["steps"].append({"key": best_k, **rnd(add)})
+        now = {d: best_m[d] for d in now}
+    out["on"] = sorted(k for k in chosen if k in set(scenario.alternate_recipes_enabled))
     return out
 
 

@@ -681,7 +681,12 @@ function renderSentOut() {
   STO.forEach(t => { const v = parseFloat(t.rate) || 0; if (t.item && v > 0) (out[t.item] = out[t.item] || []).push(['Storage', v]); });
   const made = ownMade();
   const unmet = RESULT?.owed_unmet || {};
-  const items = Object.keys(out).sort((a, b) => itemName(a).localeCompare(itemName(b)));
+  // Storage rows are listed just above: here only what others take, and storage that falls short
+  const items = Object.keys(out).filter(it => {
+    if (out[it].some(([n]) => n !== 'Storage')) return true;
+    const total = out[it].reduce((a, [, v]) => a + v, 0);
+    return (unmet[it] ?? (made[it] != null ? total - made[it] : 0)) > 1e-3;
+  }).sort((a, b) => itemName(a).localeCompare(itemName(b)));
   const takers = new Set(Object.values(OUTPUTS?.claims[ownKey()] || {}).flatMap(by => Object.keys(by)).filter(k => k !== STORAGE && k !== ownKey()));
   const again = takers.size && OUTPUTS?.factories.some(f => f.key === ownKey())
     ? `<button class="bsm" id="chain-down" title="Solve this factory, then everything that takes from it, in order">↻ Re-solve this and the ${takers.size} that take from it</button>` : '';

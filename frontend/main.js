@@ -49,6 +49,7 @@ import { openAnalysis, closeAnalysis } from './analysis.js';
 
 import { initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './blackboard.js';
 import { initNav, openPalette, openHelp } from './nav.js';
+import { refreshNewAlts, showNewAlts } from './new-alts.js';
 
 import {
   resize, initLayout, draw,
@@ -363,6 +364,7 @@ function handleSolve() {
       setResult(result);
       onResult();
       updateIssuesBadge(result);
+      refreshNewAlts(altsChanged);
       const hasIssues = result.conflict_hints?.length > 0
         || result.warnings?.length > 0
         || Object.keys(result.error_sources ?? {}).length > 0
@@ -454,9 +456,11 @@ function openScenario(key) {
     // Cached plan from the last solve of exactly these settings
     setResult(last ? last.result : null);
     onResult();
+    refreshNewAlts(altsChanged);
     setSolveStyles(last ? last.styles : []);
     _machinesDirty = true;
     fillUI({ skipMachines: true });
+    updateSummaries();
     updateIssuesBadge(RESULT);
     renderResultsBar();
     renderBuildCost();
@@ -495,6 +499,35 @@ onChain(st => {
   _chainWasRunning = st.running;
 });
 document.addEventListener('resolve-chain', e => startChain(e.detail?.keys || null));
+
+// What each folded section holds, in its header: fold the long ones, still see what's there
+function updateSummaries() {
+  readUI();                         // what the boxes hold now
+  const n = (o) => Object.keys(o || {}).length;
+  const nodes = (SC.resource_nodes || []).filter(r => r.resource);
+  const ex = nodes.reduce((a, r) => a + (r.nodes?.length || (r.extractor === 'fixed' ? 0 : parseInt(r.count ?? 1, 10) || 0)), 0);
+  const imp = (SC.from_factories || []).length;
+  const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  set('sum-res', [`${new Set(nodes.map(r => r.resource)).size} resources`, ex ? `${ex} extractors` : '', imp ? `${imp} imports` : ''].filter(Boolean).join(' · '));
+  set('sum-goals', [n(SC.objective) && `${n(SC.objective)} max`, n(SC.must_produce) && `${n(SC.must_produce)} exact`,
+    n(SC.min_produce) && `${n(SC.min_produce)} at least`, n(SC.max_produce) && `${n(SC.max_produce)} at most`,
+    (SC.to_storage || []).length && `${SC.to_storage.length} stored`].filter(Boolean).join(' · ') || 'none yet');
+  set('sum-oc', [SC.power_shards_available ? `${SC.power_shards_available} shards` : '', SC.somersloops_available ? `${SC.somersloops_available} sloops` : '',
+    SC.max_power_mw ? `cap ${SC.max_power_mw} MW` : '', SC.machines_first ? 'min machines' : '', SC.minimize_new_alts ? 'min new alts' : ''].filter(Boolean).join(' · '));
+}
+let _sumT = null;
+['input', 'change', 'click'].forEach(t => document.getElementById('sidebar').addEventListener(t, () => {
+  clearTimeout(_sumT); _sumT = setTimeout(updateSummaries, 150);
+}));
+
+// The alternates this factory uses changed (ticked under New alternates): the
+// Machines & Alts tab redraws when next shown
+function altsChanged() {
+  _machinesDirty = true;
+  if (document.getElementById('tab-machalt')?.style.display !== 'none') renderMachinesIfNeeded();
+}
+document.addEventListener('suggest-ready', () => renderResultsBar());
+document.getElementById('rb').addEventListener('click', e => { if (e.target.closest('#rb-na')) showNewAlts(); });
 
 // A fix from the issues list: change the factory, then solve again
 document.addEventListener('apply-fix', e => {

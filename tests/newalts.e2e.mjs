@@ -1,6 +1,6 @@
-// Alternates worth unlocking, in a real browser on a throwaway planner: the
-// Analysis window lists the alternates you haven't unlocked that would help
-// this factory, with what each adds; Try it turns one on and solves again.
+// New alternates, in a real browser on a throwaway planner: after a solve the
+// sidebar lists the alternates you haven't unlocked that the best plan would
+// use, in unlock order with what each adds; tick and solve, untick and solve.
 // Needs Playwright; skips without it.   node tests/newalts.e2e.mjs
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -42,24 +42,44 @@ try {
   const goal = () => page.evaluate(() => document.getElementById('rb').innerText);
   let before;
 
-  await step('the analysis lists alternates worth unlocking, with what each adds', async () => {
+  await step('after a solve: new alternates under the solve settings, in unlock order, with what each adds', async () => {
     await page.click('.tabbt[data-tab="saved"]'); await sleep(400);
     await page.locator('.sv-row', { hasText: 'Plates' }).locator('button').first().click(); await sleep(900);
     await page.keyboard.press('Control+r'); await solved(); await sleep(300);
     before = await goal();
-    await page.keyboard.press('Control+i');
-    await page.waitForFunction(() => /Try it/.test(document.getElementById('an-new-alts')?.innerText || ''), null, { timeout: 60000 });
-    const t = await page.locator('#an-new-alts').innerText();
-    assert.match(t, /\+[\d.]+% output/, t);
-    assert.match(await page.locator('#analysis-body').innerText(), /Alternates Worth Unlocking[\s\S]*Alternates This Plan Uses|Alternates Worth Unlocking/i);
+    await page.waitForFunction(() => document.querySelectorAll('#new-alts .na-row').length > 0, null, { timeout: 60000 });
+    const t = await page.locator('#new-alts').innerText();
+    assert.match(t, /With all \d+:\s+\+[\d.]+% output/, t);
+    assert.match(await page.locator('#new-alts .na-row').first().innerText(), /\+[\d.]+% output/);
+    assert.equal(await page.locator('#sec-oc #new-alts').count(), 1, 'under Solve settings');
   });
-  await step('Try it: the alternate is on for this factory and it solves for more', async () => {
-    const key = await page.locator('#an-new-alts [data-try]').first().getAttribute('data-try');
-    await page.locator('#an-new-alts [data-try]').first().click();
-    await solved(); await sleep(400);
+  await page.screenshot({ path: (process.env.TMPDIR || '/tmp') + '/newalts-after-solve.png' });
+  await step('the results bar says so; a click there opens the list', async () => {
+    await page.click('.tabbt[data-tab="saved"]'); await sleep(300);
+    await page.waitForSelector('#rb-na');
+    assert.match(await page.locator('#rb-na').innerText(), /\+[\d.]+%\s+\d+ new alts/i);
+    await page.click('#rb-na'); await sleep(500);
+    assert.equal(await page.locator('#new-alts .na-row').first().isVisible(), true);
+  });
+  await step('tick one, Solve with these: more output, and it is on for this factory; untick: back', async () => {
+    const box = page.locator('#new-alts input[data-k]').first();
+    const key = await box.getAttribute('data-k');
+    await box.check(); await sleep(150);
+    assert.equal(await page.locator('#na-solve').isEnabled(), true);
+    await page.click('#na-solve'); await solved(); await sleep(400);
     assert.notEqual(await goal(), before, 'the plan changed');
+    await page.waitForFunction(() => document.querySelector('#na-solve')?.disabled === true, null, { timeout: 60000 });
     await page.keyboard.press('Control+s'); await sleep(900);
     assert.ok((await api('/api/scenarios/plates')).alternate_recipes_enabled.includes(key), `${key} on for this factory`);
+    await page.waitForFunction(k => document.querySelector(`#new-alts input[data-k="${k}"]`)?.checked, key, { timeout: 60000 });
+    await page.locator(`#new-alts input[data-k="${key}"]`).uncheck();
+    await page.click('#na-solve'); await solved(); await sleep(400);
+    assert.equal(await goal(), before, 'back to the plan without it');
+  });
+  await step('the analysis has no alternate sections', async () => {
+    await page.keyboard.press('Control+i'); await sleep(1500);
+    assert.doesNotMatch(await page.locator('#analysis-body').innerText(), /Alternates (Worth Unlocking|This Plan Uses)|Alternate Recipe Value/i);
+    await page.keyboard.press('Escape');
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

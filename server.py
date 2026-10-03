@@ -1615,6 +1615,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"status": "done", "result": result})
             return
 
+        if path == "/api/suggest-alts":
+            # Alternates worth unlocking for the last solve (computed once per solve)
+            with _dual_lock:
+                cache = dict(_dual_cache)
+            if not cache:
+                self._json(200, {"all": None, "steps": [], "on": []})
+                return
+            if "suggest" not in cache:
+                cache["suggest"] = _solver_mod.suggest_alts(cache["scenario"], ALL_RECIPES)
+                with _dual_lock:
+                    if _dual_cache.get("flows") is cache.get("flows"):
+                        _dual_cache["suggest"] = cache["suggest"]
+            self._json(200, cache["suggest"])
+            return
+
         if path == "/api/duals":
             with _dual_lock:
                 cache = dict(_dual_cache)

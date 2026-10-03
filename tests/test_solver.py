@@ -96,23 +96,33 @@ class WhyNot(unittest.TestCase):
 
 
 class WorthUnlocking(unittest.TestCase):
-    """The alternates you haven't unlocked that would help: what each is said
-    to add is what the full solve gets with it on."""
-    def test_the_best_one_gives_what_it_says(self):
-        sc = solver.Scenario(name="plates", enabled_machines=["Smelter", "Constructor", "Assembler", "Foundry"],
-                             available_resources={"Iron_Ore": 480, "Copper_Ore": 240}, objective={"Iron_Plate": 1})
-        r = solver.solve(sc, RECIPES, META)
-        a = solver.analyse(sc, RECIPES, [dataclasses.asdict(f) for f in r.flows], r.usable, r.objective_value)
-        self.assertTrue(a["new_alts"], a.get("new_alts_error"))
-        best = a["new_alts"][0]
-        self.assertGreater(best["output"], 0)
-        r1 = solver.solve(dataclasses.replace(sc, alternate_recipes_enabled=[best["key"]]), RECIPES, META)
-        gained = 100 * (r1.objective_value / r.objective_value - 1)
-        self.assertAlmostEqual(gained, best["output"], delta=max(1.0, best["output"] * 0.05))
-        # one already turned on isn't suggested again
-        a2 = solver.analyse(dataclasses.replace(sc, alternate_recipes_enabled=[best["key"]]), RECIPES,
-                            [dataclasses.asdict(f) for f in r1.flows], r1.usable, r1.objective_value)
-        self.assertNotIn(best["key"], [x["key"] for x in a2["new_alts"]])
+    """New alternates: the best plan with every one you haven't unlocked, in
+    unlock order. What the first ones are said to add is what full solves get."""
+    def scenario(self, **kw):
+        return solver.Scenario(name="plates", enabled_machines=["Smelter", "Constructor", "Assembler", "Foundry"],
+                               available_resources={"Iron_Ore": 480, "Copper_Ore": 240}, objective={"Iron_Plate": 1}, **kw)
+
+    def test_unlock_order_gives_what_it_says(self):
+        sc = self.scenario()
+        g = solver.suggest_alts(sc, RECIPES)
+        self.assertTrue(g["steps"])
+        r0 = solver.solve(sc, RECIPES, META)
+        on, total = [], 0.0
+        for step in g["steps"][:3]:
+            on.append(step["key"])
+            total += step["output"]
+            r = solver.solve(dataclasses.replace(sc, alternate_recipes_enabled=list(on)), RECIPES, META)
+            gained = 100 * (r.objective_value / r0.objective_value - 1)
+            self.assertAlmostEqual(gained, total, delta=max(1.0, total * 0.05), msg=on)
+        self.assertGreaterEqual(g["all"]["output"] + 1e-6, total)
+
+    def test_turned_on_here_still_listed_unlocked_never(self):
+        first = solver.suggest_alts(self.scenario(), RECIPES)["steps"][0]["key"]
+        here = solver.suggest_alts(self.scenario(alternate_recipes_enabled=[first]), RECIPES)
+        self.assertIn(first, [x["key"] for x in here["steps"]])      # still new: you can untick it
+        self.assertEqual(here["on"], [first])
+        unlocked = solver.suggest_alts(self.scenario(unlocked_alt_recipes=[first]), RECIPES)
+        self.assertNotIn(first, [x["key"] for x in unlocked["steps"]])
 
 
 if __name__ == "__main__":
