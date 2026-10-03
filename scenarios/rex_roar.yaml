@@ -1,0 +1,160 @@
+name: Rex Roar
+description: ''
+alternate_recipes_enabled: []
+enabled_machines:
+- Assembler
+- Coal_Generator
+- Constructor
+- Foundry
+- Fuel_Generator
+- Manufacturer
+- Packager
+- Refinery
+- Smelter
+available_resources:
+  Caterium_Ore: 300.0
+  Coal: 1800.0
+  Copper_Ore: 1350.0
+  Crude_Oil: 2550.0
+  Iron_Ore: 3000.0
+  Limestone: 600.0
+  Raw_Quartz: 1050.0
+  Sulfur: 1050.0
+  Water: 120.0
+resource_nodes:
+- resource: Caterium_Ore
+  extractor: Miner
+  nodes:
+  - ResourceNode134_8590
+  node_shards:
+    ResourceNode134_8590: 3
+- resource: Coal
+  extractor: Miner
+  nodes:
+  - ResourceNode502
+  - ResourceNode501
+  - ResourceNode499
+  - ResourceNode500
+  - ResourceNode573_UAID_40B076DF2F796BE101_1963012602
+  node_shards:
+    ResourceNode502: 3
+    ResourceNode501: 3
+    ResourceNode499: 3
+    ResourceNode500: 3
+    ResourceNode573_UAID_40B076DF2F796BE101_1963012602: 3
+- resource: Copper_Ore
+  extractor: Miner
+  nodes:
+  - ResourceNode547_UAID_40B076DF2F79ADE101_1836911209
+  - ResourceNode94_406
+  - ResourceNode75_6425
+  - ResourceNode150
+  node_shards:
+    ResourceNode547_UAID_40B076DF2F79ADE101_1836911209: 3
+    ResourceNode94_406: 3
+    ResourceNode75_6425: 3
+    ResourceNode150: 3
+- resource: Crude_Oil
+  extractor: Oil_Extractor
+  nodes:
+  - ResourceNode152_995
+  - ResourceNode151
+  - ResourceNode100
+  - ResourceNode98
+  - ResourceNode155
+  - ResourceNode154
+  node_shards:
+    ResourceNode152_995: 3
+    ResourceNode151: 3
+    ResourceNode100: 3
+    ResourceNode98: 3
+    ResourceNode155: 3
+    ResourceNode154: 3
+- resource: Iron_Ore
+  extractor: Miner
+  nodes:
+  - ResourceNode76
+  - ResourceNode73_6071
+  - ResourceNode74
+  - ResourceNode95_579
+  - ResourceNode147
+  - ResourceNode148
+  - ResourceNode149
+  - ResourceNode146
+  node_shards:
+    ResourceNode76: 3
+    ResourceNode73_6071: 3
+    ResourceNode74: 3
+    ResourceNode95_579: 3
+    ResourceNode147: 3
+    ResourceNode148: 3
+    ResourceNode149: 3
+    ResourceNode146: 3
+- resource: Limestone
+  extractor: Miner
+  nodes:
+  - ResourceNode133_6963
+  - ResourceNode96_886
+  node_shards:
+    ResourceNode133_6963: 3
+    ResourceNode96_886: 3
+- resource: Raw_Quartz
+  extractor: Miner
+  nodes:
+  - ResourceNode136_UAID_40B076DF2F7975DF01_1622351243
+  - ResourceNode136_UAID_40B076DF2F7975DF01_1617269241
+  - ResourceNode136_UAID_40B076DF2F7975DF01_1587576239
+  node_shards:
+    ResourceNode136_UAID_40B076DF2F7975DF01_1622351243: 3
+    ResourceNode136_UAID_40B076DF2F7975DF01_1617269241: 3
+    ResourceNode136_UAID_40B076DF2F7975DF01_1587576239: 3
+- resource: Sulfur
+  extractor: Miner
+  nodes:
+  - ResourceNode71_UAID_40B076DF2F7924DB01_1576108771
+  - ResourceNode71_UAID_40B076DF2F7929DB01_1177072656
+  - ResourceNode71_UAID_40B076DF2F7925DB01_1453678949
+  node_shards:
+    ResourceNode71_UAID_40B076DF2F7924DB01_1576108771: 3
+    ResourceNode71_UAID_40B076DF2F7929DB01_1177072656: 3
+    ResourceNode71_UAID_40B076DF2F7925DB01_1453678949: 3
+- resource: Water
+  extractor: Water_Extractor
+  count: 1
+  shards: 0
+from_factories: []
+to_storage:
+- item: Plastic
+  rate: 40.0
+- item: Gas_Filter
+  rate: 1.0
+- item: Cartridge_Smart_Projectile
+  rate: 15.0
+- item: Packaged_Turbofuel
+  rate: 20.0
+- item: Rubber
+  rate: 20.0
+must_produce:
+  Gas_Filter: 1.0
+  Cartridge_Smart_Projectile: 15.0
+  Cluster_Nobelisk: 2.0
+  Packaged_Turbofuel: 20.0
+min_produce:
+  Plastic: 40.0
+  Circuit_Board: 10.0
+  High_Speed_Connector: 10.0
+  Rubber: 20.0
+  Crystal_Oscillator: 10.0
+max_produce: {}
+objective:
+  Power: 1000.0
+  Computer: 5.0
+power_shards_available: null
+somersloops_available: null
+max_power_mw: null
+notes: ''
+minimize_new_alts: false
+machines_first: false
+sloop_search: dive
+unlimited_resources:
+- Water
