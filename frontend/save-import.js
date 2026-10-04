@@ -5,7 +5,7 @@
  */
 
 import { PROGRESS, setUnlockedAlts as setStateAlts, itemName, RECIPES } from './state.js';
-import { setUnlockedAlts, renderMachines, updMachBadge, renderAlts, updAltBadge } from './machines-panel.js';
+import { setUnlockedAlts, renderMachines, updMachBadge } from './machines-panel.js';
 
 const name = k => (RECIPES[k]?.display || k.replace(/_/g, ' ')).replace(/^Alternate:\s*/, '');
 const tier = t => t.replace('Mk', 'Mk.');
@@ -41,7 +41,7 @@ export function applySaveUnlocks() {
     if (d.error) throw new Error(d.error);
     Object.assign(PROGRESS, d.progress);
     setUnlockedAlts(d.unlocked); setStateAlts(d.unlocked);
-    renderMachines(); updMachBadge(); renderAlts(); updAltBadge();
+    renderMachines(); updMachBadge();
     document.dispatchEvent(new CustomEvent('progress-changed'));
     return d;
   });

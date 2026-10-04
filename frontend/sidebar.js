@@ -15,15 +15,13 @@
 import { SC, ALL_ITEMS, itemName, setScenario, PROGRESS } from './state.js';
 import { loadAllKv, syncAllKv }                  from './kv-panel.js';
 import { loadSupply, syncSupply }                from './supply-panel.js';
-import { renderMachines, updMachBadge,
-         renderAlts,     updAltBadge  }           from './machines-panel.js';
+import { renderMachines, updMachBadge }       from './machines-panel.js';
 
 // ── Re-exports consumed by main.js ────────────────────────
 // kv-panel
 export { addKv }        from './kv-panel.js';
 // machines-panel
-export { altsAll, altsNone, setUnlockedSaver, setUnlockedAlts,
-         renderMachines, updMachBadge, renderAlts, updAltBadge } from './machines-panel.js';
+export { setUnlockedSaver, setUnlockedAlts, renderMachines, updMachBadge } from './machines-panel.js';
 
 // ══════════════════════════════════════════════════════════
 // SECTION COLLAPSE
@@ -217,11 +215,8 @@ export function fillUI({ skipMachines = false } = {}) {
   loadAllKv();
   loadSupply();
 
-  // Machines & alts — skipped at boot; rendered lazily on first tab open
-  if (!skipMachines) {
-    renderMachines(); updMachBadge();
-    renderAlts();     updAltBadge();
-  }
+  // Unlocks — skipped at boot; drawn when the window first opens
+  if (!skipMachines) { renderMachines(); updMachBadge(); }
 }
 
 export function readUI() {

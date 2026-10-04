@@ -24,9 +24,8 @@ import {
   toggleSec,
   addKv,
   fillUI, readUI,
-  altsAll, altsNone,
   setUnlockedSaver, setUnlockedAlts,
-  renderMachines, updMachBadge, renderAlts, updAltBadge,
+  renderMachines, updMachBadge,
 } from './sidebar.js';
 
 // Panels are imported here only so their modules are loaded eagerly;
@@ -240,9 +239,8 @@ function applyStylesFirstPass(payload, { hardByproducts = true } = {}) {
 }
 
 // ── Lazy machines/alts render ─────────────────────────────────────────────────
-// renderMachines + renderAlts touch 107 alt chips — skipped at boot and only
-// run when Unlocks or the Alternates tab is first opened, or marked dirty by a
-// scenario load/reset.
+// The Unlocks window — skipped at boot and only drawn when it's first opened,
+// or marked dirty by a scenario load/reset.
 
 let _machinesDirty = true;
 
@@ -250,7 +248,6 @@ function renderMachinesIfNeeded() {
   if (!_machinesDirty) return;
   _machinesDirty = false;
   renderMachines(); updMachBadge();
-  renderAlts();     updAltBadge();
 }
 
 
@@ -647,8 +644,6 @@ document.getElementById('add-min') .addEventListener('click', () => addKv('min')
 document.getElementById('add-max') .addEventListener('click', () => addKv('max'));
 
 // Alternates
-document.getElementById('btn-alts-all') .addEventListener('click', altsAll);
-document.getElementById('btn-alts-none').addEventListener('click', altsNone);
 
 // Solve / Save / Reset
 document.getElementById('bsolve').addEventListener('click', handleSolve);

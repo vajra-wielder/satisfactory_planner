@@ -759,6 +759,11 @@ input.ac-bad { border-color: var(--warn, #f87171) !important; box-shadow: 0 0 0 
 .wm-fix-r { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--t); padding: 3px 0; }
 /* ── New alternates (new-alts.js) ── */
 #new-alts:not(:empty) { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--b); }
+.pr-row { display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; font-size: 11px; color: var(--t2); margin-bottom: 5px; }
+.pr-v { font-family: var(--mono); color: var(--t); }
+.pr-bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--b2); overflow: hidden; }
+.pr-bar i { display: block; height: 100%; background: var(--acc); border-radius: 2px; }
+#prune-box { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--b); }
 .na-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--t3); }
 .na-head b { font-weight: 600; color: #34d399; }
 .na-head .n-hint { text-transform: none; letter-spacing: 0; }
@@ -1014,14 +1019,7 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       <span class="n-hint" id="dk-sub"></span><button class="wmc" id="dk-close" title="Close  (])">&times;</button></div>
     <div class="dk-pane ts" id="dk-alts" data-title="Alternates" data-sub="for this factory">
       <div id="new-alts"></div>
-      <div class="dk-sec">
-        <div class="pt" style="cursor:default">On in this factory <span id="ab" class="ptbadge">0/0</span></div>
-        <div style="display:flex;gap:5px;margin-bottom:7px;flex-wrap:wrap">
-          <button class="bsm" id="btn-alts-all">Enable all</button>
-          <button class="bsm" id="btn-alts-none">None</button>
-        </div>
-        <div id="altspanel"></div>
-      </div>
+      <div class="dk-sec" id="prune-box"></div>
     </div>
     <div class="dk-pane ts" id="dk-analysis" data-title="Analysis" data-sub="what limits this plan" style="display:none">
       <div id="analysis-body"></div>
@@ -1036,7 +1034,7 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
   <div id="dk-rail">
     <button class="rail-btn" data-dk="analysis" title="Analysis: what limits this plan  (1)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></button>
-    <button class="rail-btn" data-dk="alts" title="Alternates for this factory, and new ones to unlock  (2)">
+    <button class="rail-btn" data-dk="alts" title="Alternates worth unlocking, and how the solver pruned the recipes  (2)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg><span class="dk-badge" id="dkb-alts"></span></button>
     <button class="rail-btn" data-dk="build" title="Build cost: machines and materials  (3)">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20h20"/><path d="M5 20V8l7-5 7 5v12"/><path d="M9 20v-6h6v6"/></svg><span class="dk-badge" id="bcc"></span></button>

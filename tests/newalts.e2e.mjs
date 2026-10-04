@@ -86,6 +86,32 @@ try {
     assert.match(await page.locator('#dk-title').innerText(), /Analysis/i);
     assert.doesNotMatch(await page.locator('#analysis-body').innerText(), /Other limits|Solver pruning|Shards used|Sloops used/i);
   });
+  await step('the Alternates tab: suggestions, then the solver\'s pruning; no list of every alternate', async () => {
+    await page.keyboard.press('2'); await sleep(400);
+    const tab = await page.locator('#dk-alts').innerText();
+    assert.doesNotMatch(tab, /On in this factory|Enable all/i);
+    assert.equal(await page.locator('#altspanel').count(), 0);
+    const pr = await page.locator('#prune-box').innerText();
+    assert.match(pr, /Every recipe in the game\s+\d+[\s\S]*Into the solver\s+\d+[\s\S]*In the plan\s+\d+/i, pr);
+    assert.match(pr, /\d+% cut before solving · solved in [\d.]+ (ms|s)/i, pr);
+    const n = pr.match(/Every recipe in the game\s+(\d+)[\s\S]*Allowed by your unlocks\s+(\d+)[\s\S]*Makeable from your resources\s+(\d+)[\s\S]*On a path to your goals\s+(\d+)[\s\S]*Into the solver\s+(\d+)/i).slice(1).map(Number);
+    assert.deepEqual([...n].sort((a, b) => b - a), n, `each step keeps no more than the one before: ${n}`);
+    // below the suggestions
+    const [na, pb] = await Promise.all(['#new-alts', '#prune-box'].map(q => page.locator(q).boundingBox()));
+    assert.ok(pb.y > na.y + na.height - 1);
+  });
+  await step('Unlock ticked: unlocked for every factory, re-solved, no longer suggested', async () => {
+    const box = page.locator('#new-alts input[data-k]').first();
+    const key = await box.getAttribute('data-k');
+    await box.check(); await sleep(150);
+    assert.match(await page.locator('#na-unlock').innerText(), /Unlock ticked \(1\)/);
+    await page.click('#na-unlock');
+    await page.waitForFunction(() => document.getElementById('bsolve').disabled, null, { timeout: 5000 }).catch(() => {});
+    await solved(); await sleep(300);
+    assert.ok((await api('/api/unlocked-alts')).unlocked.includes(key), `${key} unlocked`);
+    await page.waitForFunction(k => document.querySelectorAll('#new-alts .na-row').length > 0 || /None you haven't/.test(document.getElementById('new-alts').innerText), key, { timeout: 60000 });
+    assert.equal(await page.locator(`#new-alts input[data-k="${key}"]`).count(), 0, 'not suggested once unlocked');
+  });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }
   await browser.close();

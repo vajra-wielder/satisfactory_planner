@@ -171,6 +171,7 @@ class SolveResult:
     power_bound_mw: Optional[float] = None   # the model's bound on power (with a cap)
     ceiling: Optional[float] = None   # the goal with machines, shards and sloops fractional — no plan beats it
     diagnosis: Optional[dict] = None   # when it can't be made: what's short, and what would help (diagnose)
+    prune: dict = field(default_factory=dict)   # recipes left after each pruning step (prune_recipes)
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -360,6 +361,7 @@ def _node_resources() -> Set[str]:
 def prune_recipes(
     scenario: Scenario,
     all_recipes: Dict[str,Recipe],
+    stats: Optional[dict] = None,
 ) -> Tuple[Dict[str,Recipe], Dict[str,List[str]]]:
     """
     Phase 1: Forward topological grounding (eliminates cycles).
@@ -367,6 +369,7 @@ def prune_recipes(
     Phase 2: Backward demand from objectives through fireable recipes.
     Phase 3: Unsatisfiable detection with human-readable reasons.
     Pruned set is reused for all LP solves in the iterative loop.
+    stats, if given, gets how many recipes are left after each step.
     """
     available_raw = set(scenario.available_resources.keys())
     target_items  = (set(scenario.objective.keys()) | set(scenario.must_produce.keys())
@@ -452,6 +455,7 @@ def prune_recipes(
         return needed
 
     needed = demand(set())
+    first = len(needed)
     # Pointless loops out, then demand again: what only fed them goes too
     loops = _pointless_loops({k: allowed[k] for k in needed}, target_items,
                              available_raw) if _PRUNE_LOOPS else set()
@@ -462,6 +466,9 @@ def prune_recipes(
     # steers which of several equal LP optima the dive lands on — sorting
     # makes every solve reproducible.
     usable = {k: allowed[k] for k in sorted(needed)}
+    if stats is not None:
+        stats.update(total=len(all_recipes), allowed=len(allowed), fireable=len(fireable),
+                     needed=first, usable=len(usable))
 
     # Phase 3: unsatisfiable detection.
     # Build all_prod only when at least one target item is not grounded — the
@@ -1419,7 +1426,8 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
     cap_overshoot:  Dict[str,float] = {}
 
     # Prune once — reused for all LP solves in this call
-    usable, unsatisfiable = prune_recipes(scenario, all_recipes)
+    prune = {}
+    usable, unsatisfiable = prune_recipes(scenario, all_recipes, prune)
     pruned_count = len(usable)
 
     if not usable and not unsatisfiable:
@@ -1671,6 +1679,7 @@ def _solve_once(scenario: Scenario, all_recipes: Dict[str,Recipe],
         ceiling=None if frac_ceiling is None else round(frac_ceiling, 6),
         usable=usable,
         diagnosis=diagnosis,
+        prune=prune,
     )
     return result
 
@@ -2030,6 +2039,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
                                   else round(min(100.0, 100 * result.objective_value / result.ceiling), 2)),
         "unlimited_resources":   list(scenario.unlimited_resources),
         "pruned_recipe_count":   result.pruned_recipe_count,
+        "prune":                 result.prune,
         "objective_items":       result.objective_items,
         "net_items":             result.net_items,
         "source_nodes":          result.source_nodes,

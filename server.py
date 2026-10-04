@@ -11,7 +11,7 @@ Can also be run directly for browser-only use:
     python server.py 5001   # custom port
 """
 
-import gzip, json, os, re, shutil, sys, tempfile, threading
+import gzip, json, os, re, shutil, sys, tempfile, threading, time
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -1318,6 +1318,7 @@ def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None, owed=N
     try:
         owed = owed or {}
         run = _with_owed(s, owed)
+        t0 = time.perf_counter()
         result = solve(run, all_recipes, machine_meta)
         d = result_to_dict(result, run, machine_meta)
         dropped = False
@@ -1329,6 +1330,7 @@ def _run_solve_job(job_id: str, s, all_recipes, machine_meta, cache=None, owed=N
             if rd.get("status", "").startswith("Optimal"):
                 result, d, run, dropped = retry, rd, s, True
         d = _owed_fields(d, owed, data)
+        d["solve_s"] = round(time.perf_counter() - t0, 3)
         _set_dual_cache(run, d, getattr(result, "usable", None))
         if cache is not None and d.get("status", "").startswith("Optimal"):
             _cache_store(*cache, d, owed, dropped)

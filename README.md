@@ -21,8 +21,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   with every alternate you haven't unlocked, and the ones it uses in the
   order to unlock them — each with what it adds on top of those above:
   output, resources for the same output, machine space. Tick the ones to use
-  in this factory (untick the ones you don't want), then Solve with these.
-  Below them, the alternates you've unlocked that this factory may use
+  in this factory (untick the ones you don't want), then Solve with these —
+  or Unlock ticked once you've found their hard drives: every factory has
+  them, and it re-solves. Every alternate you've unlocked is in every solve
+- Solver pruning (under the suggestions): how far the recipes are narrowed
+  before solving — every recipe, allowed by your unlocks, makeable from your
+  resources, on a path to your goals, into the solver (pointless loops
+  dropped), in the plan — and how long the solve took
 - Folded sidebar sections say what's in them (9 resources · 33 extractors;
   2 max · 4 exact · 5 at least · 5 stored)
 - Weighted multi-item objectives
@@ -105,7 +110,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   machines and extractors draw — what it takes to start it), the goals (a
   power plant's as power made), machines, space, shards, sloops, the ceiling
 - Right panel, for reviewing and improving the plan: Analysis (what limits
-  the plan), Alternates (new ones worth unlocking, and the ones on here),
+  the plan), Alternates (new ones worth unlocking, and the solver's pruning),
   Build cost (machines, extractors, the materials to build them — add any
   other saved factories or the grid's geothermal to one list) and Issues. Its rail shows a
   count on each; a click or 1 / 2 / 3 / 4 opens one, again closes it; the
@@ -244,10 +249,10 @@ satisfactory-planner/
 │   ├── main.js           wiring, solve, save/open
 │   ├── sidebar.js        sidebar shell, autocomplete
 │   ├── dock.js           the right panel: Alternates, Analysis, Build cost, Issues
-│   ├── new-alts.js       alternates worth unlocking
+│   ├── new-alts.js       the Alternates tab: worth unlocking, solver pruning
 │   ├── supply-panel.js   resources, imports, storage, sent out
 │   ├── kv-panel.js       goals
-│   ├── machines-panel.js unlocked machines, miner tier, alternates
+│   ├── machines-panel.js Unlocks: machines, miner tier, unlocked alternates
 │   ├── map-picker.js     the world map: picking nodes, the Blackboard map
 │   ├── save-import.js    reading a save
 │   ├── graph.js          the production graph
