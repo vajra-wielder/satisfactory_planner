@@ -50,7 +50,7 @@ try {
   });
   await step('Alt+→ and Alt+← step through the systems, Alt+1 back to the planner', async () => {
     await page.keyboard.press('Alt+ArrowRight'); await sleep(300);
-    assert.equal(await bbTab(), 'build');
+    assert.equal(await bbTab(), 'map');
     await page.keyboard.press('Alt+ArrowLeft'); await page.keyboard.press('Alt+ArrowLeft'); await sleep(300);
     assert.equal(await bbTab(), 'storage');
     assert.match(await page.locator('#nav-ring').innerText(), /Planner[\s\S]*Storage[\s\S]*Inside a factory/);
@@ -116,7 +116,7 @@ try {
   await step('the map: + zooms in to purity, then names; 0 the whole map; Esc closes the picker', async () => {
     await page.keyboard.press('Control+m'); await page.waitForSelector('#mp-map [data-id]'); await sleep(300);
     await page.mouse.move(5, 500);
-    await page.click('.mp-f[data-r="*"]'); await sleep(200);
+    await page.click('#map-modal .mp-f[data-r="*"]'); await sleep(200);
     const lv = () => page.locator('#mp-map .mp-level').innerText();
     assert.match(await lv(), /Zoom in or pick one resource/);
     assert.equal(await page.locator('#mp-map .mp-pur').count(), 0);
@@ -127,7 +127,7 @@ try {
     assert.ok(await page.locator('#mp-map .mp-lbl').count() > 0, 'labels up close');
     await page.keyboard.press('0'); await sleep(100);
     assert.equal(await page.locator('#mp-map .mp-lbl').count(), 0);
-    await page.click('.mp-f[data-r="Coal"]'); await sleep(100);
+    await page.click('#map-modal .mp-f[data-r="Coal"]'); await sleep(100);
     assert.ok(await page.locator('#mp-map .mp-pur').count() > 0, 'one resource picked: purity shows');
     await page.keyboard.press('Escape'); await sleep(200);
     assert.equal(await page.locator('#map-modal.show').count(), 0);

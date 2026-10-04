@@ -105,7 +105,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Middle: the production graph, with the results bar
 - Right panel, for reviewing and improving the plan: Alternates (new ones
   worth unlocking, and the ones on here), Analysis (what limits the plan),
-  Build cost (machines, extractors, materials) and Issues. Its rail shows a
+  Build cost (machines, extractors, the materials to build them — add any
+  other saved factories or the grid's geothermal to one list) and Issues. Its rail shows a
   count on each; a click or 1 / 2 / 3 / 4 opens one, again closes it; the
   wheel over the rail steps through them; `]` opens or closes the panel.
   Issues opens by itself when a solve falls short
@@ -146,9 +147,6 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   make, the power grid's geothermal, the grid's balance — on average and with
   every geyser at its low (½×) and its high (1½×) — and which factories their
   cap holds back.
-- Build list: the machines (extractors and generators too) and the materials to
-  build them, per factory or for any you pick (the grid's geothermal
-  generators too) — no belts, pipes or stations.
 - Map: whose nodes are whose, what your save already mines, the pure nodes
   still free. ⚡ Geothermal: click geysers to put a geothermal generator on
   them for the power grid (100 / 200 / 400 MW by purity), or add the ones your

@@ -83,7 +83,7 @@ try {
     assert.equal(await page.locator('#kv-from .f-rate').count(), 0);
   });
   await step('the Blackboard\'s map shows what\'s unused', async () => {
-    await page.keyboard.press('Alt+7'); await page.waitForSelector('.mp-view [data-id]'); await sleep(400);
+    await page.keyboard.press('Alt+6'); await page.waitForSelector('.mp-view [data-id]'); await sleep(400);
     await page.click('.mp-filters .mp-f[data-r="Iron_Ore"]'); await sleep(200);
     assert.match(await page.locator('.mp-view .mp-spare').textContent(), /unused/);
     assert.match(await page.locator('.mp-legend').innerText(), /Unused at factories[\s\S]*Iron intermediate/);

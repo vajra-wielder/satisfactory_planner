@@ -63,7 +63,6 @@ export function openBlackboard() {
   $('bb-modal').classList.add('show');
   fetch('/api/blackboard').then(r => r.json()).then(d => {
     DATA = d;
-    BUILD = null;
     FLUIDS = new Set(d.fluids || []);
     LAYOUT = { positions: {}, routes: [], geysers: [], ...(d.layout || {}), belt: PROGRESS.belt, pipe: PROGRESS.pipe };
     LAYOUT.routes = (LAYOUT.routes || []).filter(r => factory(r.a) && factory(r.b));
@@ -89,7 +88,7 @@ export function closeBlackboard() { $('bb-modal').classList.remove('show'); }
 let TAB = 'factories';
 // The Blackboard's tabs, in order — the systems you move between (nav.js)
 export const BB_TABS = [['factories', 'Between factories'], ['flows', 'Flows'], ['storage', 'Storage'], ['power', 'Power'],
-  ['build', 'Build list'], ['map', 'Map'], ['find', 'Who makes'], ['splits', 'Inside a factory']];
+  ['map', 'Map'], ['find', 'Who makes'], ['splits', 'Inside a factory']];
 export const blackboardOpen = () => isOpen();
 export const blackboardTab = () => TAB;
 /** Open the Blackboard on a tab (and, for Who makes, an item). */
@@ -101,10 +100,9 @@ export function goBlackboard(tab, item) {
 function showTab(tab) {
   TAB = tab;
   document.querySelectorAll('#bb-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  ['factories', 'flows', 'storage', 'power', 'build', 'map', 'find', 'splits'].forEach(t => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
+  ['factories', 'flows', 'storage', 'power', 'map', 'find', 'splits'].forEach(t => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
   if (tab === 'factories') drawRoutes();
   if (tab === 'power') renderPower();
-  if (tab === 'build') renderBuild();
   if (tab === 'map') renderMapTab();
   if (tab === 'flows') renderFlows();
   if (tab === 'storage') renderStorage();
@@ -638,63 +636,6 @@ function renderPower() {
 }
 
 // ══════════════════════════════════════════════════════════
-// BUILD LIST — machines and materials to have ready
-// ══════════════════════════════════════════════════════════
-
-let BUILD = null, BUILD_PICK = null;
-const BUILD_SEEN = new Set();
-const machName = m => m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1');
-
-function renderBuild() {
-  const el = $('bb-build');
-  if (!BUILD) {
-    el.innerHTML = '<p class="bb-hint">Loading…</p>';
-    fetch('/api/build-list').then(r => r.json()).then(d => { BUILD = d.factories; renderBuild(); });
-    return;
-  }
-  // what you've ticked stays ticked; anything new (a factory, the grid) starts ticked
-  BUILD_PICK = BUILD_PICK || new Set();
-  BUILD.forEach(f => { if (f.solved && !BUILD_SEEN.has(f.key)) BUILD_PICK.add(f.key); BUILD_SEEN.add(f.key); });
-  const pick = BUILD.filter(f => BUILD_PICK.has(f.key));
-  const sum = field => {
-    const out = {};
-    pick.forEach(f => Object.entries(f[field] || {}).forEach(([k, v]) => {
-      (out[k] = out[k] || { total: 0, by: [] }).total += v;
-      out[k].by.push(`${f.name} ${fmt(v)}`);
-    }));
-    return Object.entries(out).sort((a, b) => b[1].total - a[1].total);
-  };
-  const machines = [...sum('machines'), ...sum('extractors')];
-  const mats = sum('materials');
-  const shards = pick.reduce((s, f) => s + f.shards, 0), sloops = pick.reduce((s, f) => s + f.sloops, 0);
-  const table = (rows, name) => rows.map(([k, x]) => `<tr><td>${name(k)}</td><td class="num">${fmt(x.total)}</td>
-    <td class="st-by">${pick.length > 1 ? x.by.join(' · ') : ''}</td></tr>`).join('');
-  el.innerHTML = `
-    <div class="bl-pick">${BUILD.map(f => `<label title="${f.solved ? (f.stale ? 'Its last plan — it changed since' : '') : 'Not solved: nothing to count yet'}">
-      <input type="checkbox" data-key="${f.key}" ${BUILD_PICK.has(f.key) ? 'checked' : ''} ${f.solved ? '' : 'disabled'}/> ${f.name}${f.stale ? ' <span class="bb-hint">(old plan)</span>' : ''}</label>`).join('')}
-      <button class="bsm" id="bl-copy" title="Copy the list as text">Copy</button></div>
-    <div class="bl-cols">
-      <table class="st-tab"><tr><th>Machines</th><th style="text-align:right">Count</th><th></th></tr>${table(machines, machName)}
-        ${shards ? `<tr><td>💎 Power shards</td><td class="num">${shards}</td><td></td></tr>` : ''}
-        ${sloops ? `<tr><td>🔮 Somersloops</td><td class="num">${sloops}</td><td></td></tr>` : ''}</table>
-      <table class="st-tab"><tr><th>Materials</th><th style="text-align:right">Amount</th><th></th></tr>${table(mats, itemName)}</table>
-    </div>
-    <p class="bb-hint" style="margin-top:10px">Every machine its plan builds, with its extractors and generators — belts, pipes, splitters, stations and foundations aren't counted.</p>`;
-  el.querySelectorAll('.bl-pick input').forEach(c => c.addEventListener('change', () => {
-    c.checked ? BUILD_PICK.add(c.dataset.key) : BUILD_PICK.delete(c.dataset.key);
-    renderBuild();
-  }));
-  $('bl-copy').addEventListener('click', () => {
-    const lines = [`Build list: ${pick.map(f => f.name).join(', ')}`, '', 'Machines',
-      ...machines.map(([k, x]) => `  ${machName(k)}: ${fmt(x.total)}`),
-      ...(shards ? [`  Power shards: ${shards}`] : []), ...(sloops ? [`  Somersloops: ${sloops}`] : []),
-      '', 'Materials', ...mats.map(([k, x]) => `  ${itemName(k)}: ${fmt(x.total)}`)];
-    navigator.clipboard?.writeText(lines.join('\n'));
-    $('bl-copy').textContent = 'Copied';
-  });
-}
-
-// ══════════════════════════════════════════════════════════
 // MAP — every factory's nodes, what your save mines, what's free
 // ══════════════════════════════════════════════════════════
 
@@ -712,7 +653,7 @@ function renderMapTab() {
     })),
     // the grid's geothermal generators: saved with the board, at once
     grid: LAYOUT.geysers || [],
-    onGrid: ids => { LAYOUT.geysers = ids; BUILD = null; saveNow(); },
+    onGrid: ids => { LAYOUT.geysers = ids; saveNow(); },
   }));
 }
 

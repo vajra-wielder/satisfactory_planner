@@ -140,60 +140,80 @@ export function renderResultsBar() {
   rb.innerHTML = h;
 }
 
+// ══════════════════════════════════════════════════════════
+// BUILD COST — this factory's plan, plus any saved factories you add
+// ══════════════════════════════════════════════════════════
+let BC_SELF = null, BC_NAME = '';     // the open factory: its live plan stands in for its saved one
+let BL = null, BL_ASKED = false;      // /api/build-list: every saved factory (and the grid)
+const BL_PICK = new Set();
 let _bcLastKey = null;
+/** Which saved factory the planner has open (null: a new one). */
+export function setBuildSelf(key, name) { BC_SELF = key; BC_NAME = name || ''; }
 export function toggleBC() { openDock('build'); }
-export function renderBuildCost() {
-  // the plan's machines, plus the extractors and geothermal generators its nodes need
-  const cost   = { ...(RESULT?.build_cost ?? {}) };
-  const ex     = RESULT?.extractor_build ?? {};
-  Object.values(ex).forEach(e => Object.entries(e.cost || {}).forEach(([k, v]) => { cost[k] = (cost[k] || 0) + v; }));
-  const entries = Object.entries(cost).sort((a, b) => b[1] - a[1]);
-  const shards = RESULT?.build_cost_shards ?? 0;
-  const sloops = RESULT?.build_cost_sloops ?? 0;
+const machName = m => m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1');
+const fmtN = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(2)).toLocaleString();
+
+/** Redraw; fresh=true also re-reads the saved factories (when the tab opens). */
+export function renderBuildCost(fresh = false) {
   const body = document.getElementById('bcb');
-  if (!entries.length && !shards && !sloops) {
-    setBadge('bcc', '');
-    body.innerHTML = '<p class="n-hint">Solve to see the machines and materials to have ready.</p>';
-    _bcLastKey = null;
-    return;
+  if (fresh || (!BL && !BL_ASKED)) {
+    BL_ASKED = true;
+    fetch('/api/build-list').then(r => r.json()).then(d => { BL = d.factories || []; renderBuildCost(); }).catch(() => {});
   }
-  setBadge('bcc', String(entries.length));
+  // this factory, from the last solve: its machines, extractors and what they take
+  const self = { key: '@self', name: BC_NAME || 'This factory', machines: {}, extractors: {}, materials: { ...(RESULT?.build_cost ?? {}) },
+    shards: RESULT?.build_cost_shards ?? 0, sloops: RESULT?.build_cost_sloops ?? 0, solved: !!RESULT?.flows?.length };
+  (RESULT?.flows || []).forEach(f => { self.machines[f.machine] = (self.machines[f.machine] || 0) + (f.machines_final || 0); });
+  Object.entries(RESULT?.extractor_build ?? {}).forEach(([m, e]) => {
+    self.extractors[m] = e.count;
+    Object.entries(e.cost || {}).forEach(([k, v]) => { self.materials[k] = (self.materials[k] || 0) + v; });
+  });
+  const others = (BL || []).filter(f => f.key !== BC_SELF);
+  const pick = [...(self.solved ? [self] : []), ...others.filter(f => f.solved && BL_PICK.has(f.key))];
+  const sum = field => {
+    const out = {};
+    pick.forEach(f => Object.entries(f[field] || {}).forEach(([k, v]) => {
+      if (!v) return;
+      (out[k] = out[k] || { total: 0, by: [] }).total += v;
+      out[k].by.push(`${f.name} ${fmtN(v)}`);
+    }));
+    return Object.entries(out).sort((a, b) => b[1].total - a[1].total);
+  };
+  const machines = sum('machines'), extractors = sum('extractors'), mats = sum('materials');
+  const shards = pick.reduce((t, f) => t + (f.shards || 0), 0), sloops = pick.reduce((t, f) => t + (f.sloops || 0), 0);
+  setBadge('bcc', self.solved ? String(machines.length + extractors.length) : '');
 
-  const cacheKey = JSON.stringify(cost) + JSON.stringify(ex) + shards + sloops;
-  if (cacheKey === _bcLastKey) return;
-  _bcLastKey = cacheKey;
+  const key = JSON.stringify([pick.map(f => f.key), machines, extractors, mats, shards, sloops, others.map(f => [f.key, f.solved])]);
+  if (key === _bcLastKey) return;
+  _bcLastKey = key;
 
-  body.innerHTML = '';
-  const head = t => { const h = document.createElement('div'); h.className = 'bc-h'; h.textContent = t; body.appendChild(h); };
-  // What to build, then what to build it from — a list to have ready before you start
-  const machines = {};
-  (RESULT?.flows || []).forEach(f => { machines[f.machine] = (machines[f.machine] || 0) + (f.machines_final || 0); });
-  const lines = [];
-  const copy = document.createElement('button');
-  copy.className = 'bsm'; copy.textContent = 'Copy as a list'; copy.style.float = 'right';
-  copy.addEventListener('click', () => navigator.clipboard?.writeText(lines.join('\n')).then(() => { copy.textContent = 'Copied'; }));
-  body.appendChild(copy);
-  head('Machines');
-  Object.entries(machines).sort((a, b) => b[1] - a[1]).forEach(([m, n]) => {
-    const r = document.createElement('div'); r.className = 'bcr';
-    r.innerHTML = `<span>${m.replace(/_/g, ' ')}</span><span>×${n}</span>`;
-    body.appendChild(r); lines.push(`${m.replace(/_/g, ' ')} ×${n}`);
+  const many = pick.length > 1;
+  const rows = (list, name, icon = '') => list.map(([k, x]) =>
+    `<div class="bcr" ${many ? `title="${x.by.join(' · ')}"` : ''}><span>${icon}${name(k)}</span><span>×${fmtN(x.total)}</span></div>`).join('');
+  const chips = others.length ? `<div class="bc-add"><span class="n-hint">Add:</span>${others.map(f =>
+    `<label title="${f.solved ? (f.stale ? 'Its last plan — it changed since' : 'Add its build to this list') : 'Not solved: nothing to count yet'}">
+      <input type="checkbox" data-key="${f.key}" ${BL_PICK.has(f.key) ? 'checked' : ''} ${f.solved ? '' : 'disabled'}/>${f.name}${f.stale ? '*' : ''}</label>`).join('')}</div>` : '';
+  const empty = !machines.length && !extractors.length && !mats.length && !shards && !sloops;
+  body.innerHTML = `${chips}
+    ${empty ? '<p class="n-hint">Solve to see the machines and materials to have ready.</p>' : `
+    <button class="bsm" id="bc-copy" style="float:right">Copy as a list</button>
+    <div class="bc-h">Machines${many ? ` · ${pick.length} factories` : ''}</div>${rows(machines, machName)}
+    ${extractors.length ? `<div class="bc-h">Extractors</div>${rows(extractors, machName, '⛏ ')}` : ''}
+    <div class="bc-h">Materials to build them</div>${rows(mats, itemName)}
+    ${shards ? `<div class="bcr"><span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span></div>` : ''}
+    ${sloops ? `<div class="bcr"><span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span></div>` : ''}
+    <p class="n-hint" style="margin-top:8px">Belts, pipes, splitters, stations and foundations aren't counted.</p>`}`;
+  body.querySelectorAll('.bc-add input').forEach(c => c.addEventListener('change', () => {
+    c.checked ? BL_PICK.add(c.dataset.key) : BL_PICK.delete(c.dataset.key);
+    renderBuildCost();
+  }));
+  body.querySelector('#bc-copy')?.addEventListener('click', e => {
+    const lines = [`Build list: ${pick.map(f => f.name).join(', ')}`, '', 'Machines',
+      ...[...machines, ...extractors].map(([k, x]) => `  ${machName(k)} ×${fmtN(x.total)}`),
+      ...(shards ? [`  Power Shards ×${shards}`] : []), ...(sloops ? [`  Somersloops ×${sloops}`] : []),
+      '', 'Materials', ...mats.map(([k, x]) => `  ${itemName(k)} ×${fmtN(x.total)}`)];
+    navigator.clipboard?.writeText(lines.join('\n')).then(() => { e.target.textContent = 'Copied'; });
   });
-  if (Object.keys(ex).length) head('Extractors');
-  Object.entries(ex).forEach(([m, e]) => {
-    const r = document.createElement('div'); r.className = 'bcr';
-    r.innerHTML = `<span style="color:var(--t2)">⛏ ${m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1')}</span><span>×${e.count}</span>`;
-    body.appendChild(r); lines.push(`${m.replace(/_/g, ' ')} ×${e.count}`);
-  });
-  head('Materials to build them');
-  if (lines.length) lines.push('');
-  entries.forEach(([item, qty]) => {
-    const r = document.createElement('div'); r.className = 'bcr';
-    r.innerHTML = `<span>${itemName(item)}</span><span>×${qty}</span>`;
-    body.appendChild(r); lines.push(`${itemName(item)} ×${qty}`);
-  });
-  if (shards) { const r = document.createElement('div'); r.className = 'bcr'; r.innerHTML = `<span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span>`; body.appendChild(r); }
-  if (sloops) { const r = document.createElement('div'); r.className = 'bcr'; r.innerHTML = `<span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span>`; body.appendChild(r); }
 }
 
 // ══════════════════════════════════════════════════════════

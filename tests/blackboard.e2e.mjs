@@ -89,11 +89,9 @@ try {
     await page.click('#bb-tabs button[data-tab="storage"]'); await sleep(200);
     assert.match(await page.locator('#bb-storage').innerText(), /Iron Rod\s+10\s+600/);
   });
-  check('power, build list and map render', async () => {
+  check('power and map render', async () => {
     await page.click('#bb-tabs button[data-tab="power"]'); await sleep(200);
     assert.match(await page.locator('#bb-power').innerText(), /Grid:/);
-    await page.click('#bb-tabs button[data-tab="build"]'); await page.waitForSelector('.bl-pick');
-    assert.match(await page.locator('#bb-build').innerText(), /Smelter/);
     await page.click('#bb-tabs button[data-tab="map"]'); await page.waitForSelector('#bb-map svg');
     assert.ok(await page.locator('#bb-map [data-id]').count() > 500);
   });
@@ -107,11 +105,19 @@ try {
     await page.click('#bb-tabs button[data-tab="power"]'); await sleep(400);
     const pw = await page.locator('#bb-power').innerText();
     assert.match(pw, /geothermal × 2/); assert.match(pw, /every geyser at its low/);
-    await page.click('#bb-tabs button[data-tab="build"]'); await page.waitForSelector('.bl-pick');
-    assert.match(await page.locator('#bb-build').innerText(), /Geothermal Generator\s+2/);
     const layout = await api('/api/blackboard');
     assert.equal(layout.layout.geysers.length, 2);
     assert.equal(layout.grid.count, 2);
+  });
+  check('one build cost, on the right panel: add saved factories and the grid to it', async () => {
+    await page.keyboard.press('Escape'); await sleep(200);   // off the Blackboard
+    assert.equal(await page.locator('#bb-tabs button[data-tab="build"]').count(), 0, 'no second build list');
+    await page.mouse.click(700, 400); await page.keyboard.press('3');
+    await page.waitForSelector('#bcb .bc-add input:not([disabled])');
+    for (const c of await page.locator('#bcb .bc-add input:not([disabled])').all()) { await c.check(); await sleep(100); }
+    const t = await page.locator('#bcb').innerText();
+    assert.match(t, /Smelter/, t); assert.match(t, /Geothermal Generator\s+×2/, t);
+    await page.keyboard.press('3'); await page.click('#btn-blackboard'); await page.waitForSelector('#bb-modal.show'); await sleep(300);
   });
   check('who makes Iron Rod: sent out, taken, stored and free', async () => {
     await page.click('#bb-tabs button[data-tab="find"]');

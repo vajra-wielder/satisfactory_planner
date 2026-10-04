@@ -39,7 +39,7 @@ import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards,
 
 import {
   openWarn, closeWarn,
-  renderResultsBar, renderBuildCost, toggleBC,
+  renderResultsBar, renderBuildCost, toggleBC, setBuildSelf,
   renderSaved, renderIssues,
 } from './ui.js';
 
@@ -415,7 +415,7 @@ function handleSave() {
     body._renamed_from = LOADED_KEY;
   saveScenario(key, body)
     .then(res => {
-      LOADED_KEY = key; LOADED_NAME = SC.name;
+      LOADED_KEY = key; LOADED_NAME = SC.name; setBuildSelf(key, SC.name);
       if (res?.cut?.length) applyCut(res);   // over what the sources have left
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
@@ -431,7 +431,7 @@ function handleSave() {
 
 function handleReset() {
   resetSC();
-  LOADED_KEY = LOADED_NAME = null;
+  LOADED_KEY = LOADED_NAME = null; setBuildSelf(null);
   setResult(null);
   _machinesDirty = true;
   fillUI({ skipMachines: true });
@@ -451,7 +451,7 @@ function handleReset() {
 function openScenario(key) {
   return fetchScenario(key).then(data => {
     const { _last_solve: last, pinboard: _oldPinboard, ...scenario } = data;
-    LOADED_KEY = key; LOADED_NAME = scenario.name;
+    LOADED_KEY = key; LOADED_NAME = scenario.name; setBuildSelf(key, scenario.name);
     scenario.enabled_machines = [...(PROGRESS.machines || [])];   // shared
     Object.assign(SC, scenario);
     if (!scenario.unlimited_resources) SC.unlimited_resources = [];   // older saves
@@ -584,10 +584,6 @@ document.getElementById('btn-goto')     .addEventListener('click', openPalette);
 document.getElementById('btn-keys')     .addEventListener('click', openHelp);
 
 // Rail
-document.getElementById('rail-build')   .addEventListener('click', toggleSidebar);
-document.getElementById('rail-machalt') .addEventListener('click', openUnlocks);
-document.getElementById('rail-saved')   .addEventListener('click', openFactories);
-document.getElementById('rail-solve')   .addEventListener('click', handleSolve);
 
 // Section toggles
 ['res', 'goals', 'oc', 'nt'].forEach(id =>
@@ -632,7 +628,7 @@ initDock();
 onDockTab(tab => {
   if (tab === 'alts') { renderMachinesIfNeeded(); refreshNewAlts(altsChanged); }
   if (tab === 'analysis') showAnalysis();
-  if (tab === 'build') renderBuildCost();
+  if (tab === 'build') renderBuildCost(true);
   if (tab === 'issues') renderIssues();
 });
 
