@@ -116,6 +116,17 @@ class WorthUnlocking(unittest.TestCase):
             self.assertAlmostEqual(gained, total, delta=max(1.0, total * 0.05), msg=on)
         self.assertGreaterEqual(g["all"]["output"] + 1e-6, total)
 
+    def test_fast_and_the_same_every_time(self):
+        # the deepest chain, every alternate new: warm copies in parallel, under a second
+        import time
+        from tests.stress import DEEP
+        sc = dataclasses.replace(DEEP["ficsonium"], alternate_recipes_enabled=[], somersloops_available=0)
+        t = time.time()
+        runs = [solver.suggest_alts(sc, RECIPES) for _ in range(3)]
+        self.assertLess((time.time() - t) / 3, 2.0)
+        self.assertTrue(runs[0]["steps"])
+        self.assertTrue(all([x["key"] for x in r["steps"]] == [x["key"] for x in runs[0]["steps"]] for r in runs))
+
     def test_turned_on_here_still_listed_unlocked_never(self):
         first = solver.suggest_alts(self.scenario(), RECIPES)["steps"][0]["key"]
         here = solver.suggest_alts(self.scenario(alternate_recipes_enabled=[first]), RECIPES)

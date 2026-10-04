@@ -1766,11 +1766,82 @@ def analyse(scenario: Scenario, all_recipes: Dict[str, Recipe],
 _SUGGEST_MAX = 12
 _GAIN = {"output": 0.1, "resources": 0.1, "machines": 0.5}   # less than this adds nothing
 
+class _AltLab:
+    """One copy of the analysis model for trying alternates on and off. Only
+    their columns' bounds change between solves, so GLOP keeps its basis
+    (presolve off) and each solve starts from the last."""
+    def __init__(self, sc: Scenario, usable: Dict[str, Recipe], cand: List[str]):
+        self.lp = lp = _Model(sc, usable, integer=False)
+        lp.s.SetSolverSpecificParametersAsString(_LP_WARM)
+        self.cols = {k: [lp.var[("q", k, l)] for l in lp.levels[k]] for k in cand}
+        unlimited = set(sc.unlimited_resources)
+        finite = [it for it, v in sc.available_resources.items() if v > 0 and it not in unlimited and it in lp.res_ct]
+        self.score: Dict[Key, float] = {}
+        for it in finite:
+            w = 1.0 / len(finite) / sc.available_resources[it]
+            for key, c in lp.net.get(it, {}).items():
+                self.score[key] = self.score.get(key, 0.0) - c * w
+        self.caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
+        if "power" in lp.budget_ct:
+            self.caps.append(lp.budget_ct["power"])
+        self.on: Optional[frozenset] = None
+
+    def only(self, on) -> None:
+        on = frozenset(on)
+        if on == self.on:
+            return
+        for k, vs in self.cols.items():
+            for v in vs:
+                v.SetUb(self.lp.inf if k in on else 0.0)
+        self.on = on
+
+    def goal(self, on) -> Optional[float]:
+        self.only(on)
+        lp = self.lp
+        return lp.value(lp.goal) if lp.run(lp.goal, True, _STAGE_TIME_S[0]) is not None else None
+
+    def cost(self, on, target, within=None, space=True):
+        """(least resource score, least space using no more resources than
+        `within` — or than the least — or None if not asked, the candidates
+        that plan runs) for the target output, caps lifted."""
+        self.only(on)
+        lp, T = self.lp, _STAGE_TIME_S[0]
+        ubs = [ct.ub() for ct in self.caps]
+        for ct in self.caps:
+            ct.SetUb(lp.inf)
+        held = lp.ct(target - max(1e-9, abs(target) * 1e-7), lp.inf, lp.goal) if lp.goal and target is not None else None
+        try:
+            r, lock = 0.0, None
+            if self.score:
+                if lp.run(self.score, False, T) is None:
+                    return None
+                r = lp.value(self.score)
+                if not space:
+                    return (r, None, set())
+                bound = r if within is None else max(r, within)
+                lock = lp.ct(-lp.inf, bound + abs(bound) * 1e-7 + 1e-9, self.score)
+            got = None
+            if lp.run(lp.space, False, T) is not None:
+                runs = {k for k, vs in self.cols.items() if any(v.solution_value() > 1e-6 for v in vs)}
+                got = (r, lp.value(lp.space), runs)
+            if lock is not None:
+                lock.SetBounds(-lp.inf, lp.inf)
+            return got
+        finally:
+            if held is not None:
+                held.SetBounds(-lp.inf, lp.inf)
+            for ct, ub in zip(self.caps, ubs):
+                ct.SetUb(ub)
+
+
 def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
     """{"all": {output, resources, machines} with every one on,
         "steps": [{key, output, resources, machines}] — in unlock order, each
         what it adds to the ones above (as % of now / space units),
-        "on": [keys among them this factory has turned on]}"""
+        "on": [keys among them this factory has turned on]}
+    Pruned like a solve (prune_recipes, the new ones allowed); each round's
+    candidates are tried in parallel on warm copies of the model, and only
+    output is measured for each unless output doesn't decide the order."""
     out: dict = {"all": None, "steps": [], "on": []}
     unlocked = set(scenario.unlocked_alt_recipes)
     new = {k for k, r in all_recipes.items() if r.alternate and k not in unlocked}
@@ -1782,119 +1853,110 @@ def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
     cand = sorted(k for k in usable if k in new)
     if not cand:
         return out
-    lp = _Model(sc, usable, integer=False)
-    T = _STAGE_TIME_S[0]
-    cols = {k: [lp.var[("q", k, l)] for l in lp.levels[k]] for k in cand}
-
-    def only(on) -> None:
-        for k, vs in cols.items():
-            for v in vs:
-                v.SetUb(lp.inf if k in on else 0.0)
-
-    unlimited = set(scenario.unlimited_resources)
-    finite = [it for it, v in sc.available_resources.items() if v > 0 and it not in unlimited and it in lp.res_ct]
-    score: Dict[Key, float] = {}
-    for it in finite:
-        w = 1.0 / len(finite) / sc.available_resources[it]
-        for key, c in lp.net.get(it, {}).items():
-            score[key] = score.get(key, 0.0) - c * w
-    caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
-    if "power" in lp.budget_ct:
-        caps.append(lp.budget_ct["power"])
-
-    def goal_now() -> Optional[float]:
-        return lp.value(lp.goal) if lp.run(lp.goal, True, T) is not None else None
-
-    def cost_now(target, within=None):
-        """(least resource score, least space using no more resources than
-        `within` — or than the least), for the target output, caps lifted;
-        and the candidates that plan runs."""
-        ubs = [ct.ub() for ct in caps]
-        for ct in caps:
-            ct.SetUb(lp.inf)
-        held = lp.ct(target - max(1e-9, abs(target) * 1e-7), lp.inf, lp.goal) if lp.goal and target is not None else None
-        try:
-            r, lock = 0.0, None
-            if score:
-                if lp.run(score, False, T) is None:
-                    return None
-                r = lp.value(score)
-                bound = r if within is None else max(r, within)
-                lock = lp.ct(-lp.inf, bound + abs(bound) * 1e-7 + 1e-9, score)
-            got = None
-            if lp.run(lp.space, False, T) is not None:
-                runs = {k for k, vs in cols.items() if any(v.solution_value() > 1e-6 for v in vs)}
-                got = (r, lp.value(lp.space), runs)
-            if lock is not None:
-                lock.SetBounds(-lp.inf, lp.inf)
-            return got
-        finally:
-            if held is not None:
-                held.SetBounds(-lp.inf, lp.inf)
-            for ct, ub in zip(caps, ubs):
-                ct.SetUb(ub)
-
-    only(set())
-    g0 = goal_now() if lp.goal else None
-    if lp.goal and g0 is None:
+    lab = _AltLab(sc, usable, cand)
+    has_goal = bool(lab.lp.goal)
+    g0 = lab.goal(()) if has_goal else None
+    if has_goal and g0 is None:
         return out                      # it can't be made without them: the diagnosis says which
-    c0 = cost_now(g0)
+    c0 = lab.cost((), g0)
     if c0 is None:
         return out
+    labs = [lab]                        # more copies when a round is worth threads
 
-    def value(on) -> Optional[dict]:
-        """What these on add to the plan with none: output, resources, space."""
-        only(on)
-        m = {"output": 0.0, "resources": 0.0, "machines": 0.0}
-        if lp.goal and g0:
-            g = goal_now()
+    def each(fn, keys):
+        """fn(lab, key) for every key, on up to _THREADS warm copies at once."""
+        keys = list(keys)
+        n = min(_THREADS, max(1, len(keys) // 6))
+        while len(labs) < n:
+            labs.append(_AltLab(sc, usable, cand))
+        res: Dict[str, object] = {}
+        def work(lb, ks):
+            for k in ks:
+                res[k] = fn(lb, k)
+        if n <= 1:
+            work(labs[0], keys)
+        else:
+            ts = [threading.Thread(target=work, args=(labs[i], keys[i::n])) for i in range(n)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        return res
+
+    out_of = lambda g: 100.0 * (g - g0) / abs(g0) if has_goal and g0 else 0.0
+    res_of = lambda c: 100.0 * (c0[0] - c[0]) / c0[0] if c0[0] > 1e-12 else 0.0
+
+    def full(on) -> Optional[dict]:
+        m = {"output": 0.0}
+        if has_goal and g0:
+            g = lab.goal(on)
             if g is None:
                 return None
-            m["output"] = 100.0 * (g - g0) / abs(g0)
-        c = cost_now(g0, within=c0[0])
+            m["output"] = out_of(g)
+        c = lab.cost(on, g0, within=c0[0])
         if c is None:
             return None
-        m["resources"] = 100.0 * (c0[0] - c[0]) / c0[0] if c0[0] > 1e-12 else 0.0
-        m["machines"] = c0[1] - c[1]
-        m["runs"] = c[2]
+        m.update(resources=res_of(c), machines=c0[1] - c[1], runs=c[2])
         return m
 
-    best = value(set(cand))
+    best = full(set(cand))
     if best is None:
         return out
     # The best plan's own: what it runs at its best output (more output first)
-    used = set()
-    if lp.goal and g0:
-        only(set(cand))
-        g = goal_now()
-        if g is not None:
-            c = cost_now(g)
-            used = c[2] if c else set()
-    used |= best["runs"]
+    used = set(best["runs"])
+    if has_goal and g0:
+        g = lab.goal(set(cand))
+        c = lab.cost(set(cand), g) if g is not None else None
+        used |= c[2] if c else set()
     if not used:
         return out
     rnd = lambda m: {k: round(m[k], 2 if k != "machines" else 1) for k in ("output", "resources", "machines")}
     out["all"] = rnd(best)
     chosen, now = [], {"output": 0.0, "resources": 0.0, "machines": 0.0}
-    # the next to unlock: most output added, then resources, then space —
-    # a gain too small to count (_GAIN) counts as none
-    key3 = lambda m: tuple((lambda a: a if a > _GAIN[d] else 0.0)(m[d] - now[d]) for d in ("output", "resources", "machines"))
     left = set(used)
+    counts = lambda d, v: v - now[d] > _GAIN[d]
     while left and len(chosen) < _SUGGEST_MAX:
-        best_k, best_m = None, None
-        for k in sorted(left):
-            m = value(set(chosen) | {k})
-            if m is not None and (best_m is None or key3(m) > key3(best_m)):
-                best_k, best_m = k, m
-        if best_k is None:
+        pool = sorted(left)
+        # the next to unlock: most output added, then resources, then space —
+        # a gain too small to count (_GAIN) counts as none; each measure is
+        # only taken for the ones still tied on the ones before it
+        got: Dict[str, dict] = {k: {} for k in pool}
+        if has_goal and g0:
+            for k, g in each(lambda lb, k: lb.goal(set(chosen) | {k}), pool).items():
+                got[k]["output"] = out_of(g) if g is not None else None
+            pool = [k for k in pool if got[k]["output"] is not None]
+        else:
+            for k in pool:
+                got[k]["output"] = 0.0
+        def keep_best(d):
+            nonlocal pool
+            # compared as shown (0.01 %, 0.1 space): a tie within rounding goes to the next measure
+            key = {k: round(got[k][d] - now[d], 2 if d != "machines" else 1) if counts(d, got[k][d]) else 0.0 for k in pool}
+            top = max(key.values(), default=0.0)
+            pool = [k for k in pool if key[k] == top]
+            return top
+        if keep_best("output") <= 0.0 or len(pool) > 1:
+            for k, c in each(lambda lb, k: lb.cost(set(chosen) | {k}, g0, space=False), pool).items():
+                got[k]["resources"] = res_of(c) if c is not None else None
+            pool = [k for k in pool if got[k]["resources"] is not None]
+            if keep_best("resources") <= 0.0 or len(pool) > 1:
+                for k, c in each(lambda lb, k: lb.cost(set(chosen) | {k}, g0, within=c0[0]), pool).items():
+                    got[k]["machines"] = c0[1] - c[1] if c is not None else None
+                pool = [k for k in pool if got[k]["machines"] is not None]
+                keep_best("machines")
+        if not pool:
             break
-        add = {d: best_m[d] - now[d] for d in now}
+        k = pool[0]
+        m = full(set(chosen) | {k})          # all three, for what it shows
+        if m is None:
+            break
+        add = {d: m[d] - now[d] for d in now}
         if not any(add[d] > _GAIN[d] for d in now):
             break                       # the rest add nothing on top of these
-        chosen.append(best_k)
-        left.discard(best_k)
-        out["steps"].append({"key": best_k, **rnd(add)})
-        now = {d: best_m[d] for d in now}
+        chosen.append(k)
+        left.discard(k)
+        out["steps"].append({"key": k, **rnd(add)})
+        now = {d: m[d] for d in now}
     out["on"] = sorted(k for k in chosen if k in set(scenario.alternate_recipes_enabled))
     return out
 
