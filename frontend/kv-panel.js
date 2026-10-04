@@ -190,12 +190,20 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
       if (i < st.rows.length - 1) {
         keyInputs[i + 1].focus();
         keyInputs[i + 1].select();
-      } else {
+      } else if (st.rows[i].key) {             // an empty last row adds no more
         st.rows.push({ key: '', val: '' });
         renderKv(name, st.rows.length - 1, 'key');
-      }
+      } else vi.blur();
     });
   });
+  // Backspace in an empty row takes it away, back to the amount above
+  keyInputs.forEach((ki, i) => ki.addEventListener('keydown', e => {
+    if (e.key !== 'Backspace' || ki.value || valInputs[i].value) return;
+    e.preventDefault();
+    st.rows.splice(i, 1);
+    syncKv(name);
+    renderKv(name, i - 1, 'val');
+  }));
 
   // Focus the requested row after render
   if (focusRowIndex >= 0 && focusRowIndex < st.rows.length) {

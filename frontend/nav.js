@@ -158,7 +158,7 @@ function runSel() {
 const HELP = [
   ['Anywhere', [[['Ctrl+K', '~or', '/'], 'Go to anything'],
     [['Alt+←', 'Alt+→'], 'Previous / next system — or the wheel over the top bar or the Blackboard\'s tabs'],
-    [['Alt+1', '~…', 'Alt+9'], 'A system: 1 Planner, 2–9 the Blackboard\'s tabs'], [['Alt+↑', 'Alt+↓'], 'Previous / next saved factory'],
+    [['Alt+1', '~…', 'Alt+8'], 'A system: 1 Planner, 2–8 the Blackboard\'s tabs'], [['Alt+↑', 'Alt+↓'], 'Previous / next saved factory'],
     [['Ctrl+O'], 'Your factories (open, history, new, backups)'], [['Ctrl+U'], 'Unlocks for every factory'],
     [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Recipe lookup'], [['?'], 'This sheet'],
     [['Esc'], 'Close what\'s on top']]],
@@ -167,6 +167,9 @@ const HELP = [
     [['3'], 'Build cost'], [['4'], 'Issues'],
     [['['], 'Hide / show the left panel (what goes in)'], [[']'], 'Hide / show the right panel (review and improve)'],
     [['~the wheel over the right panel\'s icons'], 'The next tab'], [['Ctrl+F'], 'Search the graph']]],
+  ['Typing in the lists', [[['Enter'], 'Item → its amount → the next row (a new one after the last)'],
+    [['Backspace'], 'In an empty row: take it away'], [['↑', '↓'], 'Through the item suggestions'],
+    [['~2*240+120'], 'Sums work in any amount']]],
   ['Maps', [[['+', '−'], 'Zoom'], [['0'], 'The whole map'], [['←', '↑', '→', '↓'], 'Pan'], [['~double-click'], 'Zoom in there (with Shift: out)'],
     [['G'], 'Geothermal (the Blackboard\'s map)'], [['Shift', '~+ drag'], 'Pick a box of nodes (picking nodes)'],
     [['Enter'], 'Use these nodes (picking nodes)']]],

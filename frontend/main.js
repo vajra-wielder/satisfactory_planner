@@ -279,7 +279,7 @@ document.querySelectorAll('.far').forEach(f => {
   f.addEventListener('mousedown', e => { if (e.target === f) closeFar(); });
   f.querySelector('[data-far-close]').addEventListener('click', closeFar);
 });
-document.getElementById('fac-new').addEventListener('click', () => { closeFar(); handleReset(); });
+document.getElementById('fac-new').addEventListener('click', () => { if (mayLeave('Start a new one')) { closeFar(); handleReset(); } });
 document.getElementById('btn-hd-manage').addEventListener('click', openUnlockedModal);
 
 
@@ -416,6 +416,7 @@ function handleSave() {
   saveScenario(key, body)
     .then(res => {
       LOADED_KEY = key; LOADED_NAME = SC.name; setBuildSelf(key, SC.name);
+      baseline();
       if (res?.cut?.length) applyCut(res);   // over what the sources have left
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
@@ -440,6 +441,7 @@ function handleReset() {
   setBadge('btn-issues-count', '');
   renderIssues();
   refreshNewAlts(altsChanged);
+  TOUCHED = false;
   updateSummaries();
   initLayout();
 }
@@ -467,6 +469,7 @@ function openScenario(key) {
     setSolveStyles(last ? last.styles : []);
     _machinesDirty = true;
     fillUI({ skipMachines: true });
+    TOUCHED = false;
     updateSummaries();
     updateIssuesBadge(RESULT);
     renderResultsBar();
@@ -478,7 +481,7 @@ function openScenario(key) {
 function loadSaved() {
   fetchScenarios()
     .then(saved => {
-      renderSaved(saved, key => { closeFar(); openScenario(key); }, key => deleteScenario(key).then(loadSaved), (key, v) =>
+      renderSaved(saved, key => { if (mayLeave('Open another')) { closeFar(); openScenario(key); } }, key => deleteScenario(key).then(loadSaved), (key, v) =>
         fetch(`/api/history/${key}/${v}/restore`, { method: 'POST' }).then(() => {
           loadSaved(); refreshOutputs();
           if (key === LOADED_KEY) openScenario(key);
@@ -516,6 +519,8 @@ function updateSummaries() {
   const imp = (SC.from_factories || []).length;
   const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
   set('tb-fac-name', SC.name || 'New Factory');            // the factory on screen, in the top bar
+  if (!TOUCHED) SNAP = snap();
+  paintDirty();
   set('sum-res', [`${new Set(nodes.map(r => r.resource)).size} resources`, ex ? `${ex} extractors` : '', imp ? `${imp} imports` : ''].filter(Boolean).join(' · '));
   set('sum-goals', [n(SC.objective) && `${n(SC.objective)} max`, n(SC.must_produce) && `${n(SC.must_produce)} exact`,
     n(SC.min_produce) && `${n(SC.min_produce)} at least`, n(SC.max_produce) && `${n(SC.max_produce)} at most`,
@@ -524,9 +529,36 @@ function updateSummaries() {
     SC.max_power_mw ? `cap ${SC.max_power_mw} MW` : '', SC.machines_first ? 'min machines' : '', SC.minimize_new_alts ? 'min new alts' : ''].filter(Boolean).join(' · '));
 }
 let _sumT = null;
-['input', 'change', 'click'].forEach(t => document.getElementById('sidebar').addEventListener(t, () => {
-  clearTimeout(_sumT); _sumT = setTimeout(updateSummaries, 150);
-}));
+const soonSummaries = () => { clearTimeout(_sumT); _sumT = setTimeout(updateSummaries, 150); };
+// Anything you do to this factory — the left panel, the map picker, the
+// alternates on the right — but not the shared windows or the Blackboard
+['input', 'change', 'click'].forEach(t => document.addEventListener(t, e => {
+  if (!e.isTrusted || e.target.closest?.('#fac-drawer, #unlocks-modal, #bb-modal, #log-modal, header, #nav-pal, #nav-help')) return;
+  if (t !== 'click' || e.target.closest('#map-modal, #dock button, #sidebar button')) TOUCHED = true;
+  soonSummaries();
+}, true));
+
+// ── Unsaved changes ──────────────────────────────────────
+// What's on screen against what was opened or last saved: a dot on the name
+// in the top bar and on Save, and a question before opening another factory.
+// Until you change something, whatever the panels settle on is the baseline.
+let SNAP = null, TOUCHED = false;
+const snap = () => JSON.stringify(SC, (k, v) => (k === 'enabled_machines' || k.startsWith('_')) ? undefined
+  : v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v);
+const isDirty = () => TOUCHED && SNAP !== null && snap() !== SNAP;
+function paintDirty() {
+  const d = isDirty();
+  document.getElementById('btn-factories').classList.toggle('dirty', d);
+  document.getElementById('bsave').classList.toggle('dirty', d);
+  document.getElementById('bsave').title = d ? 'Unsaved changes  (Ctrl+S)' : 'Save  (Ctrl+S)';
+}
+function baseline() { TOUCHED = false; SNAP = snap(); paintDirty(); }
+/** Before something replaces what's on screen: fine if nothing's unsaved, else ask. */
+function mayLeave(what) {
+  readUI();
+  return !isDirty() || confirm(`"${SC.name || 'This factory'}" has changes you haven't saved.\n\n${what} anyway? They'll be lost.`);
+}
+window.addEventListener('beforeunload', e => { readUI(); if (isDirty()) { e.preventDefault(); e.returnValue = ''; } });
 
 // The alternates this factory uses changed (ticked under New alternates): the
 // Unlocks and the Alternates tab redraw when next shown
@@ -590,6 +622,17 @@ document.getElementById('btn-keys')     .addEventListener('click', openHelp);
   document.getElementById('tog-' + id).addEventListener('click', () => toggleSec(id)));
 
 // KV add-row buttons
+// Enter in a single box: keep it and go on to the next (the last one just keeps it)
+[['sc-name', 'sc-desc'], ['sc-desc'], ['sc-sh', 'sc-sl'], ['sc-sl', 'sc-mp'], ['sc-mp']].forEach(([id, next]) =>
+  document.getElementById(id)?.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const n = next && document.getElementById(next);
+    if (n) { n.focus(); n.select(); } else e.target.blur();
+  }));
+document.getElementById('sh-spread')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('btn-spread').click(); }
+});
 document.getElementById('add-res') .addEventListener('click', addNode);
 document.getElementById('add-from').addEventListener('click', addFrom);
 document.getElementById('add-leftovers').addEventListener('click', addLeftovers);
@@ -612,7 +655,7 @@ document.getElementById('btn-alts-none').addEventListener('click', altsNone);
 // Solve / Save / Reset
 document.getElementById('bsolve').addEventListener('click', handleSolve);
 document.getElementById('bsave') .addEventListener('click', handleSave);
-document.getElementById('breset').addEventListener('click', handleReset);
+document.getElementById('breset').addEventListener('click', () => { if (mayLeave('Start a new one')) handleReset(); });
 
 
 // Graph controls
@@ -687,7 +730,7 @@ Promise.all([fetchBoot()])
     initRecipeLookup();
     initNav({
       currentFactory: () => LOADED_KEY,
-      openFactory: key => openScenario(key),
+      openFactory: key => mayLeave('Open another') && openScenario(key),
       closeAnalysis, closeWarn, closeFar,
       actions: [
         { label: 'Solve', keys: 'Ctrl+R', run: handleSolve },
@@ -713,7 +756,7 @@ Promise.all([fetchBoot()])
     initSolveStyles();
     initGraphEvents();
     // Clicking a factory on the Blackboard opens it here
-    initBlackboard({ onOpenFactory: key => { closeBlackboard(); openScenario(key); } });
+    initBlackboard({ onOpenFactory: key => { if (mayLeave('Open another')) { closeBlackboard(); openScenario(key); } } });
     fillUI({ skipMachines: true });   // skip machines/alts — rendered lazily on first tab open
     updateSummaries();
     renderBuildCost(); renderIssues();

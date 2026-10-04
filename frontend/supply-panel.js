@@ -279,7 +279,38 @@ function purityMix(ids) {
   return ['pure', 'normal', 'impure'].filter(p => c[p]).map(p => `${c[p]} ${p}`).join(', ');
 }
 
-function renderNodes(focus = -1) {
+// Enter in a row's amount: keep it, then on to the next row's item — or,
+// after the last row (one with an item), a new row. Item → amount is the
+// autocomplete's pick; so the keyboard goes down a list without the mouse.
+// Backspace in an empty row removes it.
+function enterNext(input, box, add) {
+  input?.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const rows = [...$(box).querySelectorAll('.nrow')], row = input.closest('.nrow');
+    const filled = row.querySelector('input.f-item, input.n-res')?.value.trim() ?? true;
+    input.blur();                                      // commits it
+    const next = rows.slice(rows.indexOf(row) + 1).map(x => x.querySelector('input.f-item, input.n-res')).find(Boolean);
+    if (next) { next.focus(); next.select(); } else if (filled) add();
+  });
+  // Backspace in an empty row takes it away, back to the amount above
+  const item = input?.closest('.nrow').querySelector('input.f-item, input.n-res');
+  item?.addEventListener('keydown', e => {
+    if (e.key !== 'Backspace' || item.value || (input.value && !input.matches('.n-ct'))) return;   // a count is only its default
+    e.preventDefault();
+    const rows = [...$(box).querySelectorAll('.nrow')], i = rows.indexOf(item.closest('.nrow'));
+    item.closest('.nrow').querySelector('.n-x').click();
+    const prev = [...$(box).querySelectorAll('.nrow')].slice(0, i).reverse()
+      .map(x => x.querySelector('.f-rate, .n-rate-in, .n-ct')).find(Boolean);
+    if (prev) { prev.focus(); prev.select?.(); }
+  });
+}
+const focusIn = (box, i, sel) => requestAnimationFrame(() => {
+  const el = $(box)?.querySelectorAll('.nrow')[i]?.querySelector(sel);
+  if (el) { el.focus(); el.select?.(); }
+});
+
+function renderNodes(focus = -1, what = '.n-res') {
   const c = $('kv-res');
   if (!c) return;
   c.innerHTML = '';
@@ -346,7 +377,7 @@ function renderNodes(focus = -1) {
       const setRes = key => {
         n.resource = key;
         if (n.extractor !== 'fixed' && !extractorsFor(key).includes(n.extractor)) n.extractor = defaultExtractor(key);
-        syncSupply(); renderNodes();
+        syncSupply(); renderNodes(i, n.extractor === 'fixed' ? '.n-rate-in' : '.n-ct');
       };
       makeAC(ri, setRes, null, resourcePool);
       ri.addEventListener('change', () => {
@@ -373,7 +404,8 @@ function renderNodes(focus = -1) {
         if (v !== null) { rin.value = n.rate = parseFloat(v.toPrecision(6)); syncSupply(); }
       });
       if (unl) row.querySelectorAll('.nrow-2 input, .nrow-2 select').forEach(x => { x.disabled = true; });
-      if (i === focus) requestAnimationFrame(() => ri.focus());
+      enterNext(row.querySelector('.n-rate-in, .n-ct'), 'kv-res', addNode);
+      if (i === focus) focusIn('kv-res', i, what);
     }
     row.querySelector('.binf')?.addEventListener('click', () => {
       if (!n.resource) return;
@@ -472,7 +504,7 @@ function renderTotals() {
 }
 
 // ── From factories ────────────────────────────────────────
-function renderFrom(focus = -1) {
+function renderFrom(focus = -1, what = '.f-rate') {
   const c = $('kv-from');
   if (!c) return;
   c.innerHTML = '';
@@ -558,7 +590,7 @@ function renderFrom(focus = -1) {
       f.factory = ev.target.value;
       const of = offer(f.factory, f.item, f);
       if (of) f.rate = down(of.left);
-      syncSupply(); renderFrom();
+      syncSupply(); renderFrom(i, '.f-fac');   // arrows step through the list; Enter goes on
     });
     rin.addEventListener('input', () => { f.rate = rin.value; syncSupply(); PAINTS.forEach(p => p()); });
     rin.addEventListener('blur', () => {
@@ -569,11 +601,13 @@ function renderFrom(focus = -1) {
       rin.value = f.rate = parseFloat(Math.max(0, v).toPrecision(6));
       syncSupply(); PAINTS.forEach(p => p());
     });
+    row.querySelector('.f-fac').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); rin.focus(); rin.select(); } });
+    enterNext(rin, 'kv-from', addFrom);
     row.querySelector('.n-x').addEventListener('click', () => { FROM.splice(i, 1); syncSupply(); renderFrom(); });
     PAINTS.push(paint);
     paint();
     c.appendChild(row);
-    if (i === focus) requestAnimationFrame(() => rin.focus());
+    if (i === focus) focusIn('kv-from', i, what);
   });
   renderTotals();
 }
@@ -600,7 +634,7 @@ export function addLeftovers() {
 }
 
 // ── To storage, and what's sent out ───────────────────────
-function renderStorage() {
+function renderStorage(focus = -1) {
   const c = $('kv-sto');
   if (!c) return;
   c.innerHTML = '';
@@ -638,7 +672,7 @@ function renderStorage() {
       t.item = key; TYPED.delete(t);
       const o = storeOffer(key, t);
       if (o && !(parseFloat(t.rate) > 0)) t.rate = down(o.left);   // a rate you typed stays
-      syncSupply(); renderStorage();
+      syncSupply(); renderStorage(i);
     }, null, storeItems, { commit: true, current: () => t.item,
       onCommit: key => {
         t.item = key; TYPED.delete(t);
@@ -656,11 +690,13 @@ function renderStorage() {
       rin.value = t.rate = parseFloat(Math.max(0, v).toPrecision(6));
       syncSupply(); PAINTS.forEach(p => p()); renderSentOut();
     });
+    enterNext(rin, 'kv-sto', addStorage);
     row.querySelector('.n-x').addEventListener('click', () => { STO.splice(i, 1); syncSupply(); renderStorage(); });
     PAINTS.push(paint);
     paint();
     c.appendChild(row);
   });
+  if (focus >= 0) focusIn('kv-sto', focus, '.f-rate');
   renderSentOut();
 }
 

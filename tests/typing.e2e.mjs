@@ -91,6 +91,85 @@ try {
     assert.equal(await page.locator('#kv-min .kvr input').first().evaluate(e => e.classList.contains('ac-bad')), true);
   });
 
+  await step('Enter goes down the list: item, its amount, the next row — no mouse', async () => {
+    page.once('dialog', d => d.accept());                    // the earlier steps' edits aren't saved: yes, drop them
+    await page.click('#breset'); await sleep(400);
+    const focused = () => page.evaluate(() => { const a = document.activeElement; return `${a.closest('[id^="kv-"]')?.id} ${a.className}`; });
+    const pickTyped = async (txt) => { await page.keyboard.type(txt, { delay: 10 }); await sleep(250); await page.keyboard.press('Enter'); await sleep(250); };
+    // storage
+    await page.click('#add-sto'); await sleep(200);
+    await pickTyped('Iron Plate');
+    assert.match(await focused(), /kv-sto f-rate/, 'item → its amount');
+    await page.keyboard.press('Control+a'); await page.keyboard.type('2*3'); await page.keyboard.press('Enter'); await sleep(250);
+    assert.equal(await page.locator('#kv-sto .f-rate').first().inputValue(), '6', 'the amount is worked out');
+    assert.match(await focused(), /kv-sto f-item/, 'a new row after the last');
+    assert.equal(await page.locator('#kv-sto .nrow').count(), 2);
+    await page.keyboard.press('Enter'); await sleep(200);
+    assert.equal(await page.locator('#kv-sto .nrow').count(), 2, 'an empty row adds no more');
+    // imports: item → amount (one factory makes it), Enter → a new row
+    await page.click('#add-from'); await sleep(200);
+    await pickTyped('Iron Plate');
+    assert.match(await focused(), /kv-from f-rate/);
+    await page.keyboard.press('Enter'); await sleep(250);
+    assert.match(await focused(), /kv-from f-item/);
+    // a fixed-rate resource: resource → its rate → a new row
+    await page.click('#add-res'); await sleep(200);
+    await page.locator('#kv-res .n-ex').last().selectOption('fixed'); await sleep(200);
+    await page.locator('#kv-res .n-res').last().click();
+    await pickTyped('Limestone');
+    assert.match(await focused(), /kv-res n-rate-in/, 'resource → its rate');
+    await page.keyboard.type('120'); await page.keyboard.press('Enter'); await sleep(250);
+    assert.match(await focused(), /kv-res n-res/);
+    assert.equal(await page.locator('#kv-res .n-rate-in').first().inputValue(), '120');
+  });
+  await step('Backspace in an empty row takes it away; Enter in the single boxes goes on', async () => {
+    const focused = () => page.evaluate(() => { const a = document.activeElement; return `${a.closest('[id^="kv-"]')?.id || a.id} ${a.className}`; });
+    const rows = await page.locator('#kv-res .nrow').count();
+    await page.keyboard.press('Backspace'); await sleep(250);              // the new, empty resource row
+    assert.equal(await page.locator('#kv-res .nrow').count(), rows - 1);
+    assert.match(await focused(), /kv-res n-rate-in/, 'back to the rate above');
+    // goals: an empty last row adds no more; Backspace removes it
+    await page.click('#add-max'); await sleep(200);
+    await page.keyboard.type('Wire', { delay: 10 }); await sleep(250); await page.keyboard.press('Enter'); await sleep(200);
+    await page.keyboard.type('9'); await page.keyboard.press('Enter'); await sleep(250);
+    assert.equal(await page.locator('#kv-max .kvr').count(), 2, 'Enter after the last: a new row');
+    await page.locator('#kv-max .kvr input[inputmode]').last().click(); await page.keyboard.press('Enter'); await sleep(200);
+    assert.equal(await page.locator('#kv-max .kvr').count(), 2, 'not from an empty one');
+    await page.locator('#kv-max .kvr input:not([inputmode])').last().click(); await page.keyboard.press('Backspace'); await sleep(250);
+    assert.equal(await page.locator('#kv-max .kvr').count(), 1);
+    assert.match(await focused(), /kv-max/, 'back to the amount above');
+    await page.fill('#sc-name', ''); await page.click('#sc-name'); await page.keyboard.type('Keys');
+    await page.keyboard.press('Enter'); assert.match(await focused(), /sc-desc/);
+    await page.click('#sc-sh'); await page.keyboard.type('4'); await page.keyboard.press('Enter');
+    assert.match(await focused(), /sc-sl/);
+    await page.keyboard.press('Enter'); assert.match(await focused(), /sc-mp/);
+  });
+
+  await step('unsaved changes: a dot on the name and Save; asked before another factory replaces them', async () => {
+    const dirty = () => page.locator('#btn-factories.dirty').count();
+    const yes = d => d.accept();                              // if anything's unsaved from before: drop it
+    page.on('dialog', yes);
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row');
+    await page.locator('.sv-row', { hasText: /^\W*iron/ }).locator('button').first().click(); await sleep(1200);
+    page.off('dialog', yes);
+    assert.equal(await dirty(), 0, 'just opened');
+    await page.fill('#sc-desc', 'changed'); await page.dispatchEvent('#sc-desc', 'change'); await sleep(300);
+    assert.equal(await dirty(), 1);
+    assert.equal(await page.locator('#bsave.dirty').count(), 1);
+    let asked = 0;
+    const no = d => { asked++; d.dismiss(); };
+    page.on('dialog', no);
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row');
+    await page.locator('.sv-row', { hasText: 'Typed' }).locator('button').first().click(); await sleep(800);
+    page.off('dialog', no);
+    assert.equal(asked, 1, 'asked once');
+    assert.equal(await page.inputValue('#sc-name'), 'iron', 'kept on No');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+s'); await sleep(1000);
+    assert.equal(await dirty(), 0, 'saved');
+    await page.fill('#sc-desc', ''); await page.dispatchEvent('#sc-desc', 'change'); await page.keyboard.press('Control+s'); await sleep(900);
+  });
+
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }
   await browser.close();
   console.log(failed ? `\n${failed} failed` : '\nall passed');

@@ -113,7 +113,7 @@ try {
     await page.keyboard.press('Escape'); await sleep(200);   // off the Blackboard
     assert.equal(await page.locator('#bb-tabs button[data-tab="build"]').count(), 0, 'no second build list');
     await page.mouse.click(700, 400); await page.keyboard.press('3');
-    await page.waitForSelector('#bcb .bc-add input:not([disabled])');
+    await page.waitForFunction(() => /Power grid/.test(document.querySelector('#bcb .bc-add')?.innerText || ''));   // read afresh
     for (const c of await page.locator('#bcb .bc-add input:not([disabled])').all()) { await c.check(); await sleep(100); }
     const t = await page.locator('#bcb').innerText();
     assert.match(t, /Smelter/, t); assert.match(t, /Geothermal Generator\s+×2/, t);

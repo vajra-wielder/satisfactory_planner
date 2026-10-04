@@ -121,12 +121,17 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   save, back up, plan the network…), or who makes an item
 - The systems in a ring — the planner, then each Blackboard tab: Alt+← / Alt+→
   (or Ctrl+PgUp / PgDn, or the wheel over the top bar or the Blackboard's
-  tabs) steps through them, Alt+1 … Alt+9 jumps to one; a strip shows where
+  tabs) steps through them, Alt+1 … Alt+8 jumps to one; a strip shows where
   you are
 - Alt+↑ / Alt+↓ opens the previous / next saved factory
 - 1 / 2 / 3 / 4 the right panel's tabs, Ctrl+O your factories, Ctrl+U unlocks,
   Ctrl+M pick on the map, Ctrl+I analysis, Esc closes what's on top;
   ? shows every shortcut
+- Typing in the lists (resources, imports, goals, storage): Enter goes item →
+  its amount → the next row, and after the last a new one; Backspace in an
+  empty row takes it away. In the single boxes Enter goes to the next
+- Unsaved changes: a dot on the factory's name in the top bar and on Save;
+  opening another factory or starting a new one asks first
 
 ### Blackboard (logistics)
 - Between factories: every saved scenario is a black box showing only what it
