@@ -8,6 +8,7 @@
  * in this factory, untick the ones you don't want, then Solve.
  */
 import { SC, RESULT, RECIPES, mCol, MABBR } from './state.js';
+import { openDock, setBadge } from './dock.js';
 
 const $ = id => document.getElementById(id);
 const name = k => (RECIPES[k]?.display || k).replace(/^Alternate:\s*/i, '');
@@ -29,7 +30,11 @@ export function refreshNewAlts(onChange) {
   const el = $('new-alts');
   if (!el) return;
   const res = RESULT;
-  if (!res?.status?.startsWith('Optimal')) { el.innerHTML = ''; return; }
+  if (!res?.status?.startsWith('Optimal')) {
+    el.innerHTML = '<div class="na-head"><b>New alternates</b></div><p class="n-hint">After a solve: the alternates you haven\'t unlocked that would make it better.</p>';
+    setBadge('dkb-alts', '');
+    return;
+  }
   if (res.suggest) { draw(onChange); return; }
   const mine = ++seq;
   el.innerHTML = '<div class="na-head"><b>New alternates</b><span class="n-hint">checking…</span></div>';
@@ -44,6 +49,7 @@ export function refreshNewAlts(onChange) {
 function draw(onChange) {
   const el = $('new-alts'), d = RESULT?.suggest;
   if (!el || !d) return;
+  setBadge('dkb-alts', d.steps?.length ? String(d.steps.length) : '', 'ok');
   if (!d.steps?.length) {
     el.innerHTML = `<div class="na-head"><b>New alternates</b></div>
       <p class="n-hint">None you haven't unlocked would help this factory — its recipes are as good as they get.</p>`;
@@ -84,10 +90,5 @@ function draw(onChange) {
   $('na-solve').addEventListener('click', () => $('bsolve').click());
 }
 
-/** Show the panel: the Build tab, Solve settings open, scrolled to it. */
-export function showNewAlts() {
-  document.querySelector('.tabbt[data-tab="build"]')?.click();
-  const sec = $('sec-oc');
-  if (sec?.querySelector('.secb')?.style.display === 'none') $('tog-oc').click();
-  requestAnimationFrame(() => $('new-alts')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-}
+/** Show them: the right panel's Alternates tab. */
+export function showNewAlts() { openDock('alts'); }

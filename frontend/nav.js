@@ -159,11 +159,14 @@ const HELP = [
   ['Anywhere', [[['Ctrl+K', '~or', '/'], 'Go to anything'],
     [['Alt+←', 'Alt+→'], 'Previous / next system — or the wheel over the top bar or the Blackboard\'s tabs'],
     [['Alt+1', '~…', 'Alt+9'], 'A system: 1 Planner, 2–9 the Blackboard\'s tabs'], [['Alt+↑', 'Alt+↓'], 'Previous / next saved factory'],
-    [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+I'], 'Analysis'], [['Ctrl+Q'], 'Recipe lookup'], [['?'], 'This sheet'],
+    [['Ctrl+O'], 'Your factories (open, history, new, backups)'], [['Ctrl+U'], 'Unlocks for every factory'],
+    [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Recipe lookup'], [['?'], 'This sheet'],
     [['Esc'], 'Close what\'s on top']]],
-  ['Planner', [[['Ctrl+R'], 'Solve'], [['Ctrl+S'], 'Save'], [['Ctrl+1', 'Ctrl+2', 'Ctrl+3'], 'Build · Machines & Alts · Saved'],
-    [['Ctrl+M'], 'Pick nodes on the map'], [['Ctrl+F'], 'Search the graph'], [['[', '~or', ']'], 'Hide / show the sidebar'],
-    [['~the wheel over Build · Machines · Saved'], 'The next tab']]],
+  ['This factory', [[['Ctrl+R'], 'Solve'], [['Ctrl+S'], 'Save'], [['Ctrl+M'], 'Pick nodes on the map'],
+    [['1'], 'Alternates: new ones to unlock, the ones on here'], [['2', '~or', 'Ctrl+I'], 'Analysis'],
+    [['3'], 'Build cost'], [['4'], 'Issues'],
+    [['['], 'Hide / show the left panel (what goes in)'], [[']'], 'Hide / show the right panel (review and improve)'],
+    [['~the wheel over the right panel\'s icons'], 'The next tab'], [['Ctrl+F'], 'Search the graph']]],
   ['Maps', [[['+', '−'], 'Zoom'], [['0'], 'The whole map'], [['←', '↑', '→', '↓'], 'Pan'], [['~double-click'], 'Zoom in there (with Shift: out)'],
     [['G'], 'Geothermal (the Blackboard\'s map)'], [['Shift', '~+ drag'], 'Pick a box of nodes (picking nodes)'],
     [['Enter'], 'Use these nodes (picking nodes)']]],
@@ -192,10 +195,9 @@ function closeTop() {
   const shown = id => $(id)?.classList.contains('show');
   if (shown('nav-pal')) { closePalette(); return true; }
   if (shown('nav-help')) { $('nav-help').classList.remove('show'); return true; }
+  if (document.querySelector('.far.show')) { API.closeFar(); return true; }
   if (shown('map-modal')) { $('mp-cancel').click(); return true; }
   if (shown('log-modal')) { $('log-modal').classList.remove('show'); return true; }
-  if (shown('analysis-modal')) { API.closeAnalysis(); return true; }
-  if (shown('wo')) { API.closeWarn(); return true; }
   if (blackboardOpen()) { closeBlackboard(); return true; }
   return false;
 }
@@ -229,13 +231,7 @@ export function initNav(api) {
     // Picking nodes: Enter uses them
     if (e.key === 'Enter' && !typing && $('map-modal')?.classList.contains('show')) { e.preventDefault(); $('mp-apply').click(); }
   }, true);
-  // The wheel over the top bar or the Blackboard's tabs moves between systems,
-  // over the sidebar's tabs between those
+  // The wheel over the top bar or the Blackboard's tabs moves between systems
   wheelSteps(document.querySelector('header'), d => goSystem(current() + d), '#tb-rl-panel');
   wheelSteps($('bb-tabs'), d => goSystem(current() + d));
-  const sideTabs = [...document.querySelectorAll('.tabbar .tabbt')];
-  wheelSteps(document.querySelector('.tabbar'), d => {
-    const at = sideTabs.findIndex(b => b.classList.contains('act'));
-    sideTabs[(at + d + sideTabs.length) % sideTabs.length].click();
-  });
 }

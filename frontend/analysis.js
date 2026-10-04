@@ -5,6 +5,7 @@
 
 import { SC, RESULT, RECIPES, mCol, MABBR, itemName } from './state.js';
 import { fetchDuals } from './api.js';
+import { openDock, closeDock, dockTab } from './dock.js';
 import { _fmtSpace } from './ui.js';
 
 // ── DOM helpers ───────────────────────────────────────────
@@ -23,8 +24,10 @@ function statCard(label, val, color) {
 }
 
 // ── Public API ────────────────────────────────────────────
-export function openAnalysis() {
-  document.getElementById('analysis-modal').classList.add('show');
+// The Analysis is the right panel's Analysis tab: openAnalysis shows it,
+// showAnalysis draws it (whenever the tab is shown, or a solve lands while it is)
+export function openAnalysis() { openDock('analysis'); }
+export function showAnalysis() {
   renderAnalysis();          // render immediately with whatever we have
 
   // Fetch the analysis lazily (computed once per solve on the server)
@@ -53,9 +56,7 @@ export function openAnalysis() {
   }
 }
 
-export function closeAnalysis() {
-  document.getElementById('analysis-modal').classList.remove('show');
-}
+export function closeAnalysis() { if (dockTab() === 'analysis') closeDock(); }
 
 // ── Render ────────────────────────────────────────────────
 function renderAnalysis() {

@@ -118,9 +118,9 @@ try {
   await step('saved, reloaded and saved again: the same scenario', async () => {
     await page.click('#bsave'); await sleep(900);
     await page.reload(); await page.waitForFunction(() => document.querySelector('#bsolve')); await sleep(800);
-    await page.click('.tabbt[data-tab="saved"]'); await sleep(500);
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row'); await sleep(200);
     await page.locator('.sv-row', { hasText: 'Round Trip' }).locator('button').first().click(); await sleep(1200);
-    await page.click('.tabbt[data-tab="build"]');
+    assert.equal(await page.locator('#fac-drawer.show').count(), 0, 'the drawer goes once one is open');
     await page.click('#bsave'); await sleep(900);
     assert.equal(saves.length, 2, `${saves.length} saves`);
     const [a, b] = saves.map(x => JSON.parse(JSON.stringify(x, Object.keys(x).sort())));
@@ -145,27 +145,27 @@ try {
   await step('the build cost counts the extractors', async () => {
     await page.keyboard.press('Control+r');
     await page.waitForFunction(() => !document.getElementById('bsolve').disabled, null, { timeout: 120000 }); await sleep(400);
-    await page.evaluate(() => document.getElementById('wo')?.classList.remove('show'));
-    await page.click('#bc-toggle'); await sleep(200);
+    await page.click('#dk-rail [data-dk="build"]'); await sleep(200);
     const bc = await page.locator('#bcb').innerText();
     assert.match(bc, /Miner Mk\.3/); assert.match(bc, /Water Extractor/);
   });
 
   await step('the analysis opens', async () => {
-    await page.click('#btn-analysis');
+    await page.click('#dk-rail [data-dk="analysis"]');
     await page.waitForFunction(() => (document.getElementById('analysis-body')?.innerText || '').length > 200, null, { timeout: 60000 });
-    await page.click('#btn-close-analysis');
+    await page.click('#dk-close'); await sleep(150);
+    assert.equal(await page.locator('#app.dk-open').count(), 0);
   });
 
   await step('history keeps only changes, says what they were, and can be confirmed', async () => {
-    await page.click('.tabbt[data-tab="saved"]'); await sleep(500);
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row'); await sleep(200);
     const row = () => page.locator('.sv-row', { hasText: 'Round Trip' });
     await row().locator('.sv-h').click(); await sleep(400);
     assert.match(await row().locator('.sv-hist').innerText(), /No earlier versions/);   // saved twice, the same
-    await page.click('.tabbt[data-tab="build"]');
+    await page.keyboard.press('Escape'); await sleep(150);
     await open('nt', '#sc-nt'); await page.fill('#sc-nt', 'Notes changed.'); await page.dispatchEvent('#sc-nt', 'change');
     await page.click('#bsave'); await sleep(900);
-    await page.click('.tabbt[data-tab="saved"]'); await sleep(500);
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row'); await sleep(200);
     await row().locator('.sv-h').click(); await sleep(400);
     const h = await row().locator('.sv-hist').innerText();
     assert.match(h, /notes differ/, h); assert.match(h, /0\/5 confirmed/);
@@ -182,7 +182,6 @@ try {
   });
 
   await step('a power plant reads in MW', async () => {
-    await page.click('.tabbt[data-tab="saved"]'); await sleep(500);
     await page.locator('.sv-row', { hasText: 'Plant' }).locator('button').first().click(); await sleep(1200);
     const bar = await page.locator('#rb').innerText();
     assert.match(bar, /MW\s+POWER/, bar);

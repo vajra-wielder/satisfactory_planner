@@ -44,11 +44,11 @@ try {
   const solved = () => page.waitForFunction(() => !document.getElementById('bsolve').disabled, null, { timeout: 120000 });
 
   await step('solving says why it can\'t, on its own', async () => {
-    await page.click('.tabbt[data-tab="saved"]'); await sleep(400);
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row'); await sleep(200);
     await page.locator('.sv-row', { hasText: 'Connectors' }).locator('button').first().click(); await sleep(900);
     await page.keyboard.press('Control+r'); await solved(); await sleep(400);
-    await page.waitForSelector('#wo.show');
-    const t = await page.locator('#wm').innerText();
+    await page.waitForSelector('#app.dk-open #dk-issues .wm-fix');   // the right panel opens on Issues by itself
+    const t = await page.locator('#dk-issues').innerText();
     assert.match(t, /Not enough Caterium Ore: the goals need about [\d.,]+\/min more than the 300\/min it has/, t);
     assert.match(t, /High-Speed Connector: at most [\d.]+\/min with the other goals met/, t);
     assert.match(t, /Any one of these makes it work[\s\S]*Lower High-Speed Connector to [\d.]+\/min/i, t);
@@ -60,7 +60,7 @@ try {
     assert.ok(v > 0 && v < 10, `lowered to ${v}`);
     assert.doesNotMatch(await page.locator('#rb').innerText(), /infeasible/i);
     // what's left to say is ordinary: a byproduct, not a reason it can't be made
-    if (await page.locator('#wo.show').count()) assert.doesNotMatch(await page.locator('#wm').innerText(), /Not enough|at most|can't/);
+    assert.doesNotMatch(await page.locator('#dk-issues').innerText(), /Not enough|at most|can't/);
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

@@ -17,12 +17,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   short (e.g. "Not enough Caterium Ore: about 86/min more"), how much of each
   goal fits with the rest met, and alternates you haven't unlocked that would
   close the gap — each a one-click Apply that re-solves
-- New alternates (under Solve settings, after every solve): the best plan
+- New alternates (the right panel's Alternates tab, after every solve): the best plan
   with every alternate you haven't unlocked, and the ones it uses in the
   order to unlock them — each with what it adds on top of those above:
   output, resources for the same output, machine space. Tick the ones to use
   in this factory (untick the ones you don't want), then Solve with these.
-  The results bar shows what they'd add; a click there opens the list
+  The results bar shows what they'd add; a click there opens the list.
+  Below them, the alternates you've unlocked that this factory may use
 - Folded sidebar sections say what's in them (9 resources · 33 extractors;
   2 max · 4 exact · 5 at least · 5 stored)
 - Weighted multi-item objectives
@@ -37,7 +38,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   nodes show "+230 unused"; click the tag (or set an amount in "Unused nearby",
   nearest first) to bring some of it over as an import — the rest stays
   theirs. Its plan holds: what's sent on comes off its own supply
-- Your save: read a .sav (Machines & Alts, or the map) to mark the nodes your
+- Your save: read a .sav (Unlocks, or the map) to mark the nodes your
   game already mines, on the map and on the Blackboard's Map tab, so you can
   plan which to take next — and to see what it has unlocked (alternates,
   machines, miner, belt and pipe tiers) against the planner's; one click makes
@@ -73,8 +74,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - History: each save that changes a factory keeps the version it replaces —
   the 5 latest changes, plus up to 5 you confirm (kept until you unconfirm
   them). Each version says what restoring it would change (goals, supply,
-  imports, storage, alternates, power cap…); restore any from the Saved tab
-- Grid alerts: the Saved tab says when the grid is short — on average or with
+  imports, storage, alternates, power cap…); restore any from Your factories
+- Grid alerts: Your factories says when the grid is short — on average or with
   every geyser at its low — and which factories draw more than in their plan
   before
 - Backups: one zip of everything that's yours (factories, their history and
@@ -98,6 +99,22 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   planned
 - Last solve of each scenario cached and restored when the scenario is reopened
 
+### Layout — by how often you go there
+- Left: what goes in — resources, goals, solve settings, notes; Solve and
+  Save at the bottom. `[` folds it away
+- Middle: the production graph, with the results bar
+- Right panel, for reviewing and improving the plan: Alternates (new ones
+  worth unlocking, and the ones on here), Analysis (what limits the plan),
+  Build cost (machines, extractors, materials) and Issues. Its rail shows a
+  count on each; a click or 1 / 2 / 3 / 4 opens one, again closes it; the
+  wheel over the rail steps through them; `]` opens or closes the panel.
+  Issues opens by itself when a solve falls short
+- Far off, for what you rarely change: Your factories (the name in the top
+  bar, or Ctrl+O — open, new, history, backups) and Unlocks (Ctrl+U —
+  machines, miner, the alternates you've unlocked in the game, read a save),
+  which are the same for every factory
+- The Blackboard for planning factories together
+
 ### Getting around
 - Go to anything (Ctrl+K or /): a system, a saved factory, an action (solve,
   save, back up, plan the network…), or who makes an item
@@ -105,10 +122,10 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   (or Ctrl+PgUp / PgDn, or the wheel over the top bar or the Blackboard's
   tabs) steps through them, Alt+1 … Alt+9 jumps to one; a strip shows where
   you are
-- Alt+↑ / Alt+↓ opens the previous / next saved factory; the wheel over
-  Build · Machines & Alts · Saved steps through those
-- Ctrl+1 / 2 / 3 the sidebar's tabs, Ctrl+M pick on the map, Ctrl+I analysis,
-  Esc closes what's on top; ? shows every shortcut
+- Alt+↑ / Alt+↓ opens the previous / next saved factory
+- 1 / 2 / 3 / 4 the right panel's tabs, Ctrl+O your factories, Ctrl+U unlocks,
+  Ctrl+M pick on the map, Ctrl+I analysis, Esc closes what's on top;
+  ? shows every shortcut
 
 ### Blackboard (logistics)
 - Between factories: every saved scenario is a black box showing only what it
@@ -222,6 +239,8 @@ satisfactory-planner/
 ├── frontend/
 │   ├── main.js           wiring, solve, save/open
 │   ├── sidebar.js        sidebar shell, autocomplete
+│   ├── dock.js           the right panel: Alternates, Analysis, Build cost, Issues
+│   ├── new-alts.js       alternates worth unlocking
 │   ├── supply-panel.js   resources, imports, storage, sent out
 │   ├── kv-panel.js       goals
 │   ├── machines-panel.js unlocked machines, miner tier, alternates
@@ -309,7 +328,7 @@ A scenario may contain:
 - Least machine space first instead of least resources (Min Machines)
 
 Unlocked machines, the miner tier and the best belt and pipe are shared by
-every factory (Machines & Alts — or read them from a save).
+every factory (Unlocks, Ctrl+U — or read them from a save).
 
 ---
 

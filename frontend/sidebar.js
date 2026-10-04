@@ -38,39 +38,6 @@ export function toggleSec(id) {
 }
 
 // ══════════════════════════════════════════════════════════
-// TABS  (Build | Machines & Alts | Saved)
-// ══════════════════════════════════════════════════════════
-const TABS = ['build', 'machalt', 'saved'];
-
-export function initTabs(onTabChange) {
-  document.querySelectorAll('.tabbt').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tabbt').forEach(b => b.classList.remove('act'));
-      btn.classList.add('act');
-      const tab = btn.dataset.tab;
-      TABS.forEach(t => {
-        const el = document.getElementById('tab-' + t);
-        if (el) el.style.display = t === tab ? '' : 'none';
-      });
-      document.querySelectorAll('.rail-btn[data-tab]').forEach(b =>
-        b.classList.toggle('act', b.dataset.tab === tab));
-      onTabChange(tab);
-    });
-  });
-}
-
-export function activateTab(tab) {
-  document.querySelectorAll('.tabbt').forEach(b =>
-    b.classList.toggle('act', b.dataset.tab === tab));
-  TABS.forEach(t => {
-    const el = document.getElementById('tab-' + t);
-    if (el) el.style.display = t === tab ? '' : 'none';
-  });
-  document.querySelectorAll('.rail-btn[data-tab]').forEach(b =>
-    b.classList.toggle('act', b.dataset.tab === tab));
-}
-
-// ══════════════════════════════════════════════════════════
 // AUTOCOMPLETE  (shared helper — used by kv-panel.js too)
 // ══════════════════════════════════════════════════════════
 // opts.commit: typed text that names an item commits when you leave the box

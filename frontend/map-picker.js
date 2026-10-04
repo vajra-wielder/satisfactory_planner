@@ -393,7 +393,7 @@ function tools(el, redraw) {
 // PICKER — the nodes one factory mines
 // ══════════════════════════════════════════════════════════
 
-// A save read anywhere (Machines & Alts too) marks its nodes on the maps
+// A save read anywhere (Unlocks too) marks its nodes on the maps
 document.addEventListener('save-read', e => { SAVE = new Set(e.detail.nodes || []); SAVE_INFO = e.detail; });
 
 let S = null;   // the open picker

@@ -42,20 +42,22 @@ try {
   const goal = () => page.evaluate(() => document.getElementById('rb').innerText);
   let before;
 
-  await step('after a solve: new alternates under the solve settings, in unlock order, with what each adds', async () => {
-    await page.click('.tabbt[data-tab="saved"]'); await sleep(400);
+  await step('after a solve: new alternates on the right panel, in unlock order, with what each adds', async () => {
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row'); await sleep(200);
     await page.locator('.sv-row', { hasText: 'Plates' }).locator('button').first().click(); await sleep(900);
     await page.keyboard.press('Control+r'); await solved(); await sleep(300);
     before = await goal();
+    await page.keyboard.press('1');
     await page.waitForFunction(() => document.querySelectorAll('#new-alts .na-row').length > 0, null, { timeout: 60000 });
     const t = await page.locator('#new-alts').innerText();
     assert.match(t, /With all \d+:\s+\+[\d.]+% output/, t);
     assert.match(await page.locator('#new-alts .na-row').first().innerText(), /\+[\d.]+% output/);
-    assert.equal(await page.locator('#sec-oc #new-alts').count(), 1, 'under Solve settings');
+    assert.equal(await page.locator('#dk-alts #new-alts').count(), 1, 'on the right panel');
   });
   await page.screenshot({ path: (process.env.TMPDIR || '/tmp') + '/newalts-after-solve.png' });
   await step('the results bar says so; a click there opens the list', async () => {
-    await page.click('.tabbt[data-tab="saved"]'); await sleep(300);
+    await page.keyboard.press('1'); await sleep(200);   // closes it
+    assert.equal(await page.locator('#new-alts .na-row').first().isVisible(), false);
     await page.waitForSelector('#rb-na');
     assert.match(await page.locator('#rb-na').innerText(), /\+[\d.]+%\s+\d+ new alts/i);
     await page.click('#rb-na'); await sleep(500);
@@ -79,7 +81,7 @@ try {
   await step('the analysis has no alternate sections', async () => {
     await page.keyboard.press('Control+i'); await sleep(1500);
     assert.doesNotMatch(await page.locator('#analysis-body').innerText(), /Alternates (Worth Unlocking|This Plan Uses)|Alternate Recipe Value/i);
-    await page.keyboard.press('Escape');
+    assert.match(await page.locator('#dk-title').innerText(), /Analysis/i);
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

@@ -6,7 +6,7 @@
  * taken twice — or type them in (resource, extractor, purity, how many).
  * Power shards on the extractors decide how much comes out: each takes an
  * extractor 50% higher, three at most; "Spread" puts a number of them where
- * they give the most. Miners run at the tier unlocked in Machines & Alts.
+ * they give the most. Miners run at the tier set in Unlocks.
  * "Fixed rate" is a plain number. ∞ marks a resource unlimited. The rates are
  * the same as supply.py's.
  *

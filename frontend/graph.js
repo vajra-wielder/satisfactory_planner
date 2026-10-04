@@ -122,6 +122,8 @@ export function resize() {
   schedDraw();
 }
 window.addEventListener('resize', resize);
+// The panels either side open and close: the canvas follows its box, whatever moved it
+new ResizeObserver(() => resize()).observe(document.getElementById('graph'));
 
 // ═══════════════════════════════════════════════════════════
 // LAYOUT PIPELINE

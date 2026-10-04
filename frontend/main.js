@@ -21,7 +21,7 @@ import {
 } from './api.js';
 
 import {
-  toggleSec, initTabs, activateTab,
+  toggleSec,
   addKv,
   fillUI, readUI,
   altsAll, altsNone,
@@ -40,12 +40,14 @@ import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards,
 import {
   openWarn, closeWarn,
   renderResultsBar, renderBuildCost, toggleBC,
-  renderSaved,
+  renderSaved, renderIssues,
 } from './ui.js';
 
 import { initRecipeLookup } from './recipe-lookup.js';
+import { openUnlockedModal } from './machines-panel.js';
 import { KVS, renderKv, syncKv } from './kv-panel.js';
-import { openAnalysis, closeAnalysis } from './analysis.js';
+import { openAnalysis, closeAnalysis, showAnalysis } from './analysis.js';
+import { initDock, onDockTab, openDock, toggleDock, dockTab, setBadge } from './dock.js';
 
 import { initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './blackboard.js';
 import { initNav, openPalette, openHelp } from './nav.js';
@@ -239,7 +241,7 @@ function applyStylesFirstPass(payload, { hardByproducts = true } = {}) {
 
 // ── Lazy machines/alts render ─────────────────────────────────────────────────
 // renderMachines + renderAlts touch 107 alt chips — skipped at boot and only
-// run when the Machines & Alts tab is first opened, or marked dirty by a
+// run when Unlocks or the Alternates tab is first opened, or marked dirty by a
 // scenario load/reset.
 
 let _machinesDirty = true;
@@ -262,15 +264,23 @@ function toggleSidebar() {
   setTimeout(() => { resize(); draw(); }, 250);
 }
 
-function expandToTab(tab) {
-  if (!sidebarOpen) {
-    sidebarOpen = true;
-    document.getElementById('app').classList.remove('sb-collapsed');
-    setTimeout(() => { resize(); draw(); }, 250);
-  }
-  activateTab(tab);
-  if (tab === 'saved') loadSaved();
+function showPlan() { if (!sidebarOpen) toggleSidebar(); }
+
+// Far off, for what's rarely changed or for leaving this factory:
+// your factories (a drawer) and the unlocks every factory shares (a window)
+function openFar(id) {
+  document.querySelectorAll('.far.show').forEach(f => f.classList.remove('show'));
+  document.getElementById(id).classList.add('show');
 }
+function closeFar() { document.querySelectorAll('.far.show').forEach(f => f.classList.remove('show')); }
+function openFactories() { openFar('fac-drawer'); loadSaved(); }
+function openUnlocks() { openFar('unlocks-modal'); renderMachinesIfNeeded(); }
+document.querySelectorAll('.far').forEach(f => {
+  f.addEventListener('mousedown', e => { if (e.target === f) closeFar(); });
+  f.querySelector('[data-far-close]').addEventListener('click', closeFar);
+});
+document.getElementById('fac-new').addEventListener('click', () => { closeFar(); handleReset(); });
+document.getElementById('btn-hd-manage').addEventListener('click', openUnlockedModal);
 
 
 // ── Issues badge ─────────────────────────────────────────────────────────────
@@ -282,15 +292,8 @@ function updateIssuesBadge(result) {
             + Object.keys(result?.error_sinks   ?? {}).length;
   const sc  = Object.keys(result?.surplus_intermediates ?? {}).length;
   const tot = wc + ec + sc;
-  const btn = document.getElementById('btn-issues');
-  if (tot > 0) {
-    const col = ec > 0 ? 'var(--err)' : sc > 0 ? '#f59e0b' : 'var(--warn)';
-    btn.style.setProperty('--issue-col', col);
-    document.getElementById('btn-issues-count').textContent = tot;
-    btn.style.display = '';
-  } else {
-    btn.style.display = 'none';
-  }
+  setBadge('btn-issues-count', tot > 0 ? String(tot) : '', ec > 0 ? 'bad' : wc > 0 ? 'warn' : '');
+  renderIssues();
 }
 
 
@@ -365,11 +368,12 @@ function handleSolve() {
       onResult();
       updateIssuesBadge(result);
       refreshNewAlts(altsChanged);
-      const hasIssues = result.conflict_hints?.length > 0
-        || result.warnings?.length > 0
-        || Object.keys(result.error_sources ?? {}).length > 0
-        || Object.keys(result.error_sinks   ?? {}).length > 0;
-      if (hasIssues) openWarn();
+      // fell short: the Issues tab says why; otherwise the badges do, and an
+      // open Analysis redraws for the new plan
+      const shortOf = !result.status?.startsWith('Optimal') || result.conflict_hints?.length > 0
+        || Object.keys(result.error_sources ?? {}).length > 0;
+      if (shortOf) openWarn();
+      else if (dockTab() === 'analysis') showAnalysis();
     })
     .catch(err => {
       if (err.name === 'AbortError') return;
@@ -433,7 +437,10 @@ function handleReset() {
   fillUI({ skipMachines: true });
   renderResultsBar();
   renderBuildCost();
-  document.getElementById('btn-issues').style.display = 'none';
+  setBadge('btn-issues-count', '');
+  renderIssues();
+  refreshNewAlts(altsChanged);
+  updateSummaries();
   initLayout();
 }
 
@@ -471,7 +478,7 @@ function openScenario(key) {
 function loadSaved() {
   fetchScenarios()
     .then(saved => {
-      renderSaved(saved, openScenario, key => deleteScenario(key).then(loadSaved), (key, v) =>
+      renderSaved(saved, key => { closeFar(); openScenario(key); }, key => deleteScenario(key).then(loadSaved), (key, v) =>
         fetch(`/api/history/${key}/${v}/restore`, { method: 'POST' }).then(() => {
           loadSaved(); refreshOutputs();
           if (key === LOADED_KEY) openScenario(key);
@@ -486,7 +493,7 @@ function loadSaved() {
 }
 
 
-// Re-solving in order: progress in the Saved tab and the sidebar; when it
+// Re-solving in order: progress in Your factories and the sidebar; when it
 // ends, the lists refresh and the open factory shows its new plan
 let _chainWasRunning = false;
 onChain(st => {
@@ -508,6 +515,7 @@ function updateSummaries() {
   const ex = nodes.reduce((a, r) => a + (r.nodes?.length || (r.extractor === 'fixed' ? 0 : parseInt(r.count ?? 1, 10) || 0)), 0);
   const imp = (SC.from_factories || []).length;
   const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  set('tb-fac-name', SC.name || 'New Factory');            // the factory on screen, in the top bar
   set('sum-res', [`${new Set(nodes.map(r => r.resource)).size} resources`, ex ? `${ex} extractors` : '', imp ? `${imp} imports` : ''].filter(Boolean).join(' · '));
   set('sum-goals', [n(SC.objective) && `${n(SC.objective)} max`, n(SC.must_produce) && `${n(SC.must_produce)} exact`,
     n(SC.min_produce) && `${n(SC.min_produce)} at least`, n(SC.max_produce) && `${n(SC.max_produce)} at most`,
@@ -521,10 +529,10 @@ let _sumT = null;
 }));
 
 // The alternates this factory uses changed (ticked under New alternates): the
-// Machines & Alts tab redraws when next shown
+// Unlocks and the Alternates tab redraw when next shown
 function altsChanged() {
   _machinesDirty = true;
-  if (document.getElementById('tab-machalt')?.style.display !== 'none') renderMachinesIfNeeded();
+  if (dockTab() === 'alts') renderMachinesIfNeeded();
 }
 document.addEventListener('suggest-ready', () => renderResultsBar());
 document.getElementById('rb').addEventListener('click', e => { if (e.target.closest('#rb-na')) showNewAlts(); });
@@ -545,7 +553,7 @@ document.addEventListener('apply-fix', e => {
   handleSolve();
 });
 
-// Reading a save in Machines & Alts: what it mines, and its unlocks against the planner's
+// Reading a save in Unlocks: what it mines, and its unlocks against the planner's
 function showSave(d) {
   const info = document.getElementById('save-info'), box = document.getElementById('save-unl');
   if (!info || !d?.file) return;
@@ -569,16 +577,16 @@ document.addEventListener('resolve-chain-watch', () => watchChain());
 
 // Topbar
 document.getElementById('sb-toggle')    .addEventListener('click', toggleSidebar);
-document.getElementById('btn-analysis') .addEventListener('click', openAnalysis);
 document.getElementById('btn-blackboard').addEventListener('click', openBlackboard);
-document.getElementById('btn-issues')   .addEventListener('click', openWarn);
+document.getElementById('btn-factories').addEventListener('click', openFactories);
+document.getElementById('btn-unlocks')  .addEventListener('click', openUnlocks);
 document.getElementById('btn-goto')     .addEventListener('click', openPalette);
 document.getElementById('btn-keys')     .addEventListener('click', openHelp);
 
 // Rail
-document.getElementById('rail-build')   .addEventListener('click', () => expandToTab('build'));
-document.getElementById('rail-machalt') .addEventListener('click', () => expandToTab('machalt'));
-document.getElementById('rail-saved')   .addEventListener('click', () => expandToTab('saved'));
+document.getElementById('rail-build')   .addEventListener('click', toggleSidebar);
+document.getElementById('rail-machalt') .addEventListener('click', openUnlocks);
+document.getElementById('rail-saved')   .addEventListener('click', openFactories);
 document.getElementById('rail-solve')   .addEventListener('click', handleSolve);
 
 // Section toggles
@@ -610,8 +618,6 @@ document.getElementById('bsolve').addEventListener('click', handleSolve);
 document.getElementById('bsave') .addEventListener('click', handleSave);
 document.getElementById('breset').addEventListener('click', handleReset);
 
-// Build cost
-document.getElementById('bc-toggle').addEventListener('click', toggleBC);
 
 // Graph controls
 document.getElementById('btn-zoom-in') .addEventListener('click', () => zoomBy(1.2));
@@ -621,13 +627,14 @@ document.getElementById('btn-search')  .addEventListener('click', openSearch);
 document.getElementById('btn-hubs')    .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleHubs()));
 document.getElementById('btn-minor')   .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleMinor()));
 
-// Modals
-document.getElementById('wo')                .addEventListener('click', closeWarn);
-document.getElementById('wm')                .addEventListener('click', e => e.stopPropagation());
-document.getElementById('btn-close-warn')    .addEventListener('click', closeWarn);
-document.getElementById('analysis-modal')    .addEventListener('click', closeAnalysis);
-document.getElementById('analysis-box')      .addEventListener('click', e => e.stopPropagation());
-document.getElementById('btn-close-analysis').addEventListener('click', closeAnalysis);
+// The right panel: each tab draws what it shows when it's shown
+initDock();
+onDockTab(tab => {
+  if (tab === 'alts') { renderMachinesIfNeeded(); refreshNewAlts(altsChanged); }
+  if (tab === 'analysis') showAnalysis();
+  if (tab === 'build') renderBuildCost();
+  if (tab === 'issues') renderIssues();
+});
 
 // Keyboard shortcuts
 window.addEventListener('keydown', e => {
@@ -635,10 +642,13 @@ window.addEventListener('keydown', e => {
   const inInput = tag === 'INPUT' || tag === 'TEXTAREA';
   const mod     = e.ctrlKey || e.metaKey;
 
-  if ((e.key === '[' || e.key === ']') && !mod && !inInput) {
-    toggleSidebar();
-    return;
-  }
+  // [ the left panel (what goes in), ] the right one (review and improve)
+  if (e.key === '[' && !mod && !inInput) { toggleSidebar(); return; }
+  if (e.key === ']' && !mod && !inInput) { toggleDock(dockTab() || 'alts'); return; }
+  // 1…4 the right panel's tabs, on the planner with nothing over it
+  // (Ctrl+1…4 belong to the browser's tabs)
+  const tab = !mod && !e.altKey && !inInput && ['alts', 'analysis', 'build', 'issues'][+e.key - 1];
+  if (tab && !document.querySelector('.show:is(.far, [id$="-modal"], #nav-help, #nav-pal)')) { toggleDock(tab); return; }
   if (!mod) return;
 
   switch (e.key.toLowerCase()) {
@@ -647,18 +657,14 @@ window.addEventListener('keydown', e => {
     case 'p': case 'b': e.preventDefault(); openBlackboard(); break;
     case 'i': e.preventDefault(); openAnalysis(); break;
     case 'm': e.preventDefault(); pickOnMap(); break;
-    case '1': e.preventDefault(); expandToTab('build'); break;
-    case '2': e.preventDefault(); expandToTab('machalt'); break;
-    case '3': e.preventDefault(); expandToTab('saved'); break;
+    case 'o': e.preventDefault(); openFactories(); break;
+    case 'u': e.preventDefault(); openUnlocks(); break;
     case 'q': {
       e.preventDefault();
       const inp = document.getElementById('tb-rl-input');
       if (inp) { inp.focus(); inp.select(); }
       break;
     }
-    case 'a':
-      if (!inInput) { e.preventDefault(); expandToTab('machalt'); }
-      break;
     case 'f':
       e.preventDefault();
       openSearch();
@@ -682,29 +688,28 @@ Promise.all([fetchBoot()])
     setUnlockedAlts(unlocked_alts || []);
     ge.querySelector('p').textContent = 'Configure your factory and hit Solve';
 
-    initTabs(tab => {
-      if (tab === 'saved') loadSaved();
-      if (tab === 'machalt') renderMachinesIfNeeded();
-    });
     initRecipeLookup();
     initNav({
       currentFactory: () => LOADED_KEY,
       openFactory: key => openScenario(key),
-      closeAnalysis, closeWarn,
+      closeAnalysis, closeWarn, closeFar,
       actions: [
         { label: 'Solve', keys: 'Ctrl+R', run: handleSolve },
         { label: 'Save', keys: 'Ctrl+S', run: handleSave },
         { label: 'New factory (reset the planner)', run: () => document.getElementById('breset').click() },
         { label: 'Pick nodes on the map', keys: 'Ctrl+M', run: () => pickOnMap() },
-        { label: 'Analysis', keys: 'Ctrl+I', run: openAnalysis },
+        { label: 'Alternates for this factory', keys: '1', run: () => openDock('alts') },
+        { label: 'Analysis', keys: '2', run: () => openDock('analysis') },
+        { label: 'Build cost', keys: '3', run: () => openDock('build') },
+        { label: 'Issues', keys: '4', run: () => openDock('issues') },
         { label: 'Recipe lookup', keys: 'Ctrl+Q', run: () => { const i = document.getElementById('tb-rl-input'); i.focus(); i.select(); } },
-        { label: 'Build tab', keys: 'Ctrl+1', run: () => expandToTab('build') },
-        { label: 'Machines & Alts', keys: 'Ctrl+2', run: () => expandToTab('machalt') },
-        { label: 'Saved factories', keys: 'Ctrl+3', run: () => expandToTab('saved') },
+        { label: 'Your factories', keys: 'Ctrl+O', run: openFactories },
+        { label: 'Unlocks for every factory (machines, miner, hard drives, a save)', keys: 'Ctrl+U', run: openUnlocks },
         { label: 'Re-solve out of date', run: () => startChain() },
-        { label: 'Back up now', run: () => { expandToTab('saved'); setTimeout(() => document.getElementById('bk-make')?.click(), 400); } },
+        { label: 'Back up now', run: () => { openFactories(); setTimeout(() => document.getElementById('bk-make')?.click(), 400); } },
         { label: 'Plan the network', run: () => { goBlackboard('factories'); setTimeout(() => document.getElementById('bb-plan')?.click(), 600); } },
-        { label: 'Hide / show the sidebar', keys: '[', run: toggleSidebar },
+        { label: 'Hide / show the left panel (what goes in)', keys: '[', run: toggleSidebar },
+        { label: 'Hide / show the right panel (review and improve)', keys: ']', run: () => toggleDock(dockTab() || 'alts') },
         { label: 'Server log', run: () => document.getElementById('btn-log').click() },
         { label: 'Every shortcut', keys: '?', run: openHelp },
       ],
@@ -714,6 +719,8 @@ Promise.all([fetchBoot()])
     // Clicking a factory on the Blackboard opens it here
     initBlackboard({ onOpenFactory: key => { closeBlackboard(); openScenario(key); } });
     fillUI({ skipMachines: true });   // skip machines/alts — rendered lazily on first tab open
+    updateSummaries();
+    renderBuildCost(); renderIssues();
     resize();
     draw();
 

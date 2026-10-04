@@ -5,12 +5,18 @@
 
 import { RESULT, RECIPES, itemName, perMin } from './state.js';
 import { gainText } from './new-alts.js';
+import { openDock, setBadge } from './dock.js';
 
 // ══════════════════════════════════════════════════════════
 // WARNINGS MODAL
 // ══════════════════════════════════════════════════════════
-export function openWarn() {
-  if (!RESULT) return;
+// Issues: drawn in the right panel's Issues tab (renderIssues after every
+// solve), opened there (openWarn) when a solve has something to say
+export function openWarn() { renderIssues(); openDock('issues'); }
+export function renderIssues() {
+  const list = document.getElementById('wmit-list');
+  if (!list) return;
+  if (!RESULT) { list.innerHTML = '<p class="n-hint">Solve to see what it couldn\'t do.</p>'; return; }
   const items = [
     ...Object.entries(RESULT.error_sources       ?? {}).map(([k, v]) => ({ t: 'error',   txt: `Missing: ${itemName(k)} — needs ${Number(v).toFixed(1)}/min` })),
     ...Object.entries(RESULT.error_sinks         ?? {}).map(([k, v]) => ({ t: 'error',   txt: `Byproduct: ${itemName(k)} — surplus ${Number(v).toFixed(1)}/min` })),
@@ -21,8 +27,7 @@ export function openWarn() {
   const COL = { error:'var(--err)', warning:'var(--warn)', info:'var(--t3)', surplus:'#f59e0b' };
   const BG  = { error:'var(--err-dim)', warning:'var(--warn-dim)', info:'var(--p3)', surplus:'rgba(245,158,11,.1)' };
   const ICO = { error:'✕', warning:'⚠', info:'ℹ', surplus:'↗' };
-  document.getElementById('wmtit').textContent = `Solve Issues — ${items.length}`;
-  const list = document.getElementById('wmit-list'); list.innerHTML = '';
+  list.innerHTML = items.length ? '' : '<p class="n-hint">Nothing to fix — the last solve did everything asked.</p>';
   // What would make it work, one click each (they change the factory, then it solves again)
   const fixes = fixesOf(RESULT.diagnosis);
   if (fixes.length) {
@@ -41,7 +46,6 @@ export function openWarn() {
     d.innerHTML = `<span style="flex-shrink:0">${ICO[t]}</span><span>${txt}</span>`;
     list.appendChild(d);
   });
-  document.getElementById('wo').classList.add('show');
 }
 // The diagnosis of a plan that can't be made, as changes to try: each goal
 // lowered to what fits with the rest, the alternates that would close the gap
@@ -55,7 +59,7 @@ function fixesOf(d) {
       label: `Turn on ${d.alts.use.map(k => RECIPES[k]?.display?.replace(/^Alternate: /, '') || k).join(', ')} (an alternate you haven't unlocked)` });
   return out;
 }
-export function closeWarn() { document.getElementById('wo').classList.remove('show'); }
+export function closeWarn() { /* the Issues tab stays where it is */ }
 
 // ══════════════════════════════════════════════════════════
 // RESULTS BAR + BUILD COST
@@ -136,11 +140,9 @@ export function renderResultsBar() {
   rb.innerHTML = h;
 }
 
-let bcOpen = false;
 let _bcLastKey = null;
-export function toggleBC() { bcOpen = !bcOpen; renderBuildCost(); }
+export function toggleBC() { openDock('build'); }
 export function renderBuildCost() {
-  const panel  = document.getElementById('bc');
   // the plan's machines, plus the extractors and geothermal generators its nodes need
   const cost   = { ...(RESULT?.build_cost ?? {}) };
   const ex     = RESULT?.extractor_build ?? {};
@@ -148,31 +150,47 @@ export function renderBuildCost() {
   const entries = Object.entries(cost).sort((a, b) => b[1] - a[1]);
   const shards = RESULT?.build_cost_shards ?? 0;
   const sloops = RESULT?.build_cost_sloops ?? 0;
+  const body = document.getElementById('bcb');
   if (!entries.length && !shards && !sloops) {
-    panel.style.display = 'none';
+    setBadge('bcc', '');
+    body.innerHTML = '<p class="n-hint">Solve to see the machines and materials to have ready.</p>';
     _bcLastKey = null;
     return;
   }
-  panel.style.display = '';
-  document.getElementById('bcc').textContent = `${entries.length} items ${bcOpen ? '▲' : '▼'}`;
-  const body = document.getElementById('bcb');
-  body.style.display = bcOpen ? '' : 'none';
-  if (!bcOpen) return;
+  setBadge('bcc', String(entries.length));
 
   const cacheKey = JSON.stringify(cost) + JSON.stringify(ex) + shards + sloops;
   if (cacheKey === _bcLastKey) return;
   _bcLastKey = cacheKey;
 
   body.innerHTML = '';
+  const head = t => { const h = document.createElement('div'); h.className = 'bc-h'; h.textContent = t; body.appendChild(h); };
+  // What to build, then what to build it from — a list to have ready before you start
+  const machines = {};
+  (RESULT?.flows || []).forEach(f => { machines[f.machine] = (machines[f.machine] || 0) + (f.machines_final || 0); });
+  const lines = [];
+  const copy = document.createElement('button');
+  copy.className = 'bsm'; copy.textContent = 'Copy as a list'; copy.style.float = 'right';
+  copy.addEventListener('click', () => navigator.clipboard?.writeText(lines.join('\n')).then(() => { copy.textContent = 'Copied'; }));
+  body.appendChild(copy);
+  head('Machines');
+  Object.entries(machines).sort((a, b) => b[1] - a[1]).forEach(([m, n]) => {
+    const r = document.createElement('div'); r.className = 'bcr';
+    r.innerHTML = `<span>${m.replace(/_/g, ' ')}</span><span>×${n}</span>`;
+    body.appendChild(r); lines.push(`${m.replace(/_/g, ' ')} ×${n}`);
+  });
+  if (Object.keys(ex).length) head('Extractors');
   Object.entries(ex).forEach(([m, e]) => {
     const r = document.createElement('div'); r.className = 'bcr';
     r.innerHTML = `<span style="color:var(--t2)">⛏ ${m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1')}</span><span>×${e.count}</span>`;
-    body.appendChild(r);
+    body.appendChild(r); lines.push(`${m.replace(/_/g, ' ')} ×${e.count}`);
   });
+  head('Materials to build them');
+  if (lines.length) lines.push('');
   entries.forEach(([item, qty]) => {
     const r = document.createElement('div'); r.className = 'bcr';
     r.innerHTML = `<span>${itemName(item)}</span><span>×${qty}</span>`;
-    body.appendChild(r);
+    body.appendChild(r); lines.push(`${itemName(item)} ×${qty}`);
   });
   if (shards) { const r = document.createElement('div'); r.className = 'bcr'; r.innerHTML = `<span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span>`; body.appendChild(r); }
   if (sloops) { const r = document.createElement('div'); r.className = 'bcr'; r.innerHTML = `<span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span>`; body.appendChild(r); }

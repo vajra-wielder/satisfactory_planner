@@ -419,22 +419,6 @@ export function renderAlts() {
   if (!searchInp) {
     p.innerHTML = '';
 
-    // ── Unlocked-alts management bar (created once) ──────────
-    const mgmtBar = document.createElement('div');
-    mgmtBar.style.cssText =
-      'display:flex;align-items:center;gap:6px;margin-bottom:8px;' +
-      'padding:6px 8px;background:var(--p3);border:1px solid var(--b);border-radius:var(--rsm)';
-    mgmtBar.innerHTML =
-      '<span style="font-size:13px">🔑</span>' +
-      '<span style="font-size:11px;font-weight:600;color:var(--t);flex:1">Hard Drive Unlocks</span>';
-    const mgmtBtn = document.createElement('button');
-    mgmtBtn.className = 'bsm';
-    mgmtBtn.textContent = '📖 Manage';
-    mgmtBtn.style.cssText = 'font-size:10px;flex-shrink:0;white-space:nowrap';
-    mgmtBtn.addEventListener('click', openUnlockedModal);
-    mgmtBar.appendChild(mgmtBtn);
-    p.appendChild(mgmtBar);
-
     const searchWrap = document.createElement('div');
     searchWrap.style.cssText = 'position:relative;margin-bottom:8px';
 

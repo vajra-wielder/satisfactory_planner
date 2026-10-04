@@ -95,13 +95,23 @@ try {
     await page.keyboard.press('Escape'); await sleep(150);
     assert.equal(await page.locator('#nav-help.show').count(), 0);
   });
-  await step('Ctrl+3 and the wheel over the sidebar\'s tabs', async () => {
-    await page.keyboard.press('Control+3'); await sleep(300);
-    assert.equal(await page.locator('.tabbar .tabbt.act').innerText(), 'Saved');
-    const b = await page.locator('.tabbar').boundingBox();
-    await page.mouse.move(b.x + 30, b.y + b.height / 2);
+  await step('3 opens Build cost on the right, the wheel over its rail steps tabs, 3 again closes it', async () => {
+    await page.mouse.click(700, 400); await page.keyboard.press('3'); await sleep(300);
+    const head = () => page.locator('#dk-title').innerText();
+    assert.match(await head(), /Build cost/i);
+    const b = await page.locator('#dk-rail').boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + 80);
     await page.mouse.wheel(0, 120); await sleep(300);
-    assert.equal(await page.locator('.tabbar .tabbt.act').innerText(), 'Build');
+    assert.match(await head(), /Issues/i);
+    await page.keyboard.press('4'); await sleep(200);
+    assert.equal(await page.locator('#app.dk-open').count(), 0);
+  });
+  await step('Ctrl+O factories and Ctrl+U unlocks open far off; Esc closes them', async () => {
+    for (const [k, id] of [['Control+o', '#fac-drawer'], ['Control+u', '#unlocks-modal']]) {
+      await page.keyboard.press(k); await page.waitForSelector(id + '.show');
+      await page.keyboard.press('Escape'); await sleep(150);
+      assert.equal(await page.locator(id + '.show').count(), 0, id);
+    }
   });
   await step('the map: + zooms in to purity, then names; 0 the whole map; Esc closes the picker', async () => {
     await page.keyboard.press('Control+m'); await page.waitForSelector('#mp-map [data-id]'); await sleep(300);
