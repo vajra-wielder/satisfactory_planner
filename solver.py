@@ -1800,10 +1800,22 @@ class _AltLab:
         lp = self.lp
         return lp.value(lp.goal) if lp.run(lp.goal, True, _STAGE_TIME_S[0]) is not None else None
 
-    def cost(self, on, target, within=None, space=True):
+    def priced(self, keys, maximize: bool) -> List[str]:
+        """Of these (switched off), the ones that could improve the last solve:
+        their chain priced at its items' shadow prices — what each item is worth
+        anywhere in the factory, so what it frees flows to every other chain —
+        pays. One that doesn't can't improve the plan at all (LP optimality:
+        the plan stays optimal with its column allowed)."""
+        eps = 1e-9
+        return [k for k in keys if any((v.reduced_cost() > eps) if maximize else (v.reduced_cost() < -eps)
+                                       for v in self.cols[k])]
+
+    def cost(self, on, target, within=None, space=True, price=None):
         """(least resource score, least space using no more resources than
         `within` — or than the least — or None if not asked, the candidates
-        that plan runs) for the target output, caps lifted."""
+        that plan runs) for the target output, caps lifted.
+        price: candidates to price on the measure's own solve (see priced) —
+        then (…, the ones that could improve it) as a fourth item."""
         self.only(on)
         lp, T = self.lp, _STAGE_TIME_S[0]
         ubs = [ct.ub() for ct in self.caps]
@@ -1817,13 +1829,13 @@ class _AltLab:
                     return None
                 r = lp.value(self.score)
                 if not space:
-                    return (r, None, set())
+                    return (r, None, set()) + ((self.priced(price, False),) if price is not None else ())
                 bound = r if within is None else max(r, within)
                 lock = lp.ct(-lp.inf, bound + abs(bound) * 1e-7 + 1e-9, self.score)
             got = None
             if lp.run(lp.space, False, T) is not None:
                 runs = {k for k, vs in self.cols.items() if any(v.solution_value() > 1e-6 for v in vs)}
-                got = (r, lp.value(lp.space), runs)
+                got = (r, lp.value(lp.space), runs) + ((self.priced(price, False),) if price is not None else ())
             if lock is not None:
                 lock.SetBounds(-lp.inf, lp.inf)
             return got
@@ -1839,9 +1851,11 @@ def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
         "steps": [{key, output, resources, machines}] — in unlock order, each
         what it adds to the ones above (as % of now / space units),
         "on": [keys among them this factory has turned on]}
-    Pruned like a solve (prune_recipes, the new ones allowed); each round's
-    candidates are tried in parallel on warm copies of the model, and only
-    output is measured for each unless output doesn't decide the order."""
+    Pruned like a solve (prune_recipes, the new ones allowed). Each round,
+    one solve prices every candidate's chain at the plan's shadow prices
+    (what freed resources are worth to the other chains): only those that
+    could gain are solved, in parallel on warm copies of the model, and
+    resources and space only when output doesn't decide the order."""
     out: dict = {"all": None, "steps": [], "on": []}
     unlocked = set(scenario.unlocked_alt_recipes)
     new = {k for k, r in all_recipes.items() if r.alternate and k not in unlocked}
@@ -1920,9 +1934,16 @@ def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
         # the next to unlock: most output added, then resources, then space —
         # a gain too small to count (_GAIN) counts as none; each measure is
         # only taken for the ones still tied on the ones before it
+        # Each measure: one solve with the ones chosen so far prices every
+        # candidate's chain; only those that could gain are solved, the rest
+        # gain nothing on it (they stay at what the chosen ones give)
         got: Dict[str, dict] = {k: {} for k in pool}
         if has_goal and g0:
-            for k, g in each(lambda lb, k: lb.goal(set(chosen) | {k}), pool).items():
+            lab.goal(set(chosen))
+            maybe = lab.priced(pool, True)
+            for k in pool:
+                got[k]["output"] = now["output"]
+            for k, g in each(lambda lb, k: lb.goal(set(chosen) | {k}), maybe).items():
                 got[k]["output"] = out_of(g) if g is not None else None
             pool = [k for k in pool if got[k]["output"] is not None]
         else:
@@ -1936,11 +1957,19 @@ def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
             pool = [k for k in pool if key[k] == top]
             return top
         if keep_best("output") <= 0.0 or len(pool) > 1:
-            for k, c in each(lambda lb, k: lb.cost(set(chosen) | {k}, g0, space=False), pool).items():
+            base = lab.cost(set(chosen), g0, space=False, price=pool)
+            maybe = base[3] if base else pool
+            for k in pool:
+                got[k]["resources"] = now["resources"]
+            for k, c in each(lambda lb, k: lb.cost(set(chosen) | {k}, g0, space=False), maybe).items():
                 got[k]["resources"] = res_of(c) if c is not None else None
             pool = [k for k in pool if got[k]["resources"] is not None]
             if keep_best("resources") <= 0.0 or len(pool) > 1:
-                for k, c in each(lambda lb, k: lb.cost(set(chosen) | {k}, g0, within=c0[0]), pool).items():
+                base = lab.cost(set(chosen), g0, within=c0[0], price=pool)
+                maybe = base[3] if base else pool
+                for k in pool:
+                    got[k]["machines"] = now["machines"]
+                for k, c in each(lambda lb, k: lb.cost(set(chosen) | {k}, g0, within=c0[0]), maybe).items():
                     got[k]["machines"] = c0[1] - c[1] if c is not None else None
                 pool = [k for k in pool if got[k]["machines"] is not None]
                 keep_best("machines")
