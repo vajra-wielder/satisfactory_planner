@@ -4,7 +4,6 @@
  */
 
 import { RESULT, RECIPES, itemName, perMin } from './state.js';
-import { gainText } from './new-alts.js';
 import { openDock, setBadge } from './dock.js';
 
 // ══════════════════════════════════════════════════════════
@@ -82,36 +81,29 @@ export function renderResultsBar() {
     .filter(([, v]) => v > 0.01)
     .sort(([, a], [, b]) => b - a);
 
-  const consumed = {};
-  (RESULT.flows || []).forEach(f =>
-    Object.entries(f.inputs || {}).forEach(([item, rate]) => {
-      consumed[item] = (consumed[item] || 0) + rate;
-    })
-  );
-  const unlimited  = new Set(RESULT.unlimited_resources || []);
-  const resEntries = Object.entries(RESULT.source_nodes || {}).filter(([item]) => !unlimited.has(item));
-  const bindingCount = resEntries.filter(([item, avail]) => {
-    const used = consumed[item] || 0;
-    return avail > 0 && (used / avail) >= 0.99;
-  }).length;
-  const resLabel = resEntries.length ? `${bindingCount}/${resEntries.length} maxed` : null;
+  // Power: what the factory draws (its machines and extractors) — what it
+  // takes to start it, from batteries or the grid. Its generators' output is
+  // a goal like any item, shown as power made.
+  const used = (RESULT.flows || []).reduce((a, f) => a + Math.max(0, f.power_mw || 0), 0) + (RESULT.extractor_power_mw || 0);
+  const made = (RESULT.flows || []).reduce((a, f) => a + (f.outputs?.Power || 0), 0) + (RESULT.geothermal_mw || 0);
+  const capMw = RESULT.max_power_mw;
+  const net = made - used;
+  const powTip = made > 0 ? `Draws ${used.toFixed(0)} MW (extractors ${(RESULT.extractor_power_mw || 0).toFixed(0)}); makes ${made.toFixed(0)} MW — ${
+    net >= 0 ? `${net.toFixed(0)} MW to spare` : `${(-net).toFixed(0)} MW short`}` : `Machines and extractors (${(RESULT.extractor_power_mw || 0).toFixed(0)} MW)`;
+  const mwTxt = v => `${Math.round(v).toLocaleString()} MW`;
+  const useSt = capMw ? st(`Power use · ${(100 * (RESULT.total_power_mw ?? 0) / capMw).toFixed(1)}% of cap`, mwTxt(used), 'var(--warn)', powTip)
+                      : st('Power use', mwTxt(used), 'var(--warn)', powTip);
 
-  let h = '';
+  let h = useSt + sep;
   objItems.forEach(([k, v], i) => {
-    h += st(itemName(k), perMin(k, v, 1, true), 'var(--ok)');
+    h += k === 'Power' ? st('Power made', mwTxt(v), 'var(--ok)', powTip)
+                       : st(itemName(k), perMin(k, v, 1, true), 'var(--ok)');
     if (i < objItems.length - 1) h += sep;
   });
   if (objItems.length) h += sep;
   h += st('Machines', RESULT.total_machines) + sep;
   // Room the machines take — what the planner minimises (w×l×h per machine)
-  if (RESULT.total_space != null) h += st('Space · smelters', _fmtSpace(RESULT.total_space)) + sep;
-  // Net power: negative when generators (nuclear plants) make more than the factory uses
-  const pw = RESULT.total_power_mw ?? 0;
-  const capMw = RESULT.max_power_mw;
-  h += pw < 0 ? st('Power made', `${(-pw).toFixed(0)} MW`, 'var(--ok)')
-     : capMw ? st(`Power · ${(100 * pw / capMw).toFixed(1)}% of cap`, `${pw.toFixed(0)} / ${capMw.toFixed(0)} MW`, 'var(--warn)')
-             : st('Power', `${pw.toFixed(0)} MW`, 'var(--warn)');
-  if (resLabel) h += sep + st('Resources', resLabel, bindingCount > 0 ? 'var(--err)' : 'var(--t3)');
+  if (RESULT.total_space != null) h += st('Space · smelters', _fmtSpace(RESULT.total_space));
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');
   // The plan against the fractional ceiling: the goal with whole machines,
@@ -125,15 +117,6 @@ export function renderResultsBar() {
     h += sep + st('Of ceiling', `${pct >= 99.995 ? '100' : pct.toFixed(2)}%`, pct >= 95 ? 'var(--ok)' : 'var(--warn)', tip);
   }
 
-  // New alternates worth unlocking: a click away (the sidebar's list)
-  const sg = RESULT.suggest;
-  if (sg?.steps?.length) {
-    const g = sg.all || {};
-    const val = g.output > 0.1 ? `+${g.output >= 10 ? g.output.toFixed(0) : g.output.toFixed(1)}%`
-      : g.resources > 0.1 ? `−${g.resources.toFixed(0)}%` : `−${Math.round(g.machines || 0)} u`;
-    h = `<div class="rbs rb-link" id="rb-na" title="${sg.steps.length} alternates you haven't unlocked would help: ${
-      gainText(g, false)} — click to see them"><div class="rbv" style="color:#34d399">${val}</div><div class="rbl">${sg.steps.length} new alts</div></div>` + sep + h;
-  }
   if (h === _rbLastHTML) { rb.style.display = 'flex'; return; }
   _rbLastHTML = h;
   rb.style.display = 'flex';

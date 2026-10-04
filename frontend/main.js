@@ -51,7 +51,7 @@ import { initDock, onDockTab, openDock, toggleDock, dockTab, setBadge } from './
 
 import { initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './blackboard.js';
 import { initNav, openPalette, openHelp } from './nav.js';
-import { refreshNewAlts, showNewAlts } from './new-alts.js';
+import { refreshNewAlts } from './new-alts.js';
 
 import {
   resize, initLayout, draw,
@@ -566,8 +566,6 @@ function altsChanged() {
   _machinesDirty = true;
   if (dockTab() === 'alts') renderMachinesIfNeeded();
 }
-document.addEventListener('suggest-ready', () => renderResultsBar());
-document.getElementById('rb').addEventListener('click', e => { if (e.target.closest('#rb-na')) showNewAlts(); });
 
 // A fix from the issues list: change the factory, then solve again
 document.addEventListener('apply-fix', e => {
@@ -683,10 +681,10 @@ window.addEventListener('keydown', e => {
 
   // [ the left panel (what goes in), ] the right one (review and improve)
   if (e.key === '[' && !mod && !inInput) { toggleSidebar(); return; }
-  if (e.key === ']' && !mod && !inInput) { toggleDock(dockTab() || 'alts'); return; }
+  if (e.key === ']' && !mod && !inInput) { toggleDock(dockTab() || 'analysis'); return; }
   // 1…4 the right panel's tabs, on the planner with nothing over it
   // (Ctrl+1…4 belong to the browser's tabs)
-  const tab = !mod && !e.altKey && !inInput && ['alts', 'analysis', 'build', 'issues'][+e.key - 1];
+  const tab = !mod && !e.altKey && !inInput && ['analysis', 'alts', 'build', 'issues'][+e.key - 1];
   if (tab && !document.querySelector('.show:is(.far, [id$="-modal"], #nav-help, #nav-pal)')) { toggleDock(tab); return; }
   if (!mod) return;
 
@@ -737,8 +735,8 @@ Promise.all([fetchBoot()])
         { label: 'Save', keys: 'Ctrl+S', run: handleSave },
         { label: 'New factory (reset the planner)', run: () => document.getElementById('breset').click() },
         { label: 'Pick nodes on the map', keys: 'Ctrl+M', run: () => pickOnMap() },
-        { label: 'Alternates for this factory', keys: '1', run: () => openDock('alts') },
-        { label: 'Analysis', keys: '2', run: () => openDock('analysis') },
+        { label: 'Analysis', keys: '1', run: () => openDock('analysis') },
+        { label: 'Alternates for this factory', keys: '2', run: () => openDock('alts') },
         { label: 'Build cost', keys: '3', run: () => openDock('build') },
         { label: 'Issues', keys: '4', run: () => openDock('issues') },
         { label: 'Recipe lookup', keys: 'Ctrl+Q', run: () => { const i = document.getElementById('tb-rl-input'); i.focus(); i.select(); } },
@@ -748,7 +746,7 @@ Promise.all([fetchBoot()])
         { label: 'Back up now', run: () => { openFactories(); setTimeout(() => document.getElementById('bk-make')?.click(), 400); } },
         { label: 'Plan the network', run: () => { goBlackboard('factories'); setTimeout(() => document.getElementById('bb-plan')?.click(), 600); } },
         { label: 'Hide / show the left panel (what goes in)', keys: '[', run: toggleSidebar },
-        { label: 'Hide / show the right panel (review and improve)', keys: ']', run: () => toggleDock(dockTab() || 'alts') },
+        { label: 'Hide / show the right panel (review and improve)', keys: ']', run: () => toggleDock(dockTab() || 'analysis') },
         { label: 'Server log', run: () => document.getElementById('btn-log').click() },
         { label: 'Every shortcut', keys: '?', run: openHelp },
       ],

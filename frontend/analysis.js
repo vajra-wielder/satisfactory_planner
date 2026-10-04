@@ -194,30 +194,6 @@ function renderAnalysis() {
     }
   }
 
-  // ── Other limits: power shards and the power cap ──────────────────────────
-  const limits = RESULT.analysis?.limits || {};
-  const LIMIT_LABEL = {
-    shards:   ['Power shards', 'extra shard', `${RESULT.shards_used || 0} of ${SC.power_shards_available ?? 0} used`],
-    power:    ['Power cap', 'extra MW', `${(RESULT.total_power_mw || 0).toFixed(0)} of ${RESULT.max_power_mw ?? '—'} MW`],
-  };
-  const limitRows = Object.entries(limits).filter(([k]) => LIMIT_LABEL[k]);
-  if (limitRows.length) {
-    section(el, 'Other Limits');
-    const limBody = el.querySelector('.an-section:last-child .an-body');
-    limitRows.forEach(([k, v]) => {
-      const [label, unit, detail] = LIMIT_LABEL[k];
-      const binding = v >= 0.0001;
-      limBody.innerHTML += `
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px">
-          <span style="font-size:12px;font-weight:600;color:var(--t)">${label}
-            <span style="font-size:10px;font-weight:400;color:var(--t3);margin-left:4px">${detail}</span></span>
-          ${binding
-            ? `<span style="font-size:11px;color:var(--acc);font-family:var(--mono);font-weight:600">+${v.toFixed(4)} obj/${unit}</span>`
-            : `<span style="font-size:11px;color:var(--t3)">not limiting</span>`}
-        </div>`;
-    });
-  }
-
   // ── Machine distribution ──────────────────────────────────────────────────
   section(el, 'Machine Distribution');
   const machBody  = el.querySelector('.an-section:last-child .an-body');
@@ -247,9 +223,9 @@ function renderAnalysis() {
   // ── Power breakdown ───────────────────────────────────────────────────────
   section(el, 'Power Breakdown');
   const powBody   = el.querySelector('.an-section:last-child .an-body');
-  const totalPow  = RESULT.total_power_mw || 0;
   const powByMach = {};
   flows.forEach(f => { powByMach[f.machine] = (powByMach[f.machine] || 0) + (f.power_mw || 0); });
+  if (RESULT.extractor_power_mw) powByMach.Extractors = RESULT.extractor_power_mw;   // miners, pumps: drawn too
 
   const powUsed = Object.values(powByMach).filter(p => p > 0).reduce((a, b) => a + b, 0);
   const powMade = Object.values(powByMach).filter(p => p < 0).reduce((a, b) => a + b, 0);
@@ -275,25 +251,11 @@ function renderAnalysis() {
     powBody.innerHTML += `
       <div style="border-top:1px solid var(--b);padding-top:6px;margin-top:4px;
                   font-family:var(--mono);font-size:12px;color:var(--warn)">
-        ${powMade < 0 ? `Used ${powUsed.toFixed(0)} · Made ${(-powMade).toFixed(0)} · Net ` : 'Total: '}${totalPow.toFixed(0)} MW
+        ${powMade < 0 ? `Used ${powUsed.toFixed(0)} · Made ${(-powMade).toFixed(0)} · ${powUsed + powMade > 0 ? `${(powUsed + powMade).toFixed(0)} short` : `${(-(powUsed + powMade)).toFixed(0)} to spare`}` : `Total: ${powUsed.toFixed(0)}`} MW
         ${RESULT.max_power_mw ? `<span style="color:var(--t3)"> / ${RESULT.max_power_mw} MW cap</span>` : ''}
       </div>
     `;
   }
-
-  // ── Solver pruning ────────────────────────────────────────────────────────
-  section(el, 'Solver Pruning');
-  const pruneBody = el.querySelector('.an-section:last-child .an-body');
-  const pruned    = RESULT.pruned_recipe_count || 0;
-  pruneBody.innerHTML = `
-    <p style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:8px">
-      The recipe graph is pruned in two phases before solving:
-      <br><b style="color:var(--t2)">Forward grounding</b> — only recipes producible from your resources.
-      <br><b style="color:var(--t2)">Backward demand</b> — only recipes on a path from resources to objectives.
-      Dead-end branches whose outputs are never needed are dropped here.
-    </p>
-    ${statCard('Recipes entering LP', pruned, 'var(--acc)')}
-  `;
 
   // ── Solution summary ──────────────────────────────────────────────────────
   section(el, 'Solution Summary');
@@ -308,11 +270,8 @@ function renderAnalysis() {
       ${statCard('Alternate recipes', alts, 'var(--acc)')}
       ${statCard('Overclocked', oc, '#3b82f6')}
       ${statCard('Underclocked', uc, '#38bdf8')}
-      ${statCard('Shards used', RESULT.shards_used || 0, '#3b82f6')}
-      ${statCard('Sloops used', RESULT.sloops_used || 0, '#a855f7')}
     </div>
   `;
 
-  // Which alternates to unlock: the sidebar's New alternates (under Solve settings)
 }
 

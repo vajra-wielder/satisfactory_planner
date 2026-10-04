@@ -44,7 +44,7 @@ try {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const errors = [];
-  page.on('pageerror', e => errors.push(String(e)));
+  page.on('pageerror', e => errors.push(String(e.stack || e)));
   await page.goto(B + '/');
   await page.waitForFunction(() => document.querySelector('#bsolve'));
   await sleep(900);

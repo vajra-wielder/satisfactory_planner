@@ -10,8 +10,8 @@
  * solves, so map ↔ alternates ↔ analysis is no more than a click each.
  */
 const $ = id => document.getElementById(id);
-const TABS = ['alts', 'analysis', 'build', 'issues'];
-let TAB = 'alts';
+const TABS = ['analysis', 'alts', 'build', 'issues'];
+let TAB = 'analysis';
 const listeners = [];
 
 /** onShow(tab): called whenever a tab is shown (to draw what it needs). */

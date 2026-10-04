@@ -22,7 +22,6 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   order to unlock them — each with what it adds on top of those above:
   output, resources for the same output, machine space. Tick the ones to use
   in this factory (untick the ones you don't want), then Solve with these.
-  The results bar shows what they'd add; a click there opens the list.
   Below them, the alternates you've unlocked that this factory may use
 - Folded sidebar sections say what's in them (9 resources · 33 extractors;
   2 max · 4 exact · 5 at least · 5 stored)
@@ -102,9 +101,11 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 ### Layout — by how often you go there
 - Left: what goes in — resources, goals, solve settings, notes; Solve and
   Save at the bottom. `[` folds it away
-- Middle: the production graph, with the results bar
-- Right panel, for reviewing and improving the plan: Alternates (new ones
-  worth unlocking, and the ones on here), Analysis (what limits the plan),
+- Middle: the production graph, with the results bar: power use (what the
+  machines and extractors draw — what it takes to start it), the goals (a
+  power plant's as power made), machines, space, shards, sloops, the ceiling
+- Right panel, for reviewing and improving the plan: Analysis (what limits
+  the plan), Alternates (new ones worth unlocking, and the ones on here),
   Build cost (machines, extractors, the materials to build them — add any
   other saved factories or the grid's geothermal to one list) and Issues. Its rail shows a
   count on each; a click or 1 / 2 / 3 / 4 opens one, again closes it; the

@@ -163,7 +163,7 @@ const HELP = [
     [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Recipe lookup'], [['?'], 'This sheet'],
     [['Esc'], 'Close what\'s on top']]],
   ['This factory', [[['Ctrl+R'], 'Solve'], [['Ctrl+S'], 'Save'], [['Ctrl+M'], 'Pick nodes on the map'],
-    [['1'], 'Alternates: new ones to unlock, the ones on here'], [['2', '~or', 'Ctrl+I'], 'Analysis'],
+    [['1', '~or', 'Ctrl+I'], 'Analysis'], [['2'], 'Alternates: new ones to unlock, the ones on here'],
     [['3'], 'Build cost'], [['4'], 'Issues'],
     [['['], 'Hide / show the left panel (what goes in)'], [[']'], 'Hide / show the right panel (review and improve)'],
     [['~the wheel over the right panel\'s icons'], 'The next tab'], [['Ctrl+F'], 'Search the graph']]],

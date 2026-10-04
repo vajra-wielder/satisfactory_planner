@@ -8,7 +8,7 @@
  * in this factory, untick the ones you don't want, then Solve.
  */
 import { SC, RESULT, RECIPES, mCol, MABBR } from './state.js';
-import { openDock, setBadge } from './dock.js';
+import { setBadge } from './dock.js';
 
 const $ = id => document.getElementById(id);
 const name = k => (RECIPES[k]?.display || k).replace(/^Alternate:\s*/i, '');
@@ -25,7 +25,7 @@ export function gainText(g, html = true) {
 }
 
 let seq = 0;
-/** Ask for the last solve's suggestions, then draw them (and the bar's chip). */
+/** Ask for the last solve's suggestions, then draw them. */
 export function refreshNewAlts(onChange) {
   const el = $('new-alts');
   if (!el) return;
@@ -90,5 +90,3 @@ function draw(onChange) {
   $('na-solve').addEventListener('click', () => $('bsolve').click());
 }
 
-/** Show them: the right panel's Alternates tab. */
-export function showNewAlts() { openDock('alts'); }

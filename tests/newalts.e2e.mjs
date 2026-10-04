@@ -47,7 +47,7 @@ try {
     await page.locator('.sv-row', { hasText: 'Plates' }).locator('button').first().click(); await sleep(900);
     await page.keyboard.press('Control+r'); await solved(); await sleep(300);
     before = await goal();
-    await page.keyboard.press('1');
+    await page.keyboard.press('2');
     await page.waitForFunction(() => document.querySelectorAll('#new-alts .na-row').length > 0, null, { timeout: 60000 });
     const t = await page.locator('#new-alts').innerText();
     assert.match(t, /With all \d+:\s+\+[\d.]+% output/, t);
@@ -55,12 +55,14 @@ try {
     assert.equal(await page.locator('#dk-alts #new-alts').count(), 1, 'on the right panel');
   });
   await page.screenshot({ path: (process.env.TMPDIR || '/tmp') + '/newalts-after-solve.png' });
-  await step('the results bar says so; a click there opens the list', async () => {
-    await page.keyboard.press('1'); await sleep(200);   // closes it
+  await step('the count is on the Alternates tab; the results bar leaves it there', async () => {
+    assert.match(await page.locator('#dkb-alts').innerText(), /^\d+$/);
+    const bar = await page.locator('#rb').innerText();
+    assert.doesNotMatch(bar, /new alts|maxed/i, bar);
+    assert.match(bar, /POWER USE/i, bar);
+    await page.keyboard.press('2'); await sleep(200);   // closes it
     assert.equal(await page.locator('#new-alts .na-row').first().isVisible(), false);
-    await page.waitForSelector('#rb-na');
-    assert.match(await page.locator('#rb-na').innerText(), /\+[\d.]+%\s+\d+ new alts/i);
-    await page.click('#rb-na'); await sleep(500);
+    await page.keyboard.press('2'); await sleep(300);
     assert.equal(await page.locator('#new-alts .na-row').first().isVisible(), true);
   });
   await step('tick one, Solve with these: more output, and it is on for this factory; untick: back', async () => {
@@ -82,6 +84,7 @@ try {
     await page.keyboard.press('Control+i'); await sleep(1500);
     assert.doesNotMatch(await page.locator('#analysis-body').innerText(), /Alternates (Worth Unlocking|This Plan Uses)|Alternate Recipe Value/i);
     assert.match(await page.locator('#dk-title').innerText(), /Analysis/i);
+    assert.doesNotMatch(await page.locator('#analysis-body').innerText(), /Other limits|Solver pruning|Shards used|Sloops used/i);
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

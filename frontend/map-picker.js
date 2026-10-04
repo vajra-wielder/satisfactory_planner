@@ -605,6 +605,8 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
     };
     M.map = makeMap(el.querySelector('.mp-view'), M);
     const legend = () => {
+      const lg = el.querySelector('.mp-legend');
+      if (!lg) return;                      // redrawn meanwhile (a newer render is under way)
       const count = {}, free = {}, inSave = {};
       MAP.forEach(n => {
         if (!M.filter.has(n.r)) return;
@@ -615,7 +617,7 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
       const mw = [...M.grid].reduce((a, id) => a + (GEO_MW[BY[id]?.p] || 0), 0);
       // geysers your save already has generators on, not yet on the grid
       const saved = MAP.filter(n => n.r === 'Geyser' && SAVE.has(n.id) && !M.grid.has(n.id) && !owners[n.id]).map(n => n.id);
-      el.querySelector('.mp-legend').innerHTML = `
+      lg.innerHTML = `
         <div class="n-sent-t">Power grid</div>
         ${M.grid.size ? `<div class="mp-lg"><i class="geo"></i>Geothermal × ${M.grid.size}<b>${fmt(mw)} MW</b></div>
           <p class="n-hint">On average — a geyser swings between ½× and 1½×: ${fmt(mw / 2)}–${fmt(mw * 1.5)} MW.</p>`
