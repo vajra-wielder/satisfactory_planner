@@ -111,7 +111,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   power plant's as power made), machines, space, shards, sloops, the ceiling
 - Right panel, for reviewing and improving the plan: Analysis (what limits
   the plan), Alternates (new ones worth unlocking, and the solver's pruning),
-  Build cost (machines, extractors, the materials to build them — add any
+  Build cost (one list of machines and extractors, then the materials — add any
   other saved factories or the grid's geothermal to one list) and Issues. Its rail shows a
   count on each; a click or 1 / 2 / 3 / 4 opens one, again closes it; the
   wheel over the rail steps through them; `]` opens or closes the panel.

@@ -194,32 +194,6 @@ function renderAnalysis() {
     }
   }
 
-  // ── Machine distribution ──────────────────────────────────────────────────
-  section(el, 'Machine Distribution');
-  const machBody  = el.querySelector('.an-section:last-child .an-body');
-  const machCount = {};
-  flows.forEach(f => { machCount[f.machine] = (machCount[f.machine] || 0) + (f.machines_final || 0); });
-  const totalMach = Object.values(machCount).reduce((s, v) => s + v, 0) || 1;
-
-  if (!Object.keys(machCount).length) {
-    machBody.innerHTML = '<p style="font-size:11px;color:var(--t3)">No machines in solution.</p>';
-  } else {
-    Object.entries(machCount).sort(([, a], [, b]) => b - a).forEach(([m, cnt]) => {
-      const color = mCol(m);
-      const pct   = (cnt / totalMach * 100).toFixed(1);
-      machBody.innerHTML += `
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
-          <div style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></div>
-          <div style="flex:1;font-size:11px;color:var(--t2)">${m.replace(/_/g, ' ')}</div>
-          <div style="font-family:var(--mono);font-size:11px;color:${color}">${cnt} (${pct}%)</div>
-          <div style="width:60px;height:4px;border-radius:2px;background:var(--b2);overflow:hidden">
-            <div style="height:100%;width:${pct}%;background:${color};border-radius:2px"></div>
-          </div>
-        </div>
-      `;
-    });
-  }
-
   // ── Power breakdown ───────────────────────────────────────────────────────
   section(el, 'Power Breakdown');
   const powBody   = el.querySelector('.an-section:last-child .an-body');

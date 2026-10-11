@@ -11,22 +11,17 @@
 import {
   SC, RECIPES,
   mCol, MABBR, itemName, MTIERS, ALL_MACHINES, MINER_TIERS, PROGRESS,
+  UNLOCKED_ALTS, isUnlocked, toggleUnlocked, setUnlockedAlts as setStateAlts,
 } from './state.js';
 import { saveProgress } from './api.js';
 
-// ── Unlock state — managed locally, injected from main.js ─
-// Keeps machines-panel.js independent of new state.js exports
-// so deploying this file alone is safe.
-let _unlockedAlts   = new Set();
+// ── Unlock state: the one list, in state.js — this window, the Alternates
+// tab's Unlock ticked and reading a save all change the same set ─
 let _saveUnlockedFn = async () => {};
 
 export function setUnlockedSaver(fn)  { _saveUnlockedFn  = fn; }
-export function setUnlockedAlts(keys) { _unlockedAlts = new Set(keys || []); }
-function _isUnlocked(key)    { return _unlockedAlts.has(key); }
-function _toggleUnlocked(key) {
-  if (_unlockedAlts.has(key)) _unlockedAlts.delete(key);
-  else _unlockedAlts.add(key);
-}
+export function setUnlockedAlts(keys) { setStateAlts(keys); }
+const _isUnlocked = isUnlocked, _toggleUnlocked = toggleUnlocked;
 
 // ══════════════════════════════════════════════════════════
 // MACHINES PANEL
@@ -428,6 +423,7 @@ function _buildUnlockedModal() {
     '<span style="font-size:12px;font-weight:700;color:var(--t);flex:1">🔑 Unlocked Alt Recipes</span>';
   const closeBtn = document.createElement('button');
   closeBtn.className = 'bsm';
+  closeBtn.id = 'unlocked-modal-x';
   closeBtn.textContent = '✕';
   closeBtn.addEventListener('click', closeUnlockedModal);
   hdr.appendChild(closeBtn);
@@ -470,8 +466,9 @@ function _buildUnlockedModal() {
     saveBtn.disabled = true;
     saveBtn.textContent = 'Saving...';
     try {
-      const keys = [..._unlockedAlts];
+      const keys = [...UNLOCKED_ALTS];
       await _saveUnlockedFn(keys);
+      _before = null;                      // saved: nothing to put back
       document.dispatchEvent(new Event('unlocks-changed'));
       saveBtn.textContent = 'Saved!';
       setTimeout(closeUnlockedModal, 600);
@@ -555,6 +552,7 @@ function _renderUnlockedList(query) {
           '<span style="font-size:11px;color:' + (on ? 'rgba(245,158,11,.95)' : 'var(--t)') + '">' + alt.display + '</span>' +
           '<span style="font-size:10px;color:var(--t3);margin-left:6px">' + alt.machine.replace(/_/g, ' ') + '</span>';
 
+        row.dataset.k = alt.key;
         row.appendChild(chk);
         row.appendChild(lbl);
         row.addEventListener('click', function() {
@@ -569,7 +567,9 @@ function _renderUnlockedList(query) {
   if (countEl) countEl.textContent = unlockedCount + ' / ' + total + ' unlocked';
 }
 
+let _before = null;   // the unlocks when the window opened: closing without Save puts them back
 export function openUnlockedModal() {
+  _before = [...UNLOCKED_ALTS];
   let modal = document.getElementById('unlocked-modal');
   if (!modal) modal = _buildUnlockedModal();
   modal.style.display = 'flex';
@@ -579,6 +579,8 @@ export function openUnlockedModal() {
 }
 
 export function closeUnlockedModal() {
+  if (_before) setStateAlts(_before);
+  _before = null;
   const modal = document.getElementById('unlocked-modal');
   if (modal) modal.style.display = 'none';
 }

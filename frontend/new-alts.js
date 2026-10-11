@@ -9,9 +9,8 @@
  * in this factory, untick the ones you don't want, then Solve — or unlock the
  * ticked ones (you found their hard drives): then every factory has them.
  */
-import { SC, RESULT, RECIPES, mCol, MABBR, UNLOCKED_ALTS, setUnlockedAlts as setStateAlts } from './state.js';
-import { setUnlockedAlts } from './machines-panel.js';
-import { saveUnlockedAlts } from './api.js';
+import { SC, RESULT, RECIPES, mCol, MABBR, UNLOCKED_ALTS, setUnlockedAlts } from './state.js';
+import { saveUnlockedAlts, fetchUnlockedAlts } from './api.js';
 import { setBadge } from './dock.js';
 
 const $ = id => document.getElementById(id);
@@ -102,11 +101,12 @@ function draw(onChange) {
   $('na-all')?.addEventListener('click', () => set(d.steps.map(s => s.key), ticked.length !== d.steps.length));
   $('na-solve').addEventListener('click', () => $('bsolve').click());
   $('na-unlock').addEventListener('click', async e => {
-    const keys = [...new Set([...UNLOCKED_ALTS, ...ticked.map(s => s.key)])];
     e.target.disabled = true; e.target.textContent = 'Unlocking…';
     try {
-      await saveUnlockedAlts(keys);
-      setStateAlts(keys); setUnlockedAlts(keys);
+      // on top of what's unlocked — as saved, so nothing you unlocked elsewhere is lost
+      const have = (await fetchUnlockedAlts()).unlocked || [];
+      const keys = [...new Set([...have, ...UNLOCKED_ALTS, ...ticked.map(s => s.key)])];
+      setUnlockedAlts((await saveUnlockedAlts(keys)).unlocked || keys);
       document.dispatchEvent(new Event('unlocks-changed'));
       $('bsolve').click();                 // with them unlocked: the plan, and what's left to suggest
     } catch (err) { e.target.textContent = 'Failed — retry'; e.target.disabled = false; }

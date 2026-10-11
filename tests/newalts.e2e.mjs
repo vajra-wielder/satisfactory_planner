@@ -31,6 +31,9 @@ try {
   await api('/api/scenarios/plates', { name: 'Plates', alternate_recipes_enabled: [], unlimited_resources: [],
     resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 480 }, { resource: 'Copper_Ore', extractor: 'fixed', rate: 240 }],
     objective: { Iron_Plate: 1 } });
+  // already unlocked (nothing to do with plates): unlocking more must keep these
+  const HAD = ['Alt_Turbo_Diamonds', 'Alt_Turbo_Heavy_Fuel'];
+  await api('/api/unlocked-alts', { unlocked: HAD });
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
   const errors = [];
@@ -100,6 +103,15 @@ try {
     const [na, pb] = await Promise.all(['#new-alts', '#prune-box'].map(q => page.locator(q).boundingBox()));
     assert.ok(pb.y > na.y + na.height - 1);
   });
+  let tried;
+  await step('the Unlocks window: closing it without saving changes nothing', async () => {
+    await page.keyboard.press('Control+u'); await page.click('#btn-hd-manage'); await page.waitForSelector('#unlocked-modal [data-k]');
+    const row = page.locator('#unlocked-modal [data-k]').filter({ hasNotText: 'Turbo' }).first();
+    tried = await row.getAttribute('data-k');
+    await row.click(); await page.click('#unlocked-modal-x'); await sleep(200);
+    await page.keyboard.press('Escape'); await sleep(200);
+    assert.ok(!(await api('/api/unlocked-alts')).unlocked.includes(tried));
+  });
   await step('Unlock ticked: unlocked for every factory, re-solved, no longer suggested', async () => {
     const box = page.locator('#new-alts input[data-k]').first();
     const key = await box.getAttribute('data-k');
@@ -108,7 +120,10 @@ try {
     await page.click('#na-unlock');
     await page.waitForFunction(() => document.getElementById('bsolve').disabled, null, { timeout: 5000 }).catch(() => {});
     await solved(); await sleep(300);
-    assert.ok((await api('/api/unlocked-alts')).unlocked.includes(key), `${key} unlocked`);
+    const now = (await api('/api/unlocked-alts')).unlocked;
+    assert.ok(now.includes(key), `${key} unlocked`);
+    for (const k of HAD) assert.ok(now.includes(k), `${k} still unlocked — on top, not instead`);
+    assert.ok(!now.includes(tried), `${tried} was ticked in the Unlocks window, not saved: not unlocked`);
     await page.waitForFunction(k => document.querySelectorAll('#new-alts .na-row').length > 0 || /None you haven't/.test(document.getElementById('new-alts').innerText), key, { timeout: 60000 });
     assert.equal(await page.locator(`#new-alts input[data-k="${key}"]`).count(), 0, 'not suggested once unlocked');
   });

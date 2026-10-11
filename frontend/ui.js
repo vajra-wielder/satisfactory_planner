@@ -179,13 +179,11 @@ export function renderBuildCost(fresh = false) {
   const empty = !machines.length && !extractors.length && !mats.length && !shards && !sloops;
   body.innerHTML = `${chips}
     ${empty ? '<p class="n-hint">Solve to see the machines and materials to have ready.</p>' : `
-    <button class="bsm" id="bc-copy" style="float:right">Copy as a list</button>
-    <div class="bc-h">Machines${many ? ` · ${pick.length} factories` : ''}</div>${rows(machines, machName)}
-    ${extractors.length ? `<div class="bc-h">Extractors</div>${rows(extractors, machName, '⛏ ')}` : ''}
-    <div class="bc-h">Materials to build them</div>${rows(mats, itemName)}
-    ${shards ? `<div class="bcr"><span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span></div>` : ''}
-    ${sloops ? `<div class="bcr"><span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span></div>` : ''}
-    <p class="n-hint" style="margin-top:8px">Belts, pipes, splitters, stations and foundations aren't counted.</p>`}`;
+    <div class="bc-h bc-top"><span>Machines${many ? ` · ${pick.length} factories` : ''}</span><button class="bsm" id="bc-copy">Copy as a list</button></div>
+    ${rows(machines, machName)}${rows(extractors, machName, '⛏ ')}
+    ${many && shards ? `<div class="bcr"><span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span></div>` : ''}
+    ${many && sloops ? `<div class="bcr"><span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span></div>` : ''}
+    <div class="bc-h">Materials to build them</div>${rows(mats, itemName)}`}`;
   body.querySelectorAll('.bc-add input').forEach(c => c.addEventListener('change', () => {
     c.checked ? BL_PICK.add(c.dataset.key) : BL_PICK.delete(c.dataset.key);
     renderBuildCost();

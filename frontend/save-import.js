@@ -4,8 +4,8 @@
  * (alternates, machines, miner, belt, pipe); one click makes them match.
  */
 
-import { PROGRESS, setUnlockedAlts as setStateAlts, itemName, RECIPES } from './state.js';
-import { setUnlockedAlts, renderMachines, updMachBadge } from './machines-panel.js';
+import { PROGRESS, setUnlockedAlts, itemName, RECIPES } from './state.js';
+import { renderMachines, updMachBadge } from './machines-panel.js';
 
 const name = k => (RECIPES[k]?.display || k.replace(/_/g, ' ')).replace(/^Alternate:\s*/, '');
 const tier = t => t.replace('Mk', 'Mk.');
@@ -40,7 +40,7 @@ export function applySaveUnlocks() {
   return fetch('/api/save-unlocks', { method: 'POST' }).then(r => r.json()).then(d => {
     if (d.error) throw new Error(d.error);
     Object.assign(PROGRESS, d.progress);
-    setUnlockedAlts(d.unlocked); setStateAlts(d.unlocked);
+    setUnlockedAlts(d.unlocked);
     renderMachines(); updMachBadge();
     document.dispatchEvent(new CustomEvent('progress-changed'));
     return d;

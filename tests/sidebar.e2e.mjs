@@ -148,6 +148,7 @@ try {
     await page.click('#dk-rail [data-dk="build"]'); await sleep(200);
     const bc = await page.locator('#bcb').innerText();
     assert.match(bc, /Miner Mk\.3/); assert.match(bc, /Water Extractor/);
+    assert.doesNotMatch(bc, /Extractors\n|Somersloops|Power Shards|Belts, pipes/i, 'one machines list; shards and sloops are on the bar');
   });
 
   await step('the analysis opens', async () => {
