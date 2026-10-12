@@ -107,6 +107,32 @@ class Milestones(unittest.TestCase):
         self.assertNotIn("Steel_Ingot", usable)
 
 
+class Needs(unittest.TestCase):
+    """The goal tree's faded parts: what so much of one takes that the factory can't give it."""
+    def scenario(self, **kw):
+        return solver.Scenario(name="t", enabled_machines=["Smelter", "Constructor", "Assembler", "Foundry", "Manufacturer"],
+                               available_resources={"Iron_Ore": 480, "Coal": 240}, **kw)
+
+    def test_parts_it_cant_make(self):
+        n = solver.needs(self.scenario(), RECIPES, "Computer", 2.5)
+        self.assertEqual(n["status"], "ok")
+        self.assertAlmostEqual(n["bring"]["Plastic"], 40.0, places=3)        # a Computer: 16 plastic each
+        self.assertAlmostEqual(n["bring"]["Circuit_Board"], 10.0, places=3)
+        self.assertNotIn("Screw", n["bring"])                               # made here
+
+    def test_more_of_what_it_has(self):
+        n = solver.needs(self.scenario(), RECIPES, "Steel_Beam", 400)
+        self.assertGreater(n["bring"].get("Iron_Ore", 0) + n["bring"].get("Coal", 0), 0)
+        self.assertFalse(any(k in n["bring"] for k in ("Alien_Protein", "Biomass", "Leaves")), n)   # never what's only found
+
+    def test_nothing_when_it_fits(self):
+        self.assertEqual(solver.needs(self.scenario(), RECIPES, "Steel_Beam", 5)["bring"], {})
+
+    def test_waits_on_a_machine_still_answers(self):
+        n = solver.needs(dataclasses.replace(self.scenario(), enabled_machines=["Smelter", "Constructor", "Assembler"]), RECIPES, "Computer", 2.5)
+        self.assertIn("Plastic", n["bring"])
+
+
 class WorthUnlocking(unittest.TestCase):
     """New alternates: the best plan with every one you haven't unlocked, in
     unlock order. What the first ones are said to add is what full solves get."""

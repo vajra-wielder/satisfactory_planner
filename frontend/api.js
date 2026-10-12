@@ -34,6 +34,8 @@ export const deleteScenario   = (key)     => apiFetch(`/api/scenarios/${key}`, '
 export const fetchFactoryOutputs = () => apiFetch('/api/factory-outputs');
 
 export const saveProgress = (p) => apiFetch('/api/progress', 'POST', p);
+// The goal tree: what so much of a part takes that the factory can't give it
+export const fetchNeeds = (scenario, item, rate) => apiFetch('/api/needs', 'POST', { scenario, item, rate });
 export const fetchMapNodes = () => apiFetch('/api/map-nodes');
 
 // ── Solver (async job polling) ────────────────────────────

@@ -216,6 +216,9 @@ def _clean_scenario(d) -> dict:
     for k in ("power_shards_available", "somersloops_available"):
         if d.get(k) is not None:
             out[k] = int(_num(d.get(k), 0, 0))
+    if "recipe_picks" in d:   # the goal tree: {item: recipe} offered to the solver
+        v = d.get("recipe_picks")
+        out["recipe_picks"] = {str(i): k for i, k in v.items() if isinstance(k, str) and k in ALL_RECIPES} if isinstance(v, dict) else {}
     if "miner" in d and d.get("miner") not in supply.MINER_TIERS:
         out.pop("miner")                 # the tier its miners are built at, or none (the one unlocked)
     if d.get("max_power_mw") not in (None, ""):
@@ -1386,7 +1389,10 @@ def _build_scenario(b: dict) -> Scenario:
     return Scenario(
         name=b.get("name", "Scenario"),
         description=b.get("description", ""),
-        alternate_recipes_enabled=b.get("alternate_recipes_enabled", []) or [],
+        # with the recipes picked on the goal tree: offered to the solver, used if they're better
+        alternate_recipes_enabled=sorted(set(b.get("alternate_recipes_enabled") or [])
+                                         | {k for k in (b.get("recipe_picks") or {}).values()
+                                            if k in ALL_RECIPES and ALL_RECIPES[k].alternate}),
         enabled_machines=list(prog["machines"] or []),
         available_resources=supply.available(b),
         unlimited_resources=list(b.get("unlimited_resources") or []),
@@ -1983,6 +1989,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"unlocked": _load_unlocked_alts()})
             except Exception as e:
                 self._json(500, {"error": str(e)})
+            return
+
+        if path == "/api/needs":
+            # The goal tree: what so much of a part takes that the factory can't give it
+            data = self._read_obj()
+            item, rate = data.get("item"), _num(data.get("rate"), 1.0, 0.0)
+            if item not in ALL_ITEMS:
+                raise _BadRequest("item: an item key")
+            sc = _build_scenario(_clean_scenario(data.get("scenario") or {}))
+            self._json(200, _solver_mod.needs(sc, ALL_RECIPES, item, rate))
             return
 
         if path == "/api/solve":

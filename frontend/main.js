@@ -42,8 +42,7 @@ import {
   renderSaved, renderIssues,
 } from './ui.js';
 
-import { initRecipeLookup, openRecipes } from './recipe-lookup.js';
-import { initTree, renderTree, showTree, treeShown } from './goal-tree.js';
+import { initTree, renderTree, showTree, treeShown, openSearch as openFind } from './goal-tree.js';
 import { openUnlockedModal } from './machines-panel.js';
 import { KVS, renderKv, syncKv } from './kv-panel.js';
 import { openAnalysis, closeAnalysis, showAnalysis } from './analysis.js';
@@ -463,6 +462,7 @@ function openScenario(key) {
     SC.to_storage = scenario.to_storage || [];
     if (scenario.machines_first == null) SC.machines_first = false;
     if (!scenario.miner) SC.miner = null;              // not saved with one yet: the tier unlocked
+    SC.recipe_picks = { ...(scenario.recipe_picks || {}) };   // recipes picked on the goal tree
     if (!scenario.sloop_search) SC.sloop_search = 'dive';
     // Cached plan from the last solve of exactly these settings
     setResult(last ? last.result : null);
@@ -706,7 +706,7 @@ window.addEventListener('keydown', e => {
     case 'm': e.preventDefault(); pickOnMap(); break;
     case 'o': e.preventDefault(); openFactories(); break;
     case 'u': e.preventDefault(); openUnlocks(); break;
-    case 'q': e.preventDefault(); openRecipes(); break;
+    case 'q': e.preventDefault(); openFind(); break;
     case 'f':
       e.preventDefault();
       openSearch();
@@ -730,7 +730,6 @@ Promise.all([fetchBoot()])
     setUnlockedAlts(unlocked_alts || []);
     ge.querySelector('p').textContent = 'Configure your factory and hit Solve';
 
-    initRecipeLookup();
     initTree();
     initNav({
       currentFactory: () => LOADED_KEY,
@@ -745,7 +744,7 @@ Promise.all([fetchBoot()])
         { label: 'Alternates for this factory', keys: '2', run: () => openDock('alts') },
         { label: 'Build cost', keys: '3', run: () => openDock('build') },
         { label: 'Issues', keys: '4', run: () => openDock('issues') },
-        { label: 'Recipe lookup', keys: 'Ctrl+Q', run: () => openRecipes() },
+        { label: 'Find a part: its recipes, uses and goals', keys: 'Ctrl+Q', run: () => openFind() },
         { label: 'Goal tree: what your resources can become', keys: 'T', run: () => showTree(true) },
         { label: 'Your factories', keys: 'Ctrl+O', run: openFactories },
         { label: 'Unlocks for every factory (machines, miner, hard drives, a save)', keys: 'Ctrl+U', run: openUnlocks },

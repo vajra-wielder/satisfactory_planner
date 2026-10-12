@@ -1,32 +1,42 @@
 /**
- * goal-tree.js — the Tree view in the middle: what your resources can become.
+ * goal-tree.js — the Tree: the one place to plan a factory's parts.
  *
  * Each resource you have is a root on the left; every step of processing is a
- * column further right, so branches meet where a recipe takes two of them and
- * split where one part feeds many. A part's column is the fewest steps it
- * takes from what you have (with the recipes your unlocks allow).
+ * column further right, so branches meet where a recipe takes two parts and
+ * split where one feeds many (a part's column: the fewest steps from what you
+ * have, with the recipes your unlocks allow). Packing fluids isn't a step.
  *
- * Click a tile to set its goal — maximize (weight), exact, at least, at most,
- * a range — and how much to store. "What's next" adds, faded, what you can't
- * make yet (other resources, milestones not done); hover one to see it, and
- * click it for what it needs at a rate you pick: the parts you can't make,
- * where to get them (a factory with some left, the map, or a fixed supply),
- * and the milestone or machine it waits on. Accept one and it's in your
- * resources; the tree grows to match. Faded tiles stay out of the fit.
+ * A tile:
+ *   ⟳ badge    cycles its alternates (1/4 … 4/4, then none) — a pick is
+ *              offered to the solver, which uses it if it's better
+ *   click      its popover: every recipe that makes it (pick one; at a rate,
+ *              how many machines and how much of each part — click a part to
+ *              go to it), what it's used in, and its goals (several at once:
+ *              maximize with a floor, a cap; or exactly) and storage
+ *   after a solve: the rate it's made at and the recipe the solver chose;
+ *              parts the plan doesn't make fade, the plan's links light up,
+ *              and alternates worth unlocking show as ✨ on the parts they'd
+ *              change (click to pick)
+ * What's next adds, faded, what you can't make yet; click one: the
+ * alternates that get it from what you have (use them), what to bring in —
+ * the solver's answer — and where from, and the milestone it waits on.
+ * Search (Ctrl+Q, or the top bar's box) finds a part and opens it; a sum
+ * there is worked out.
  */
-import { RECIPES, ALL_ITEMS, itemName, SC, PROGRESS, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR } from './state.js';
+import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR } from './state.js';
 import { goalOf, setGoal, evalExpr } from './kv-panel.js';
 import { storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './supply-panel.js';
-import { saveProgress } from './api.js';
-import { openRecipes } from './recipe-lookup.js';
+import { saveProgress, fetchNeeds } from './api.js';
+import { gainText } from './new-alts.js';
 
 const $ = id => document.getElementById(id);
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const num = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(v < 10 ? 2 : 1)).toLocaleString();
 const EVENT = /FICSMAS|Snowball|Candy_Cane|Fireworks/;
-const TW = 150, TH = 34, CW = 210, RH = 42;          // tile, column and row sizes (px at zoom 1)
+const TW = 150, TH = 38, CW = 210, RH = 46;          // tile, column and row sizes (px at zoom 1)
+const rname = r => r.display.replace(/^Alternate:\s*/i, '').replace(/\s*\(Alt\)/, '');
 
-let T = null;                 // the built tree: { tiles: {item: tile}, edges, raw, bounds }
+let T = null;                 // the built tree: { tiles: {item: tile}, edges, have, bounds }
 let VIEW = null, NEXT = false, OPEN = null;
 
 // Packing is for moving fluids about, not a step of making: unpacking never
@@ -51,11 +61,27 @@ function raw() {
   return RAW;
 }
 
+const picks = () => SC.recipe_picks || (SC.recipe_picks = {});
+const picked = k => Object.values(picks()).includes(k);
 const machineOn = m => !PROGRESS.machines || PROGRESS.machines.includes(m);
-const altOn = k => UNLOCKED_ALTS.has(k) || (SC.alternate_recipes_enabled || []).includes(k);
-// The recipes a solve here may use; and those you could later (any machine or milestone, unlocked alternates)
-const nowOk = (k, r) => !EVENT.test(k) && !transport(k, r) && machineOn(r.machine) && !lockedBy(k) && (!r.alternate || altOn(k));
-const laterOk = (k, r) => !EVENT.test(k) && !transport(k, r) && (!r.alternate || altOn(k));
+const altOn = k => UNLOCKED_ALTS.has(k) || (SC.alternate_recipes_enabled || []).includes(k) || picked(k);
+const usable = (k, r) => !EVENT.test(k) && !transport(k, r);
+// The recipes a solve here may use; those any alternate opens (from what you have); and later (any machine, milestone)
+const nowOk = (k, r) => usable(k, r) && machineOn(r.machine) && !lockedBy(k) && (!r.alternate || altOn(k));
+const altsOk = (k, r) => usable(k, r) && machineOn(r.machine) && !lockedBy(k);
+const laterOk = (k, r) => usable(k, r);
+
+// Every way to make an item (it the main output), the standard ones first
+const WAYS = {};
+function ways(item) {
+  if (!WAYS[item]) {
+    const all = Object.entries(RECIPES).filter(([k, r]) => usable(k, r) && r.outputs[item]);
+    const main = all.filter(([, r]) => Object.keys(r.outputs)[0] === item);
+    WAYS[item] = (main.length ? main : all).sort((a, b) => a[1].alternate - b[1].alternate || rname(a[1]).localeCompare(rname(b[1])));
+  }
+  return WAYS[item];
+}
+const altsOf = item => ways(item).filter(([, r]) => r.alternate);
 
 // Fewest steps to each item from `have`, with the recipes `ok` allows
 function levels(have, ok) {
@@ -71,6 +97,20 @@ function levels(have, ok) {
     });
   }
   return lv;
+}
+
+// The last solve: what each part's made at, by which recipes, and which inputs feed which outputs
+function planOf() {
+  const p = { rate: {}, by: {}, links: new Set() };
+  if (!RESULT?.flows?.length) return null;
+  RESULT.flows.forEach(f => {
+    Object.entries(f.outputs || {}).forEach(([o, v]) => {
+      p.rate[o] = (p.rate[o] || 0) + v;
+      (p.by[o] = p.by[o] || new Set()).add(f.recipe_key);
+      Object.keys(f.inputs || {}).forEach(i => p.links.add(i + '>' + o));
+    });
+  });
+  return p;
 }
 
 function build() {
@@ -91,11 +131,11 @@ function build() {
     Object.keys(r.outputs).forEach(o => {
       if (!tiles[o]) return;
       ins.forEach(i => {
-        if (i === o || tiles[i].level >= tiles[o].level) return;          // back the other way (unpacking, loops): left out
+        if (i === o || tiles[i].level >= tiles[o].level) return;          // back the other way (loops): left out
         const key = i + '>' + o, ghost = !real || tiles[i].ghost || tiles[o].ghost;
         const e = edges.get(key);
-        if (!e) edges.set(key, { a: i, b: o, ghost });
-        else if (!ghost) e.ghost = false;
+        if (!e) edges.set(key, { a: i, b: o, ghost, pick: picks()[o] === k });
+        else { if (!ghost) e.ghost = false; if (picks()[o] === k) e.pick = true; }
       });
     });
   });
@@ -120,7 +160,7 @@ function build() {
   const real = Object.values(tiles).filter(t => !t.ghost);
   const bounds = real.length ? { x0: Math.min(...real.map(t => t.x)), y0: Math.min(...real.map(t => t.y)),
     x1: Math.max(...real.map(t => t.x)) + TW, y1: Math.max(...real.map(t => t.y)) + TH } : null;
-  return { tiles, edges: [...edges.values()], have, bounds };
+  return { tiles, edges: [...edges.values()], have, bounds, plan: planOf() };
 }
 
 // ── Drawing ───────────────────────────────────────────────
@@ -153,6 +193,39 @@ function badge(item) {
   return out.join('');
 }
 
+// Alternates worth unlocking (the last solve's suggestions), by the part each makes
+function suggested() {
+  const out = {};
+  (RESULT?.suggest?.steps || []).forEach(s => {
+    const r = RECIPES[s.key];
+    if (r) out[Object.keys(r.outputs)[0]] = s;
+  });
+  return out;
+}
+
+// The ⟳ badge: how many alternates, and which one's picked
+function cycleBadge(item) {
+  const alts = altsOf(item);
+  if (!alts.length) return '';
+  const i = alts.findIndex(([k]) => k === picks()[item]);
+  return i < 0 ? `<b class="gc" data-cyc="${item}" title="${alts.length} alternate${alts.length > 1 ? 's' : ''} — click to try them in turn">⟳${alts.length}</b>`
+    : `<b class="gc on" data-cyc="${item}" title="${esc(rname(alts[i][1]))} — offered to the solver; click for the next">${i + 1}/${alts.length}</b>`;
+}
+function cycle(item) {
+  const alts = altsOf(item), i = alts.findIndex(([k]) => k === picks()[item]);
+  if (i + 1 >= alts.length) delete picks()[item]; else picks()[item] = alts[i + 1][0];
+  changed();
+}
+function pick(item, key) {
+  if (!key || !RECIPES[key]?.alternate) delete picks()[item]; else picks()[item] = key;
+  changed();
+}
+function changed() {
+  document.dispatchEvent(new Event('goals-changed'));
+  T = build(); draw();
+  if (OPEN && T.tiles[OPEN]) openEditor(OPEN);
+}
+
 function draw() {
   const el = $('gt-c'), svg = $('gt-e'), box = $('gt');
   if (!T) return;
@@ -170,18 +243,23 @@ function draw() {
   svg.style.transform = el.style.transform;
   const W = Math.max(...tiles.map(t => t.x)) + TW + 40, H = Math.max(...tiles.map(t => t.y)) + TH + 40;
   svg.setAttribute('width', W); svg.setAttribute('height', H);
+  const P = T.plan, sug = suggested();
   svg.innerHTML = T.edges.map(e => {
     const a = T.tiles[e.a], b = T.tiles[e.b];
     const x1 = a.x + TW, y1 = a.y + TH / 2, x2 = b.x, y2 = b.y + TH / 2, mx = (x1 + x2) / 2;
-    return `<path class="gt-l ${e.ghost ? 'gh' : ''}" data-a="${e.a}" data-b="${e.b}" d="M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}"/>`;
+    const used = P?.links.has(e.a + '>' + e.b);
+    return `<path class="gt-l ${e.ghost ? 'gh' : ''} ${used ? 'pl' : ''} ${e.pick ? 'pk' : ''}" data-a="${e.a}" data-b="${e.b}" d="M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}"/>`;
   }).join('');
   el.innerHTML = tiles.map(t => {
     const sup = T.have.has(t.item) ? SC.available_resources?.[t.item] : null;
-    return `<div class="gt-t ${t.ghost ? 'gh' : ''} ${t.root ? 'rt' : ''} ${OPEN === t.item ? 'sel' : ''}" data-i="${t.item}"
-      style="left:${t.x}px;top:${t.y}px" title="${esc(itemName(t.item))}${t.ghost ? ' — not yet: click for what it needs' : ''}">
-      <span class="gt-n">${esc(itemName(t.item))}</span>${sup ? `<span class="gt-s">${num(sup)}/min</span>` : ''}${badge(t.item)}</div>`;
+    const made = P?.rate[t.item], idle = P && !t.ghost && !t.root && !made;
+    const s = sug[t.item];
+    return `<div class="gt-t ${t.ghost ? 'gh' : ''} ${t.root ? 'rt' : ''} ${idle ? 'idle' : ''} ${OPEN === t.item ? 'sel' : ''}" data-i="${t.item}"
+      style="left:${t.x}px;top:${t.y}px" title="${esc(itemName(t.item))}${t.ghost ? ' — not yet: click for what it needs' : idle ? ' — not in the plan' : ''}">
+      <span class="gt-n">${esc(itemName(t.item))}</span><span class="gt-m">${made ? `<span class="gt-s pl">${num(made)}/min</span>` : sup ? `<span class="gt-s">${num(sup)}/min</span>` : ''}${badge(t.item)}</span>
+      ${s ? `<b class="gs" data-sug="${s.key}" data-for="${t.item}" title="Worth unlocking: ${esc(rname(RECIPES[s.key]))} — ${esc(gainText(s, false))}. Click to pick it">✨</b>` : ''}${t.ghost ? '' : cycleBadge(t.item)}</div>`;
   }).join('');
-  box.querySelector('.gt-count').textContent = `${tiles.filter(t => !t.ghost).length} you can make${NEXT ? ` · ${tiles.filter(t => t.ghost).length} next` : ''}`;
+  box.querySelector('.gt-count').textContent = `${tiles.filter(t => !t.ghost).length} you can make${NEXT ? ` · ${tiles.filter(t => t.ghost).length} next` : ''}${P ? ' · lit: the plan' : ''}`;
 }
 
 function fit() {
@@ -190,8 +268,26 @@ function fit() {
   const k = Math.min(1.25, Math.max(0.25, Math.min((w - pad * 2) / (b.x1 - b.x0 || 1), (h - pad * 2 - 30) / (b.y1 - b.y0 || 1))));
   VIEW = { k, ox: pad - b.x0 * k + Math.max(0, (w - pad * 2 - (b.x1 - b.x0) * k) / 2), oy: pad + 30 - b.y0 * k };
 }
+// Bring a tile into view (search, a part clicked in a popover)
+function focusOn(item) {
+  const t = T.tiles[item], box = $('gt');
+  if (!t || !VIEW) return;
+  VIEW.ox = box.clientWidth * 0.35 - (t.x + TW / 2) * VIEW.k;
+  VIEW.oy = box.clientHeight * 0.4 - (t.y + TH / 2) * VIEW.k;
+  VIEW.touched = true;
+  draw();
+}
+/** Open a part on the tree: shown, in view, its popover open (faded parts too). */
+export function openPart(item) {
+  showTree(true);
+  if (!T.tiles[item] && !NEXT) { NEXT = true; $('gt-next').checked = true; T = build(); }
+  if (!T.tiles[item]) return false;
+  focusOn(item);
+  openEditor(item);
+  return true;
+}
 
-// ── The tile editor: a goal and storage, or for what's next, what it needs ──
+// ── The popover ───────────────────────────────────────────
 function openEditor(item) {
   OPEN = item;
   const t = T.tiles[item], pop = $('gt-pop');
@@ -199,13 +295,14 @@ function openEditor(item) {
   pop.style.display = 'block';
   place(pop, t);
   wire(pop, item);
+  if (t.ghost) loadNeeds(pop, item);
   draw();
 }
 function closeEditor() { OPEN = null; $('gt-pop').style.display = 'none'; draw(); }
 function place(pop, t) {
   const box = $('gt').getBoundingClientRect();
   let x = VIEW.ox + (t.x + TW) * VIEW.k + 10, y = VIEW.oy + t.y * VIEW.k - 10;
-  const w = pop.offsetWidth || 300, h = pop.offsetHeight || 260;
+  const w = pop.offsetWidth || 340, h = pop.offsetHeight || 300;
   if (x + w > box.width - 8) x = VIEW.ox + t.x * VIEW.k - w - 10;
   pop.style.left = `${Math.max(8, x)}px`;
   pop.style.top = `${Math.max(8, Math.min(y, box.height - h - 8))}px`;
@@ -220,75 +317,115 @@ const GOALS = [['obj', 'Maximize', 'weight', 'how much it counts against the oth
 function goalBox(item, rate) {
   const g = goalOf(item), st = storageOf(item);
   const dflt = { obj: 1, min: rate ?? '', max: '', must: rate ?? '' };
-  return `<div class="gp-f">${GOALS.map(([k, l, u, tip]) => `<label class="gp-g" title="${tip}">
+  return `<div class="gp-sec">Goals</div><div class="gp-f">${GOALS.map(([k, l, u, tip]) => `<label class="gp-g" title="${tip}">
       <input type="checkbox" data-on="${k}" ${g[k] != null ? 'checked' : ''}/><span>${l}</span>
       <input data-f="${k}" inputmode="decimal" value="${g[k] ?? dflt[k]}"/><span class="n-hint">${u}</span></label>`).join('')}</div>
     <label class="gp-st">📦 Store <input data-f="sto" inputmode="decimal" value="${st || ''}" placeholder="0"/> /min
       <span class="n-hint">taken out of what it makes</span></label>
-    <div class="gp-b"><button class="bsm" data-a="recipes">Recipes ↗</button><span style="flex:1"></span>
+    <div class="gp-b"><span style="flex:1"></span>
       <button class="bsm" data-a="close">Cancel</button><button class="bsm act" data-a="apply">Set</button></div>`;
 }
-function editorHTML(item) {
-  const t = T.tiles[item];
-  return `<div class="gp-h"><b>${esc(itemName(item))}</b><span class="n-hint">${t.root ? 'a resource you have' : `${t.level} step${t.level > 1 ? 's' : ''} from your resources`}</span></div>
-    ${goalBox(item)}`;
+
+// Every recipe that makes it: pick one (offered to the solver); at a rate, the machines and parts
+function recipesHTML(item, rate) {
+  const ws = ways(item), cur = picks()[item], P = T.plan, used = P?.by[item] || new Set();
+  if (!ws.length) return `<p class="n-hint">${raw().has(item) ? 'Mined, pumped or found — no recipe makes it.' : 'No recipe makes it.'}</p>`;
+  const io = (items, per, dir) => Object.entries(items).map(([i, v]) =>
+    `<a class="rl-io ${dir} ${i === item ? 'me' : ''}" data-go="${i}"><span>${dir === 'in' ? '←' : '→'} ${esc(itemName(i))}</span><span>${num(v * per)}</span></a>`).join('');
+  return `<div class="gp-sec">Made by <label class="gp-rate">at <input data-f="rate" inputmode="decimal" value="${+(+rate).toFixed(3)}"/> /min</label></div>
+    ${ws.map(([k, r]) => {
+      const c = mCol(r.machine), per = rate / r.outputs[item], lock = lockedBy(k), noMach = !machineOn(r.machine);
+      const own = !r.alternate || UNLOCKED_ALTS.has(k);
+      const on = r.alternate ? cur === k : !cur;
+      return `<div class="gp-r ${on ? 'on' : ''} ${lock || noMach ? 'dim' : ''}">
+        <label class="gp-rh"><input type="radio" name="gp-pick" data-pick="${r.alternate ? k : ''}" ${on ? 'checked' : ''}/>
+          <span class="rl-m" style="background:${c}22;color:${c};border:1px solid ${c}44">${MABBR[r.machine] || r.machine}</span>
+          ${r.alternate ? `<span class="rl-alt ${own ? '' : 'lk'}" title="${own ? 'Unlocked' : 'Not unlocked — its hard drive'}">${own ? 'ALT' : '🔒 ALT'}</span>` : ''}
+          <span class="rl-n" title="${esc(r.display)}">${esc(rname(r))}</span>
+          ${used.has(k) ? '<span class="gp-used" title="The last solve made it this way">✓ plan</span>' : ''}
+          <span class="rl-k" title="Machines at 100%">×${num(per)}</span></label>
+        ${lock ? `<div class="rl-note">🔒 ${esc(unlockName(lock))}</div>` : noMach ? `<div class="rl-note">needs a ${esc(r.machine.replace(/_/g, ' '))}</div>` : ''}
+        <div class="gp-io">${io(r.inputs, per, 'in')}${Object.keys(r.outputs).length > 1 ? io(r.outputs, per, 'out') : ''}</div></div>`;
+    }).join('')}
+    <p class="n-hint" style="margin:4px 0 0">A pick is offered to the solver — it uses it if it's better.</p>`;
+}
+function usedInHTML(item) {
+  const uses = [...new Set(Object.entries(RECIPES).filter(([k, r]) => usable(k, r) && r.inputs[item])
+    .map(([, r]) => Object.keys(r.outputs)[0]))].sort((a, b) => itemName(a).localeCompare(itemName(b)));
+  return uses.length ? `<div class="gp-sec">Used in</div><div class="gp-uses">${uses.map(u =>
+    `<a class="gp-u ${T.tiles[u] && !T.tiles[u].ghost ? '' : 'gh'}" data-go="${u}">${esc(itemName(u))}</a>`).join('')}</div>` : '';
+}
+function editorHTML(item, rate) {
+  const t = T.tiles[item], made = T.plan?.rate[item];
+  rate = rate ?? made ?? ways(item)[0]?.[1].outputs[item] ?? 1;
+  return `<div class="gp-h"><b>${esc(itemName(item))}</b><span class="n-hint">${made ? `${num(made)}/min in the plan` : t.root ? 'a resource you have' : `${t.level} step${t.level > 1 ? 's' : ''} from your resources`}</span></div>
+    ${recipesHTML(item, rate)}${usedInHTML(item)}${goalBox(item)}`;
 }
 
-// What a part you can't make yet needs, at `rate`/min: the parts you can't make
-// (with where to get them), the milestones and machines it waits on
-function recipeFor(item) {
-  const ways = Object.entries(RECIPES).filter(([k, r]) => r.outputs[item] && laterOk(k, r));
-  const lv = levels(new Set([...raw(), ...T.have]), laterOk);
-  // the way with the fewest parts you can't make here, then nothing to unlock, then the shortest
-  const missing = r => Object.keys(r.inputs).filter(i => !(T.tiles[i] && !T.tiles[i].ghost)).length;
-  const cost = ([k, r]) => missing(r) * 20 + (lockedBy(k) ? 30 : 0) + (machineOn(r.machine) ? 0 : 30) + (r.alternate ? 5 : 0)
-    + Math.max(0, ...Object.keys(r.inputs).map(i => lv.get(i) ?? 99));
-  return ways.sort((a, b) => cost(a) - cost(b))[0] || null;
+// A part you can't make yet: the alternates that get it from what you have,
+// what to bring in (the solver's answer) and from where, what it waits on
+function viaAlts(item) {
+  const have = T.have, lv = levels(have, altsOk);
+  if (!lv.has(item)) return null;
+  const need = {}, seen = new Set();
+  const walk = i => {
+    if (seen.has(i) || have.has(i) || (T.tiles[i] && !T.tiles[i].ghost)) return;
+    seen.add(i);
+    // the way there with what's reachable, plain recipes before alternates
+    const w = Object.entries(RECIPES).filter(([k, r]) => altsOk(k, r) && r.outputs[i] && Object.keys(r.inputs).every(x => lv.has(x)))
+      .sort((a, b) => (a[1].alternate && !altOn(a[0])) - (b[1].alternate && !altOn(b[0]))
+        || Math.max(...Object.keys(a[1].inputs).map(x => lv.get(x))) - Math.max(...Object.keys(b[1].inputs).map(x => lv.get(x))))[0];
+    if (!w) return;
+    if (w[1].alternate && !altOn(w[0])) need[i] = w[0];
+    Object.keys(w[1].inputs).forEach(walk);
+  };
+  walk(item);
+  return Object.keys(need).length ? need : null;
 }
-function needs(item, rate, depth = 0, seen = new Set()) {
-  const out = { item, rate, waits: [], parts: [] };
-  const w = recipeFor(item);
-  if (!w || seen.has(item) || depth > 6) return out;
-  seen.add(item);
+function waitsOf(item) {
+  const out = [], w = ways(item)[0];
+  if (!w) return out;
   const [k, r] = w;
-  out.recipe = k;
-  if (lockedBy(k)) out.waits.push({ kind: 'sch', id: lockedBy(k) });
-  if (!machineOn(r.machine)) out.waits.push({ kind: 'mach', id: r.machine, by: UNLOCKS.machines[r.machine] });
-  const per = rate / r.outputs[item];
-  Object.entries(r.inputs).forEach(([i, v]) => {
-    const amt = v * per, here = T.tiles[i] && !T.tiles[i].ghost;
-    if (here) return;                                         // made here already
-    const p = { item: i, rate: amt, raw: raw().has(i), sources: sourcesOf(i) };
-    if (!p.raw) p.make = needs(i, amt, depth + 1, seen);
-    out.parts.push(p);
-  });
+  if (lockedBy(k)) out.push(`<div class="gn-w">🔒 Needs <b>${esc(unlockName(lockedBy(k)))}</b> <button class="bsm" data-done="${lockedBy(k)}">I've done it</button></div>`);
+  if (!machineOn(r.machine)) out.push(`<div class="gn-w">🔒 Needs a <b>${esc(r.machine.replace(/_/g, ' '))}</b>${UNLOCKS.machines[r.machine] ? ` <span class="n-hint">(${esc(unlockName(UNLOCKS.machines[r.machine]))})</span>` : ''} <button class="bsm" data-mach="${r.machine}">Unlock it</button></div>`);
   return out;
 }
 function needsHTML(item, rate) {
-  const r0 = recipeFor(item);
-  rate = rate ?? (r0 ? r0[1].outputs[item] : 1);
-  const n = needs(item, rate);
-  const waits = n.waits.map(w => w.kind === 'sch'
-    ? `<div class="gn-w">🔒 Needs <b>${esc(unlockName(w.id))}</b> <button class="bsm" data-done="${w.id}">I've done it</button></div>`
-    : `<div class="gn-w">🔒 Needs a <b>${esc(w.id.replace(/_/g, ' '))}</b>${w.by ? ` <span class="n-hint">(${esc(unlockName(w.by))})</span>` : ''} <button class="bsm" data-mach="${w.id}">Unlock it</button></div>`).join('');
-  const part = (p, d = 0) => `<div class="gn-p" style="margin-left:${d * 12}px">
-      <div class="gn-ph"><span><b>${num(p.rate)}/min</b> ${esc(itemName(p.item))}</span>
-        <span class="n-hint">${p.raw ? 'a resource you don\'t have' : 'you can\'t make it here yet'}</span></div>
-      <div class="gn-src">
-        ${p.sources.map(s => `<button class="bsm act" data-bring="${p.item}" data-rate="${Math.min(p.rate, s.left)}" data-fac="${s.factory}"
-          title="${num(s.left)}/min left there${s.stale ? ' (its plan is out of date)' : ''}">Import ${s.left < p.rate - 1e-6 ? `all ${num(s.left)}` : num(p.rate)} from ${esc(s.name)}</button>`).join('')}
-        ${p.raw ? `<button class="bsm" data-map="${p.item}" title="Pick ${esc(itemName(p.item))} nodes on the map">🗺 Find nodes</button>` : ''}
-        <button class="bsm" data-bring="${p.item}" data-rate="${p.rate}" title="As a fixed supply — from anywhere">+ ${num(p.rate)}/min as supply</button>
-      </div>
-      ${p.make && (p.make.parts.length || p.make.waits.length) ? `<details class="gn-make"><summary>or make it here: needs</summary>
-        ${p.make.waits.map(w => `<div class="gn-w">🔒 ${esc(w.kind === 'sch' ? unlockName(w.id) : w.id.replace(/_/g, ' '))}</div>`).join('')}
-        ${p.make.parts.map(q => part(q, d + 1)).join('')}</details>` : ''}
-    </div>`;
-  const how = r0 ? `<div class="n-hint" style="margin:-4px 0 6px">${esc(r0[1].display.replace(/^Alternate:\s*/, 'Alt: '))} · ${esc((MABBR[r0[1].machine] || r0[1].machine).replace(/_/g, ' '))}</div>` : '';
-  return `<div class="gp-h"><b>${esc(itemName(item))}</b><span class="n-hint">not yet</span></div>${how}
-    <label class="gn-rate">at <input data-f="need" inputmode="decimal" value="${+rate.toFixed(3)}"/> /min it needs:</label>
-    ${waits}${n.parts.map(p => part(p)).join('') || (waits ? '' : '<p class="n-hint">Nothing else — solve to see.</p>')}
-    <div class="gn-goal"><div class="n-hint" style="margin:8px 0 4px">Its goal, once it's in reach</div>${goalBox(item, +rate.toFixed(3))}</div>`;
+  rate = rate ?? ways(item)[0]?.[1].outputs[item] ?? 1;
+  const via = viaAlts(item);
+  return `<div class="gp-h"><b>${esc(itemName(item))}</b><span class="n-hint">not yet</span></div>
+    ${waitsOf(item).join('')}
+    ${via ? `<div class="gn-via"><div>You can make it with what you have, with these alternates:</div>
+      <ul>${Object.entries(via).map(([i, k]) => `<li>${esc(rname(RECIPES[k]))} <span class="n-hint">for ${esc(itemName(i))}${UNLOCKED_ALTS.has(k) ? '' : ' · 🔒 its hard drive'}</span></li>`).join('')}</ul>
+      <button class="bsm act" data-via='${esc(JSON.stringify(via))}'>Use them</button></div>` : ''}
+    <label class="gn-rate">at <input data-f="need" inputmode="decimal" value="${+(+rate).toFixed(3)}"/> /min, bring in:</label>
+    <div class="gn-list"><p class="n-hint">Working it out…</p></div>
+    ${recipesHTML(item, rate)}
+    <div class="gn-goal">${goalBox(item, +(+rate).toFixed(3))}</div>`;
+}
+let NEED_SEQ = 0;
+function loadNeeds(pop, item) {
+  const rate = evalExpr(pop.querySelector('[data-f="need"]')?.value || '') || 1, mine = ++NEED_SEQ;
+  fetchNeeds(SC, item, rate).then(d => {
+    if (mine !== NEED_SEQ || OPEN !== item) return;
+    const list = pop.querySelector('.gn-list');
+    const bring = Object.entries(d.bring || {});
+    list.innerHTML = !bring.length ? '<p class="n-hint">Nothing more — it fits what you have. Set its goal below and solve.</p>'
+      : bring.map(([i, amt]) => {
+        const src = sourcesOf(i), isRaw = raw().has(i), has = (SC.available_resources || {})[i] > 0;
+        return `<div class="gn-p"><div class="gn-ph"><span><b>${num(amt)}/min</b> ${esc(itemName(i))}</span>
+            <span class="n-hint">${has ? 'more than you have' : isRaw ? 'a resource you don\'t have' : 'you can\'t make it here yet'}</span></div>
+          <div class="gn-src">
+            ${src.map(s => `<button class="bsm act" data-bring="${i}" data-rate="${Math.min(amt, s.left)}" data-fac="${s.factory}"
+              title="${num(s.left)}/min left there${s.stale ? ' (its plan is out of date)' : ''}">Import ${s.left < amt - 1e-6 ? `all ${num(s.left)}` : num(amt)} from ${esc(s.name)}</button>`).join('')}
+            ${isRaw ? `<button class="bsm" data-map="${i}" title="Pick ${esc(itemName(i))} nodes on the map">🗺 Find nodes</button>` : ''}
+            <button class="bsm" data-bring="${i}" data-rate="${amt}" title="As a fixed supply — from anywhere">+ ${num(amt)}/min as supply</button>
+            ${T.tiles[i] ? `<button class="bsm" data-go="${i}" title="Go to it on the tree">→</button>` : ''}
+          </div></div>`;
+      }).join('');
+    wireNeeds(pop, item);
+    place(pop, T.tiles[item]);
+  }).catch(() => { pop.querySelector('.gn-list').innerHTML = '<p class="n-hint">Couldn\'t work it out.</p>'; });
 }
 
 function wire(pop, item) {
@@ -313,25 +450,35 @@ function wire(pop, item) {
   };
   pop.querySelector('[data-a="apply"]')?.addEventListener('click', apply);
   pop.querySelector('[data-a="close"]')?.addEventListener('click', closeEditor);
-  pop.querySelector('[data-a="recipes"]')?.addEventListener('click', () => openRecipes(item));
-  pop.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && i.dataset.f !== 'need') { e.preventDefault(); apply(); }
-    if (e.key === 'Escape') { e.preventDefault(); closeEditor(); }
+  pop.querySelectorAll('.gp-g input, .gp-st input').forEach(i => i.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); apply(); }
   }));
-  // what's next: a new rate redraws what it needs
+  pop.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); closeEditor(); } }));
+  // a recipe picked; the rate the recipes are shown at
+  pop.querySelectorAll('[data-pick]').forEach(r => r.addEventListener('change', () => pick(item, r.dataset.pick)));
+  const rate = pop.querySelector('[data-f="rate"]');
+  const rerate = () => {
+    const v = evalExpr(rate.value);
+    if (!(v > 0)) return;
+    const t = T.tiles[item];
+    pop.innerHTML = t.ghost ? needsHTML(item, v) : editorHTML(item, v);
+    wire(pop, item); place(pop, t);
+    if (t.ghost) loadNeeds(pop, item);
+  };
+  rate?.addEventListener('change', rerate);
+  rate?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); rerate(); } });
   const need = pop.querySelector('[data-f="need"]');
   need?.addEventListener('change', () => {
     const v = evalExpr(need.value);
     if (!(v > 0)) return;
-    pop.innerHTML = needsHTML(item, v); wire(pop, item); place(pop, T.tiles[item]);
+    pop.innerHTML = needsHTML(item, v); wire(pop, item); loadNeeds(pop, item);
   });
   need?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); need.dispatchEvent(new Event('change')); } });
-  pop.querySelectorAll('[data-bring]').forEach(b => b.addEventListener('click', () => {
-    bringIn(b.dataset.bring, +b.dataset.rate, b.dataset.fac || null);
-    document.dispatchEvent(new Event('supply-changed'));
+  pop.querySelector('[data-via]')?.addEventListener('click', e => {
+    Object.entries(JSON.parse(e.target.dataset.via)).forEach(([i, k]) => { picks()[i] = k; });
+    document.dispatchEvent(new Event('goals-changed'));
     after(item);
-  }));
-  pop.querySelectorAll('[data-map]').forEach(b => b.addEventListener('click', () => { closeEditor(); pickOnMap(b.dataset.map); }));
+  });
   pop.querySelectorAll('[data-done]').forEach(b => b.addEventListener('click', () => {
     const s = new Set(PROGRESS.schematics || []); s.add(b.dataset.done);
     progress({ schematics: [...s].sort() });
@@ -343,6 +490,20 @@ function wire(pop, item) {
     progress({ machines: [...m].sort(), ...(PROGRESS.schematics && by ? { schematics: [...s.add(by)].sort() } : {}) });
     after(item);
   }));
+  wireGo(pop);
+}
+function wireNeeds(pop, item) {
+  pop.querySelectorAll('.gn-list [data-bring]').forEach(b => b.addEventListener('click', () => {
+    bringIn(b.dataset.bring, +b.dataset.rate, b.dataset.fac || null);
+    document.dispatchEvent(new Event('supply-changed'));
+    after(item);
+  }));
+  pop.querySelectorAll('.gn-list [data-map]').forEach(b => b.addEventListener('click', () => { closeEditor(); pickOnMap(b.dataset.map); }));
+  wireGo(pop.querySelector('.gn-list'));
+}
+// a part named in a popover: go to it
+function wireGo(el) {
+  el.querySelectorAll('[data-go]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); openPart(a.dataset.go); }));
 }
 function progress(p) {
   Object.assign(PROGRESS, p);
@@ -350,12 +511,46 @@ function progress(p) {
   saveProgress(p).catch(() => {});
   document.dispatchEvent(new CustomEvent('progress-changed'));
 }
-// After accepting something: the tree grows; if it's in reach now, its goal editor
+// After accepting something: the tree grows; the part's popover again (its goals, once in reach)
 function after(item) {
   T = build(); draw();
-  const t = T.tiles[item];
-  if (!t) { closeEditor(); return; }
+  if (!T.tiles[item]) { closeEditor(); return; }
   openEditor(item);
+}
+
+// ── Search: find a part and open it; a sum is worked out ──
+function searchHits(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return ALL_ITEMS.filter(i => !EVENT.test(i) && (ways(i).length || raw().has(i)))
+    .map(i => ({ i, n: itemName(i).toLowerCase() }))
+    .filter(x => words.every(w => x.n.includes(w)))
+    .sort((a, b) => (b.n.startsWith(words[0]) - a.n.startsWith(words[0])) || a.n.length - b.n.length).slice(0, 12).map(x => x.i);
+}
+const isSum = t => /[\d)]\s*[-+*/%]\s*[\d(.]|^\(/.test(t) && evalExpr(t) !== null;
+let HIT = 0;
+function drawSearch() {
+  const q = $('gt-q').value.trim(), out = $('gt-hits');
+  if (!q) { out.style.display = 'none'; return; }
+  out.style.display = 'block';
+  if (isSum(q)) { out.innerHTML = `<div class="gt-sum">${esc(q)} = <b>${num(evalExpr(q))}</b></div>`; return; }
+  const hits = searchHits(q);
+  HIT = Math.min(HIT, Math.max(0, hits.length - 1));
+  out.innerHTML = hits.length ? hits.map((i, n) => {
+    const t = T?.tiles[i];
+    return `<div class="gt-hit ${n === HIT ? 'on' : ''}" data-hit="${i}"><span>${esc(itemName(i))}</span>
+      <span class="n-hint">${t && !t.ghost ? 'on the tree' : 'not yet'}</span></div>`;
+  }).join('') : '<div class="n-hint" style="padding:6px 8px">No part by that name</div>';
+}
+function goHit(i) {
+  $('gt-q').value = ''; drawSearch(); $('gt-q').blur();
+  openPart(i);
+}
+/** Ctrl+Q / the top bar's box: the tree, and its search. */
+export function openSearch() {
+  showTree(true);
+  const q = $('gt-q');
+  q.focus(); q.select();
 }
 
 // ── Pan, zoom, clicks, hover ──────────────────────────────
@@ -364,11 +559,29 @@ export function initTree() {
   if (!box || box._wired) return;
   box._wired = true;
   $('btn-tree')?.addEventListener('click', () => showTree(!treeShown()));
+  $('tb-rl-open')?.addEventListener('click', openSearch);
   $('gt-close').addEventListener('click', () => showTree(false));
   $('gt-next').addEventListener('change', e => { NEXT = e.target.checked; renderTree(); });
   $('gt-fit').addEventListener('click', () => { fitNext = true; draw(); });
+  const q = $('gt-q');
+  q.addEventListener('input', () => { HIT = 0; drawSearch(); });
+  q.addEventListener('keydown', e => {
+    const hits = [...$('gt-hits').querySelectorAll('[data-hit]')];
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!hits.length) return;
+      HIT = (HIT + (e.key === 'ArrowDown' ? 1 : -1) + hits.length) % hits.length; drawSearch();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (hits[HIT]) goHit(hits[HIT].dataset.hit);
+    } else if (e.key === 'Escape') { e.preventDefault(); q.value = ''; drawSearch(); q.blur(); }
+  });
+  $('gt-hits').addEventListener('mousedown', e => { const h = e.target.closest('[data-hit]'); if (h) { e.preventDefault(); goHit(h.dataset.hit); } });
+  q.addEventListener('blur', () => setTimeout(() => { $('gt-hits').style.display = 'none'; }, 150));
+  q.addEventListener('focus', drawSearch);
+
   box.addEventListener('wheel', e => {
-    if (e.target.closest('#gt-pop') || !VIEW) return;
+    if (e.target.closest('#gt-pop, #gt-hits') || !VIEW) return;
     e.preventDefault();
     const r = box.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
     const d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
@@ -396,6 +609,10 @@ export function initTree() {
     drag = null;
   });
   box.addEventListener('click', e => {
+    const c = e.target.closest('[data-cyc]');
+    if (c) { e.stopPropagation(); cycle(c.dataset.cyc); return; }
+    const s = e.target.closest('[data-sug]');
+    if (s) { e.stopPropagation(); pick(s.dataset.for, s.dataset.sug); return; }
     const t = e.target.closest('.gt-t');
     if (t) openEditor(t.dataset.i);
   });
@@ -416,5 +633,5 @@ export function initTree() {
     if (OPEN) closeEditor(); else if (!/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) showTree(false);
   });
   new ResizeObserver(() => { if (treeShown() && T && !VIEW?.touched) { fitNext = true; draw(); } }).observe(box);
-  ['progress-changed', 'unlocks-changed'].forEach(ev => document.addEventListener(ev, () => renderTree()));
+  ['progress-changed', 'unlocks-changed', 'suggest-ready'].forEach(ev => document.addEventListener(ev, () => renderTree()));
 }

@@ -2006,6 +2006,72 @@ def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
     return out
 
 
+def needs(scenario: Scenario, all_recipes: Dict[str, Recipe], item: str, rate: float) -> dict:
+    """What `rate`/min of `item` takes that this factory can't give it: the
+    fewest per minute to bring in, made with the recipes it may use.
+    {"bring": {item: /min} — parts it can't make here, and resources it has
+    too little of; "status"}. A part it can make here is made here, never
+    brought (unless there's no other way)."""
+    sc = _with_unlimited(scenario)
+    # (not the converter's ore swaps: what's short is the resource itself)
+    allowed = {k: r for k, r in all_recipes.items() if r.machine != "Converter"
+               and (not sc.enabled_machines or r.machine in set(sc.enabled_machines))
+               and k not in set(sc.locked_recipes)
+               and (not r.alternate or k in set(sc.alternate_recipes_enabled) | set(sc.unlocked_alt_recipes))}
+    # its own standard way, even if it waits on a machine or milestone (that's said beside this)
+    allowed.update({k: r for k, r in all_recipes.items() if not r.alternate and item in r.outputs and r.machine != "Converter"})
+    have = {i for i, v in sc.available_resources.items() if v > 0}
+    grounded = set(have)
+    for _ in range(len(allowed)):
+        more = {o for r in allowed.values() if set(r.inputs) <= grounded for o in r.outputs} - grounded
+        if not more:
+            break
+        grounded |= more
+    items = {item} | {i for r in allowed.values() for i in list(r.inputs) + list(r.outputs)}
+    # what can be brought: a resource nodes give, or a part some recipe makes —
+    # not what's only found (creature remains, leaves)
+    made = {o for r in all_recipes.values() if r.machine != "Converter" for o in r.outputs}
+    mined = _node_resources() | set(sc.available_resources)
+    found = {i for r in all_recipes.values() for i in r.inputs if i not in made and i not in mined}
+    for _ in range(20):                 # and what's only ever made from what's found (protein, biomass)
+        more = {o for o in made - found - mined if all(set(r.inputs) & found for r in all_recipes.values()
+                                               if o in r.outputs and r.machine != "Converter")}
+        if not more:
+            break
+        found |= more
+    s = pywraplp.Solver.CreateSolver("GLOP")
+    inf = s.infinity()
+    x = {k: s.NumVar(0, inf, "") for k in allowed}
+    bring, cost = {}, {}
+    for i in items:
+        if i == item or i in found or (i not in made and i not in mined):
+            continue
+        # more of a resource it has first; then a part or resource it hasn't;
+        # a part it can make here only if there's no other way
+        cost[i] = 1.0 if i in have else 3.0 if i not in grounded else 1e3
+        bring[i] = s.NumVar(0, inf, "")
+    for i in items:
+        c = s.Constraint(rate if i == item else 0.0, inf)
+        for k, r in allowed.items():
+            v = r.outputs.get(i, 0.0) - r.inputs.get(i, 0.0)
+            if v:
+                c.SetCoefficient(x[k], v)
+        if i in bring:
+            c.SetCoefficient(bring[i], 1.0)
+        if i in have:
+            c.SetLb(c.lb() - sc.available_resources[i])
+    obj = s.Objective()
+    for i, v in bring.items():
+        obj.SetCoefficient(v, cost[i])
+    for v in x.values():
+        obj.SetCoefficient(v, 1e-6)
+    obj.SetMinimization()
+    if s.Solve() != pywraplp.Solver.OPTIMAL:
+        return {"status": "none", "bring": {}}
+    out = {i: round(v.solution_value(), 4) for i, v in bring.items() if v.solution_value() > 1e-6}
+    return {"status": "ok", "bring": dict(sorted(out.items(), key=lambda kv: -kv[1]))}
+
+
 def compute_build_cost(result: SolveResult, machine_meta: Dict) -> Dict[str,int]:
     """Single-pass accumulation of build materials across all flows."""
     total: Dict[str,int] = {}

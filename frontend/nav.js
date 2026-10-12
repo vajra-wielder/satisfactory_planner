@@ -160,7 +160,7 @@ const HELP = [
     [['Alt+←', 'Alt+→'], 'Previous / next system — or the wheel over the top bar or the Blackboard\'s tabs'],
     [['Alt+1', '~…', 'Alt+8'], 'A system: 1 Planner, 2–8 the Blackboard\'s tabs'], [['Alt+↑', 'Alt+↓'], 'Previous / next saved factory'],
     [['Ctrl+O'], 'Your factories (open, history, new, backups)'], [['Ctrl+U'], 'Unlocks for every factory'],
-    [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Recipes: what makes and uses an item — click a part to look it up; sums work'], [['?'], 'This sheet'],
+    [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Find a part on the tree: its recipes, uses and goals; sums work'], [['?'], 'This sheet'],
     [['Esc'], 'Close what\'s on top']]],
   ['This factory', [[['Ctrl+R'], 'Solve'], [['Ctrl+S'], 'Save'], [['Ctrl+M'], 'Pick nodes on the map'],
     [['1', '~or', 'Ctrl+I'], 'Analysis'], [['2'], 'Alternates: new ones to unlock, the solver\'s pruning'],

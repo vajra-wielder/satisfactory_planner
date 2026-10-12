@@ -23,7 +23,10 @@ const api = (p, body) => fetch(B + p, body === undefined ? {} : {
 
 let failed = 0;
 const step = async (name, fn) => {
-  try { await fn(); console.log(`ok  ${name}`); } catch (e) { failed++; console.log(`FAIL ${name}\n     ${e.message.split('\n').slice(0, 6).join('\n     ')}`); }
+  try { await fn(); console.log(`ok  ${name}`); } catch (e) {
+    failed++; console.log(`FAIL ${name}\n     ${e.message.split('\n').slice(0, 6).join('\n     ')}`);
+    await globalThis.PAGE?.screenshot({ path: (process.env.TMPDIR || '/tmp') + `/tree-fail-${failed}.png` }).catch(() => {});
+  }
 };
 
 try {
@@ -34,6 +37,7 @@ try {
 
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+  globalThis.PAGE = page;
   const errors = [];
   page.on('pageerror', e => errors.push(String(e.stack || e)));
   await page.goto(B + '/');
@@ -85,13 +89,53 @@ try {
     await tile('Computer').click(); await sleep(250);
     const t = await page.locator('#gt-pop').innerText();
     assert.match(t, /Plastic/, t);
-    await page.locator('#gt-pop [data-bring="Plastic"]:not([data-fac]):visible').first().click(); await sleep(400);
+    await page.waitForSelector('#gt-pop .gn-list [data-bring="Plastic"]:not([data-fac])');   // the solver's answer
+    await page.locator('#gt-pop .gn-list [data-bring="Plastic"]:not([data-fac])').first().click(); await sleep(400);
     assert.ok(await real('Plastic'), 'Plastic is a resource now');
     const res = await page.evaluate(() => [...document.querySelectorAll('#kv-res .n-res')].map(i => i.value));
     assert.ok(res.includes('Plastic'), res.join(','));
+    await page.keyboard.press('Escape'); await sleep(150);
+    assert.equal(await page.locator('#gt-pop').isVisible(), false);
+  });
+  await step('⟳ on a tile cycles its alternates, 1/N … N/N, then none; the pick is saved and offered to the solver', async () => {
+    const c = tile('Iron_Ingot').locator('.gc');
+    const n = +(await c.innerText()).replace('⟳', '');
+    assert.ok(n >= 2, `${n} alternates`);
+    await c.click(); await sleep(150);
+    assert.equal(await tile('Iron_Ingot').locator('.gc').innerText(), `1/${n}`);
+    for (let i = 1; i < n; i++) { await tile('Iron_Ingot').locator('.gc').click(); await sleep(100); }
+    assert.equal(await tile('Iron_Ingot').locator('.gc').innerText(), `${n}/${n}`);
+    await tile('Iron_Ingot').locator('.gc').click(); await sleep(150);
+    assert.equal(await tile('Iron_Ingot').locator('.gc').innerText(), `⟳${n}`, 'past the last: none');
+    // in the popover: every recipe, pick one there
+    await tile('Iron_Ingot').click(); await page.waitForSelector('#gt-pop .gp-r');
+    assert.equal(await page.locator('#gt-pop .gp-r').count(), n + 1);
+    await page.locator('#gt-pop .gp-r').nth(2).locator('[data-pick]').check(); await sleep(200);
+    assert.equal(await tile('Iron_Ingot').locator('.gc').innerText(), `2/${n}`);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+s'); await sleep(900);
+    const picked = (await api('/api/scenarios/tree')).recipe_picks.Iron_Ingot;
+    assert.ok(picked && picked.startsWith('Alt_'), picked);
+  });
+  await step('a faded part an alternate gets to from what you have: use it, and it\'s on the tree', async () => {
+    assert.ok(!(await real('Wire')), 'no copper: no wire');
+    await tile('Wire').click(); await page.waitForSelector('#gt-pop .gn-via');
+    assert.match(await page.locator('#gt-pop .gn-via').innerText(), /Wire/);
+    await page.click('#gt-pop [data-via]'); await sleep(300);
+    assert.ok(await real('Wire'), 'made with an alternate now');
+    assert.ok(await tile('Wire').locator('.gc.on').count(), 'picked on its tile');
+    await page.keyboard.press('Escape');
+  });
+  await step('the solver says what to bring in for a faded part, at a rate', async () => {
+    await tile('Computer').click(); await page.waitForFunction(() => !/Working/.test(document.querySelector('#gt-pop .gn-list')?.innerText || 'Working'));
+    assert.match(await page.locator('#gt-pop .gn-list').innerText(), /Circuit Board|Plastic/);
+    await page.fill('#gt-pop [data-f="need"]', '5'); await page.press('#gt-pop [data-f="need"]', 'Enter');
+    await page.waitForFunction(() => !/Working/.test(document.querySelector('#gt-pop .gn-list')?.innerText || 'Working'));
+    assert.match(await page.locator('#gt-pop .gn-list').innerText(), /\d+\/min/);
+    await page.keyboard.press('Escape');
   });
   await step('Unlocks: tier 2 — steel waits on Tier 3; the tree and the solver follow; All: back', async () => {
-    await page.keyboard.press('Escape'); await page.keyboard.press('Control+u'); await page.waitForSelector('.pg-t');
+    await page.keyboard.press('Control+u'); await page.waitForSelector('.pg-t');
     await page.click('.pg-t[data-t="2"]'); await sleep(300);
     assert.match(await page.locator('.pg-sub').innerText(), /Assembler/, 'a sub-tier says what it gives');
     const p = await api('/api/progress');
@@ -105,6 +149,24 @@ try {
     await page.keyboard.press('Escape'); await sleep(300);
     assert.ok(await real('Steel_Ingot'));
   });
+  await step('solve: the plan shows; T goes back to the tree', async () => {
+    await page.keyboard.press('Control+r');
+    await page.waitForFunction(() => !document.getElementById('bsolve').disabled, null, { timeout: 120000 }); await sleep(500);
+    assert.equal(await page.locator('#gt.show').count(), 0, 'the plan');
+    await page.click('#btn-tree'); await sleep(300);
+    assert.ok(await page.locator('#gt .gt-s.pl').count() > 0, 'rates from the plan on the tiles');
+    assert.ok(await page.locator('#gt .gt-l.pl').count() > 0, 'the plan\'s links lit');
+    await tile('Steel_Beam').click(); await page.waitForSelector('#gt-pop .gp-used');
+    await page.keyboard.press('Escape'); await page.click('#gt-close'); await sleep(150);
+    await page.mouse.click(800, 500); await page.keyboard.press('t'); await sleep(200);
+    assert.equal(await page.locator('#gt.show').count(), 1);
+    await page.click('#gt-close'); await sleep(150);
+    assert.equal(await page.locator('#gt.show').count(), 0, '✕ Plan');
+    await page.click('#btn-tree'); await sleep(150);
+    assert.equal(await page.locator('#gt.show').count(), 1, 'the Goals section\'s button');
+    assert.equal(await page.locator('#gv-seg').count(), 0, 'no switch in the plan space');
+  });
+
   await step('miners: one built at Mk.2 stays Mk.2, says what Mk.3 gives, and upgrades when told', async () => {
     const ids = (await api('/api/map-nodes')).nodes.filter(n => n.r === 'Iron_Ore' && !n.w && n.p === 'pure').slice(0, 2).map(n => n.id);
     await api('/api/scenarios/old_mine', { name: 'Old mine', miner: 'Mk2', alternate_recipes_enabled: [], unlimited_resources: [],
@@ -121,18 +183,6 @@ try {
     assert.match(await page.locator("#kv-res .nrow-c").first().innerText(), /960\/min/);
     await page.keyboard.press('Control+s'); await sleep(900);
     assert.equal((await api('/api/scenarios/old_mine')).miner, 'Mk3');
-  });
-  await step('solve: the plan shows; T goes back to the tree', async () => {
-    await page.keyboard.press('Control+r');
-    await page.waitForFunction(() => !document.getElementById('bsolve').disabled, null, { timeout: 120000 }); await sleep(500);
-    assert.equal(await page.locator('#gt.show').count(), 0, 'the plan');
-    await page.mouse.click(800, 500); await page.keyboard.press('t'); await sleep(200);
-    assert.equal(await page.locator('#gt.show').count(), 1);
-    await page.click('#gt-close'); await sleep(150);
-    assert.equal(await page.locator('#gt.show').count(), 0, '✕ Plan');
-    await page.click('#btn-tree'); await sleep(150);
-    assert.equal(await page.locator('#gt.show').count(), 1, 'the Goals section\'s button');
-    assert.equal(await page.locator('#gv-seg').count(), 0, 'no switch in the plan space');
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

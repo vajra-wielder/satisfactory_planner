@@ -12,6 +12,15 @@ import server
 from tests.test_factories import _Temp
 
 
+class Picks(unittest.TestCase):
+    """Recipes picked on the goal tree are offered to the solver (allowed, not forced)."""
+    def test_picked_alternate_is_allowed(self):
+        sc = server._build_scenario(server._clean_scenario({"name": "p", "alternate_recipes_enabled": [],
+            "recipe_picks": {"Iron_Ingot": "Alt_Iron_Alloy_Ingot", "Screw": "nope"}}))
+        self.assertIn("Alt_Iron_Alloy_Ingot", sc.alternate_recipes_enabled)
+        self.assertEqual(server._clean_scenario({"recipe_picks": {"Screw": "nope", "Wire": 3}})["recipe_picks"], {})
+
+
 class API(_Temp):
     def setUp(self):
         super().setUp()

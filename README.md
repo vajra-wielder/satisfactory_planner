@@ -122,6 +122,15 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   item only where a recipe takes it (Packaged Water for Diluted Packaged
   Fuel), a step after its fluid. A
   factory with no plan yet opens on it; solving switches to the plan
+- ⟳ on a tile cycles its alternates (1/4 … 4/4, then none): the pick is
+  offered to the solver — it uses it if it's better — and saved with the
+  factory. Its popover lists every recipe that makes it (pick one there too)
+  at a rate — machines and parts, a part clicked goes to it — and what it's
+  used in
+- After a solve the tree shows the plan: the rate each part's made at, the
+  recipe the solver chose (✓ plan), the plan's links lit; parts it doesn't
+  make fade. Alternates worth unlocking show as ✨ on the parts they'd change —
+  click one to pick it
 - Click a tile to set its goals — several at once: maximize it (with a
   weight) and keep at least some (a floor, so the weights can't trade it away
   to nothing) or at most some; or exactly so much, on its own — and how much
@@ -129,10 +138,11 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   on the left fill in, and the tile wears a badge (max ×2, ≥10, 5–20, 📦2)
 - What's next adds, faded, what you can't make yet — from resources you
   don't have, or a milestone not done. Hover one to see it; it stays out of
-  the fit. Click it for what it needs at a rate you pick: the parts you can't
-  make (with how much), where to get each — a saved factory with some left
-  (Import), nodes on the map, or a fixed supply — and the milestone or
-  machine it waits on ("I've done it"). Accept one and it's in your
+  the fit. Click it: the alternates that get it from what you have ("Use
+  them"), and what to bring in at a rate you pick — the solver's answer: the
+  parts you can't make and resources you're short of, never what's only found
+  — with where to get each (a saved factory with some left, nodes on the map,
+  or a fixed supply), and the milestone or machine it waits on ("I've done it"). Accept one and it's in your
   resources; the tree grows, and once the part is in reach its goal editor
   opens. Hovering a tile lights up what it's made from and what it makes
 
@@ -222,13 +232,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   per-recipe power for variable-power machines)
 - Enable/disable alternate recipes
 - Enable/disable machine tiers
-- Recipes (Ctrl+Q, or the box in the top bar): a window in the middle with
-  every recipe that makes an item and every one that uses it, side by side.
-  Click any part on a card to look that one up (the trail goes back;
-  Backspace in the empty box too). Set a rate ("at 120/min") and each card
-  says how many machines that takes and how much of each part — a part looked
-  up from there carries its rate. Sums work: 240*2/3 is worked out, and Enter
-  makes it the rate. Alternates you haven't unlocked are marked 🔒
+- Find a part (Ctrl+Q, or the box in the top bar): it opens on the goal tree
+  with its popover — every recipe that makes it at a rate, what it's used in.
+  Sums work: 240*2/3 is worked out
 - Scenario-based planning
 
 ### Interactive Graph
@@ -314,7 +320,7 @@ satisfactory-planner/
 │   ├── splits.js         belt splits (geometry)
 │   ├── chain.js          re-solving factories in order
 │   ├── nav.js            getting around: go to anything, the systems, shortcuts
-│   └── ui.js, state.js, api.js, recipe-lookup.js
+│   └── ui.js, state.js, api.js
 ├── data/
 │   ├── recipes_complete.yaml   recipes and machines (1.0)
 │   ├── map_nodes.json          every resource node, well satellite and geyser
