@@ -201,7 +201,6 @@ function closeTop() {
   if (shown('nav-help')) { $('nav-help').classList.remove('show'); return true; }
   if (document.querySelector('.far.show')) { API.closeFar(); return true; }
   if (shown('map-modal')) { $('mp-cancel').click(); return true; }
-  if (shown('log-modal')) { $('log-modal').classList.remove('show'); return true; }
   if (blackboardOpen()) { closeBlackboard(); return true; }
   return false;
 }

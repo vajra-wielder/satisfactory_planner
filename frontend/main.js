@@ -537,7 +537,7 @@ const soonSummaries = () => { clearTimeout(_sumT); _sumT = setTimeout(updateSumm
 // Anything you do to this factory — the left panel, the map picker, the
 // alternates on the right — but not the shared windows or the Blackboard
 ['input', 'change', 'click'].forEach(t => document.addEventListener(t, e => {
-  if (!e.isTrusted || e.target.closest?.('#fac-drawer, #unlocks-modal, #bb-modal, #log-modal, header, #nav-pal, #nav-help')) return;
+  if (!e.isTrusted || e.target.closest?.('#fac-drawer, #unlocks-modal, #bb-modal, header, #nav-pal, #nav-help')) return;
   if (t !== 'click' || e.target.closest('#map-modal, #dock button, #sidebar button, #gt-pop button')) TOUCHED = true;
   soonSummaries();
 }, true));
@@ -766,7 +766,6 @@ Promise.all([fetchBoot()])
         { label: 'Plan the network', run: () => { goBlackboard('factories'); setTimeout(() => document.getElementById('bb-plan')?.click(), 600); } },
         { label: 'Hide / show the left panel (what goes in)', keys: '[', run: toggleSidebar },
         { label: 'Hide / show the right panel (review and improve)', keys: ']', run: () => toggleDock(dockTab() || 'analysis') },
-        { label: 'Server log', run: () => document.getElementById('btn-log').click() },
         { label: 'Every shortcut', keys: '?', run: openHelp },
       ],
     });
