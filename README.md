@@ -133,7 +133,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 ### Progress — tier, sub-tiers and MAM research
 - In Unlocks: the tier you've reached (0–9), its sub-tiers (milestones) to
   tick, and MAM research by tree, each chip saying what it lets you make
-  (Quickwire, Silica, Power Shard from Blue Power Slug…) — or All, everything. Picking a tier counts
+  (Quickwire, Silica, Hog Protein, Blue Shard…) — or All, everything. Picking a tier counts
   every sub-tier below it done; the machines follow. Read a save and it says
   which it has done; one click makes them match
 - Solves use only the recipes they unlock (alternates still come from hard

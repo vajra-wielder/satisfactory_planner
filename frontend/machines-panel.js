@@ -92,7 +92,7 @@ function renderProgress(p) {
   const wrap = document.createElement('div');
   wrap.className = 'pg';
   // what each lets you make: its recipes' products
-  // (packing left out; where two make the same thing, what each makes it from)
+  // (packing left out)
   const made = {}, count = {};
   Object.entries(UNLOCKS.recipes).forEach(([k, id]) => {
     const r = RECIPES[k], out = r && Object.keys(r.outputs)[0];
@@ -100,8 +100,10 @@ function renderProgress(p) {
     (made[id] = made[id] || []).push([out, Object.keys(r.inputs)[0]]);
     count[out] = (count[out] || 0) + 1;
   });
+  // two ways to the same thing: short, by what it's from — Hog Protein, Blue Shard, Mycelia Biomass
+  const short = (o, i) => `${itemName(i).split(' ')[0]} ${itemName(o).split(' ').pop()}`;
   const makes = Object.fromEntries(Object.entries(made).map(([id, l]) => [id, new Set(l.map(([o, i]) =>
-    itemName(o) + (count[o] > 1 && i ? ` from ${itemName(i)}` : '')))]));
+    count[o] > 1 && i ? short(o, i) : itemName(o)))]));
   const what = id => [...(makes[id] || [])].join(' · ');
   const chip = (id, label) => `<button class="mchip pg-c ${done?.has(id) ? 'on' : ''}" data-s="${id}"
     title="${S[id].name}${what(id) ? ` — makes ${what(id)}` : ''}">${label || S[id].name}</button>`;
