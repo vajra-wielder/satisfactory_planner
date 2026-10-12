@@ -49,11 +49,11 @@ export function setResult(r) { RESULT = r; }
 export let solveSeq = 0;
 export function nextSolveSeq() { return ++solveSeq; }
 
-// All items list — populated from /api/items on boot
+// All items list — populated from /api/boot
 export let ALL_ITEMS = [];
 export function setAllItems(arr) { ALL_ITEMS = arr; }
 
-// All recipes — populated from /api/recipes on boot
+// All recipes — populated from /api/boot
 // Shape: { key: { display, machine, alternate, inputs, outputs } }
 export let RECIPES = {};
 export function setRecipes(obj) { RECIPES = obj; }
@@ -103,11 +103,11 @@ export const MABBR = {
   Nuclear_Power_Plant: 'NUC', Coal_Generator: 'CGN', Fuel_Generator: 'FGN',
 };
 
-// Item display name helper — populated from /api/item-display on boot
+// Item display name helper — populated from /api/boot
 export let ITEM_DISPLAY = {};
 
 export function buildItemDisplay(serverMap) {
-  // serverMap comes directly from /api/item-display
+  // serverMap comes from /api/boot
   ITEM_DISPLAY = { ...serverMap };
 
   // ── Correct known game-data naming errors ────────────────

@@ -99,9 +99,21 @@ class Cards(_Temp):
         made = server._factory_plan("iron")[1]["sink_nodes"]["Iron_Plate"]
         self.assertAlmostEqual(held["iron"]["Iron_Plate"], made - 30, places=3)
 
+    def test_routes_are_vehicles(self):
+        # belts and pipes stay inside factories: an old belt route is a train now
+        b = server._clean_board({"routes": [{"a": "iron", "b": "wires", "mode": "belt"},
+                                            {"a": "iron", "b": "wires", "mode": "tractor", "trip_min": 6}]})
+        self.assertEqual([r["mode"] for r in b["routes"]], ["train", "tractor"])
+        # what 1/min keeps busy: a round trip's worth of loads
+        plate = network.STACK.get("Iron_Plate", 100)
+        for mode, stacks in (("train", 32), ("truck", 48), ("tractor", 25), ("drone", 9)):
+            self.assertAlmostEqual(network._unit_cost("Iron_Plate", {"mode": mode, "trip_min": 6}), 6 / (stacks * plate))
+        self.assertAlmostEqual(network._unit_cost("Water", {"mode": "train", "trip_min": 4}), 4 / 1600)
+        self.assertIsNone(network._unit_cost("Water", {"mode": "tractor", "trip_min": 4}))
+
     def test_network(self):
         sites = server._network_sites(["iron", "wires"])
-        out = network.plan_network(sites, [{"a": "iron", "b": "wires", "mode": "belt", "trip_min": 1}],
+        out = network.plan_network(sites, [{"a": "iron", "b": "wires", "mode": "train", "trip_min": 1}],
                                    server.ALL_RECIPES)
         self.assertTrue(out["ok"], out)
         rt = out["routes"][0]

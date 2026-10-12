@@ -51,7 +51,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   resources) shows the ones no factory has yet — to rebuild factories planned
   before you used the map: picking nodes, "+ Add the N on screen" adds the
   ones in view (zoom to one site), or Shift+drag a box — and to see what it has unlocked (alternates,
-  machines, miner, belt and pipe tiers) against the planner's; one click makes
+  machines, miner and belt tiers) against the planner's; one click makes
   them match
 - The map is drawn on the game's own map picture (fetched once into data/ the
   first time you open a map — the in-game map from the open-source
@@ -62,7 +62,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   the map on them. Zoom with the wheel, + / −,
   double-click or the buttons; 0 shows the whole map; arrows pan
 - Shared unlocks, for every factory: the machines, the miner tier, the best
-  belt and pipe, the tier and milestones reached
+  belt (for splits inside a factory), the tier and milestones reached
 - Miners: a new factory uses the best unlocked; a saved one keeps the tier it's
   built with, so its supply and power stay true. When a better one's unlocked
   it says so — "26 miners are Mk.2 — Mk.3 gives +2,880 Iron Ore" in its
@@ -201,9 +201,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   imports and exports (from its last plan), where its imports come from and
   how much of each output others take. "From factories" imports are drawn as
   routes on their own — one band per route, a stripe per item in it, each as
-  wide as its rate. Join factories with routes (belt,
-  train, truck or drone, with trip times) and plan the network: which recipe
-  runs where, what crosses each route (items, stacks and cars / drones / lanes),
+  wide as its rate. Join factories with routes — train,
+  truck, tractor or drone, each with its round trip time (belts and pipes stay
+  inside factories) — and plan the network: which recipe runs where, what
+  crosses each route (items, stacks, and the freight cars, trucks, tractors or
+  drones it keeps busy: a freight car holds 32 stacks or 1,600 m³ in a fluid
+  car, a truck 48, a tractor 25, a drone 9; fluids by road or air go packaged),
   what each factory draws, and how much more each goal the leftovers could make.
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
@@ -406,7 +409,7 @@ A scenario may contain:
 - Alternate Recipes (and Min New Alts: the fewest you haven't unlocked)
 - Least machine space first instead of least resources (Min Machines)
 
-Unlocked machines, the miner tier and the best belt and pipe are shared by
+Unlocked machines, the miner tier and the best belt are shared by
 every factory (Unlocks, Ctrl+U — or read them from a save).
 
 ---

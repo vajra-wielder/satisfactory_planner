@@ -64,15 +64,8 @@ def _save_unlocked_alts(keys: list) -> None:
 # Pre-serialise static responses to bytes at startup so the handlers can return
 # them directly without calling json.dumps on every request.
 
-# /api/boot — single combined payload so the frontend makes one round-trip
-# instead of three (/api/items, /api/recipes, /api/item-display) on startup.
-_BOOT_BYTES = None   # filled in below after _RECIPES_BYTES / _ITEM_DISPLAY_BYTES are built
-
-_RECIPES_BYTES = json.dumps({
-    k: {"display": r.display, "machine": r.machine,
-        "alternate": r.alternate, "inputs": r.inputs, "outputs": r.outputs}
-    for k, r in ALL_RECIPES.items()
-}, default=str).encode()
+# /api/boot — everything static the frontend needs, in one round-trip.
+_BOOT_BYTES = None   # filled in below after _ITEM_DISPLAY_BYTES is built
 
 _ITEM_DISPLAY_BYTES = json.dumps(
     dict(
@@ -371,7 +364,7 @@ def _clean_board(layout) -> dict:
         "positions": {k: {"x": _num(v.get("x"), 0.0, 0.0), "y": _num(v.get("y"), 0.0, 0.0)}
                       for k, v in pos.items() if _valid_key(str(k)) and isinstance(v, dict)},
         "routes": [{"a": r["a"], "b": r["b"],
-                    "mode": r.get("mode") if r.get("mode") in ("belt", "train", "truck", "drone") else "train",
+                    "mode": r.get("mode") if r.get("mode") in network.VEHICLES else "train",   # belts: trains now
                     "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
                    for r in routes if isinstance(r, dict) and _valid_key(str(r.get("a", "")))
                    and _valid_key(str(r.get("b", ""))) and r.get("a") != r.get("b")],
@@ -1275,7 +1268,7 @@ def _unlock_changes(u) -> dict:
     m = {"add": sorted(set(u["machines"]) - ms), "drop": sorted(ms - set(u["machines"]))}
     if m["add"] or m["drop"]:
         out["machines"] = m
-    for k in ("miner", "belt", "pipe"):
+    for k in ("miner", "belt"):
         if u.get(k) and u[k] != prog[k]:
             out[k] = [prog[k], u[k]]
     if u.get("schematics") is not None and set(u["schematics"]) != set(prog.get("schematics") or []):
@@ -1580,25 +1573,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, _build_boot_bytes())
             return
 
-        if path == "/api/items":
-            q     = qs.get("q", [""])[0].lower().replace(" ", "_")
-            all_i = ALL_ITEMS
-            if q:
-                matched  = [i for i in all_i if i.lower().startswith(q)]
-                matched += [i for i in all_i if q in i.lower() and not i.lower().startswith(q)]
-                self._json(200, matched[:14])
-            else:
-                self._json(200, all_i)
-            return
-
-        if path == "/api/recipes":
-            self._send(200, _RECIPES_BYTES)
-            return
-
-        if path == "/api/item-display":
-            self._send(200, _ITEM_DISPLAY_BYTES)
-            return
-
         if path == "/api/scenarios":
             # Build a fingerprint from (name, mtime) for every scenario file.
             # If it matches the cached fingerprint the YAML has not changed.
@@ -1838,15 +1812,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/network":
             b = self._read_obj()
             have = {k for k, _ in _scenario_files()}
-            routes = [{"a": r["a"], "b": r["b"], "mode": r.get("mode") if r.get("mode") in ("belt", "train", "truck", "drone") else "belt",
+            routes = [{"a": r["a"], "b": r["b"], "mode": r.get("mode") if r.get("mode") in network.VEHICLES else "train",
                        "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
                       for r in (b.get("routes") if isinstance(b.get("routes"), list) else [])
                       if isinstance(r, dict) and r.get("a") in have and r.get("b") in have and r["a"] != r["b"]]
             keys = sorted({k for r in routes for k in (r["a"], r["b"])})
             try:
                 sites = _network_sites(keys)
-                out = network.plan_network(sites, routes, ALL_RECIPES,
-                                           b.get("belt") or "Mk5", b.get("pipe") or "Mk2")
+                out = network.plan_network(sites, routes, ALL_RECIPES)
                 out["unsolved"] = [s["name"] for s in sites if not s["solved"]]
                 self._json(200, out)
             except Exception as e:

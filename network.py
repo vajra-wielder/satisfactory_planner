@@ -2,8 +2,8 @@
 network.py — plan several factories together, joined by routes.
 
 Each factory keeps its own node supply, its own enabled recipes and machines,
-and the goal outputs its current plan makes. Routes join factories by belt
-(pipes for fluids), train, truck or drone. One continuous model of the whole
+and the goal outputs its current plan makes. Routes join factories by train,
+truck, tractor or drone, each with its round trip time. One continuous model of the whole
 network (fractional machines — a planning view; each factory is then solved
 on its own for its exact build) decides which recipe runs where and what
 crosses each route, in three stages, each locked before the next:
@@ -11,9 +11,9 @@ crosses each route, in three stages, each locked before the next:
   1. least resources — every factory's draw over its own supply, averaged,
      so a scarce resource costs more than an abundant one (held within
      _RES_SLACK, so fractional machines alone don't force a rebuild)
-  2. least transport — each route's load in what moving it takes: lanes for
-     belts and pipes, cars / vehicles per trip time for trains, trucks, drones
-     (stack sizes decide how much fits)
+  2. least transport — each route's load in what moving it takes: freight
+     cars, trucks, tractors or drones for its round trip (stack sizes decide
+     how much fits; fluids go by fluid car, or packaged)
   3. least change — each solved factory as close to its own plan as it can
      stay, so only what improves 1 or 2 moves (equal options don't churn)
   4. least machine space
@@ -38,7 +38,6 @@ FLUIDS = set(_RAW.get("fluids") or [])
 NODE = set(_RAW.get("node_resources") or [])
 STACK = dict(_RAW.get("stack_sizes") or {})
 VEHICLES = dict(_RAW.get("vehicles") or {})
-TRANSPORT = dict(_RAW.get("transport") or {})
 META = dict(_RAW.get("machine_meta") or {})
 
 _SHOW = 0.01      # flows and recipes below this (per min / machines) are numeric dust
@@ -56,14 +55,13 @@ def _allowed(sc: Scenario, recipes: Dict[str, Recipe], own: Dict[str, float]) ->
             if (not machines or r.machine in machines) and (not r.alternate or k in alts)}
 
 
-def _unit_cost(item: str, route: dict, belt: str, pipe: str) -> Optional[float]:
-    """What 1 item (or m³) per minute costs on this route: lanes, or vehicles.
-    None = this route can't carry it (fluids by truck or drone, unpackaged)."""
-    mode, trip = route.get("mode", "belt"), max(float(route.get("trip_min") or 1.0), 0.05)
+def _unit_cost(item: str, route: dict) -> Optional[float]:
+    """What 1 item (or m³) per minute costs on this route: the vehicles (or
+    freight cars) it keeps busy — one load per round trip. None = this route
+    can't carry it (fluids by truck, tractor or drone, unpackaged)."""
+    mode, trip = route.get("mode", "train"), max(float(route.get("trip_min") or 1.0), 0.05)
     fluid = item in FLUIDS
-    if mode == "belt":
-        return 1.0 / (TRANSPORT["pipes"][pipe] if fluid else TRANSPORT["belts"][belt])
-    v = VEHICLES.get(mode) or {}
+    v = VEHICLES.get(mode) or VEHICLES["train"]
     if fluid:
         return trip / v["fluid"] if v.get("fluid") else None
     return trip / (v.get("stacks", 32) * STACK.get(item, 100))
@@ -72,8 +70,7 @@ def _unit_cost(item: str, route: dict, belt: str, pipe: str) -> Optional[float]:
 class _Net:
     """One LP of the network. held: per factory, outputs it must still make."""
 
-    def __init__(self, sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe],
-                 belt: str, pipe: str, free_goal: Optional[str] = None):
+    def __init__(self, sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], free_goal: Optional[str] = None):
         self.s = s = pywraplp.Solver.CreateSolver("GLOP")
         inf = s.infinity()
         self.keys = keys = [x["key"] for x in sites]
@@ -95,7 +92,7 @@ class _Net:
                 dsc = by[dst]["scenario"]
                 own_goals = set(dsc.objective) | set(dsc.must_produce) | set(dsc.min_produce)
                 for it in sorted((have & use) - own_goals):
-                    c = _unit_cost(it, rt, belt, pipe)
+                    c = _unit_cost(it, rt)
                     if c is not None:
                         arcs.append((ri, src, dst, it, s.NumVar(0, inf, ""), c))
 
@@ -149,12 +146,11 @@ class _Net:
         return sum(c * v.solution_value() for v, c in obj.items())
 
 
-def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe],
-                 belt: str = "Mk5", pipe: str = "Mk2") -> dict:
+def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe]) -> dict:
     """sites: [{key, name, scenario: Scenario, held: {item: rate},
     own: {recipe: machine-equivalents}, own_draw: {item: rate}}];
     routes: [{a, b, mode, trip_min}]."""
-    m = _Net(sites, routes, recipes, belt, pipe)
+    m = _Net(sites, routes, recipes)
     supply = {key: float(m.by[key[0]]["scenario"].available_resources[key[1]]) for key in m.draw}
     res_obj = {u: 100.0 / supply[key] / max(1, len(m.draw)) for key, u in m.draw.items()}
     if not m.run(res_obj):
@@ -224,7 +220,7 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
         sc = x["scenario"]
         if not sc.objective:
             continue
-        h = _Net(sites, routes, recipes, belt, pipe, free_goal=x["key"])
+        h = _Net(sites, routes, recipes, free_goal=x["key"])
         goal: Dict[object, float] = {}
         for it, w in sc.objective.items():
             for v, c in h.net.get((x["key"], it), {}).items():

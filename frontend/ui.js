@@ -194,7 +194,17 @@ export function renderBuildCost(fresh = false) {
       ...[...machines, ...extractors].map(([k, x]) => `  ${machName(k)} ×${fmtN(x.total)}`),
       ...(shards ? [`  Power Shards ×${shards}`] : []), ...(sloops ? [`  Somersloops ×${sloops}`] : []),
       '', 'Materials', ...mats.map(([k, x]) => `  ${itemName(k)} ×${fmtN(x.total)}`)];
-    navigator.clipboard?.writeText(lines.join('\n')).then(() => { e.target.textContent = 'Copied'; });
+    const text = lines.join('\n'), b = e.target;
+    const done = ok => { b.textContent = ok ? 'Copied ✓' : 'Couldn\'t copy'; setTimeout(() => { b.textContent = 'Copy as a list'; }, 1800); };
+    // the clipboard API needs a secure page or permission; else the old way
+    const old = () => {
+      const t = Object.assign(document.createElement('textarea'), { value: text });
+      document.body.appendChild(t); t.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch { /* not allowed */ }
+      t.remove(); done(ok);
+    };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), old); else old();
   });
 }
 

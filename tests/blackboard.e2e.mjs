@@ -131,13 +131,23 @@ try {
     await page.waitForFunction(() => /21\/min free/.test(document.querySelector('#bb-items-out')?.innerText || ''));
     assert.deepEqual((await api('/api/scenarios/iron')).to_storage, [{ item: 'Iron_Rod', rate: 4 }]);
   });
+  check('routes are vehicles, each with its round trip', async () => {
+    await page.click('#bb-tabs button[data-tab="factories"]'); await sleep(200);
+    assert.equal(await page.locator('#bb-belt, #bb-pipe').count(), 0, 'no belt or pipe between factories');
+    const modes = await page.locator('.bb-mode').first().locator('option').allInnerTexts();
+    assert.deepEqual(modes, ['Train', 'Truck', 'Tractor', 'Drone']);
+    await page.locator('.bb-mode').first().selectOption('tractor'); await sleep(200);
+    await page.locator('.bb-trip').first().fill('7'); await page.locator('.bb-trip').first().dispatchEvent('change'); await sleep(700);
+    const r = (await api('/api/blackboard')).layout.routes[0];
+    assert.equal(r.mode, 'tractor'); assert.equal(r.trip_min, 7);
+  });
   check('planning the network redraws the band from the plan', async () => {
     await page.click('#bb-tabs button[data-tab="factories"]'); await sleep(200);
     await page.click('#bb-plan');
     await page.waitForFunction(() => /Network plan|can't/.test(document.getElementById('bb-net')?.innerText || ''), null, { timeout: 60000 });
     assert.match(await page.locator('#bb-net').innerText(), /Network plan/);
     assert.ok(await page.locator('.bb-band .bb-stripe').count() >= 1);
-    assert.match(await page.locator('.bb-route-load').innerText(), /cars|lanes|trucks|drones/);   // the route's load
+    assert.match(await page.locator('.bb-route-load').innerText(), /freight cars|trucks|tractors|drones/);   // the route's load
   });
 
   let failed = 0;

@@ -4,8 +4,8 @@
  * Between factories: every saved scenario is a black box showing only what it
  * imports and exports (from its last plan), where its imports come from and
  * how much of its outputs others take ("From factories" in each scenario —
- * those joins are drawn as routes). Join factories with routes — belt,
- * train, truck or drone, each with a trip time — and plan the network: which
+ * those joins are drawn as routes). Join factories with routes — train,
+ * truck, tractor or drone, each with its round trip time — and plan the network: which
  * recipe runs where, what crosses each route and what that takes, what each
  * factory draws, and what the leftovers could still make (network.py).
  * Clicking a factory's name opens it.
@@ -15,14 +15,14 @@
  * (Splitting belts inside a factory is the find box's: "480 into 3 x 160".)
  */
 
-import { itemName, RECIPES, PROGRESS } from './state.js';
-import { saveProgress, fetchFactoryOutputs, setStored } from './api.js';
+import { itemName, RECIPES } from './state.js';
+import { fetchFactoryOutputs, setStored } from './api.js';
 import { mountMapView, loadMap, mapNode } from './map-picker.js';
 import { onChain, chainHTML } from './chain.js';
 import { bundle, bandStripes, bandScale, sankeyLayout, itemColor as colorOf } from './bundles.js';
 
 let DATA = null;          // { factories, fluids, transport }
-let LAYOUT = { positions: {}, routes: [], belt: 'Mk5', pipe: 'Mk2' };
+let LAYOUT = { positions: {}, routes: [] };
 let FLUIDS = new Set();
 let NET = null;           // last network plan
 let FLOW_SRC = 'declared';
@@ -33,17 +33,17 @@ let saveTimer = null;
 const $ = id => document.getElementById(id);
 const fmt = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(2)).toLocaleString();
 const recipeName = k => (RECIPES[k]?.display || k.replace(/_/g, ' ')).replace(/^Alternate:\s*/, 'Alt: ');
-const MODES = { train: 'Train', truck: 'Truck', drone: 'Drone', belt: 'Belt / pipe' };
-const LOAD_UNIT = { train: 'cars', truck: 'trucks', drone: 'drones', belt: 'lanes' };
+// Vehicles between factories (belts and pipes stay inside them); each route's
+// time is one vehicle's round trip
+const MODES = { train: 'Train', truck: 'Truck', tractor: 'Tractor', drone: 'Drone' };
+const LOAD_UNIT = { train: 'freight cars', truck: 'trucks', tractor: 'tractors', drone: 'drones' };
+const HOLDS = { train: '32 stacks a freight car, 1,600 m³ a fluid car', truck: '48 stacks', tractor: '25 stacks', drone: '9 stacks; fluids packaged' };
 
 export function initBlackboard({ onOpenFactory: open }) {
   onOpenFactory = open;
   $('btn-close-bb').addEventListener('click', closeBlackboard);
   document.querySelectorAll('#bb-tabs button').forEach(b =>
     b.addEventListener('click', () => showTab(b.dataset.tab)));
-  // Belt and pipe tiers are unlocked once, for every factory
-  $('bb-belt').addEventListener('change', e => { LAYOUT.belt = PROGRESS.belt = e.target.value; saveProgress({ belt: PROGRESS.belt }); NET = null; });
-  $('bb-pipe').addEventListener('change', e => { LAYOUT.pipe = PROGRESS.pipe = e.target.value; saveProgress({ pipe: PROGRESS.pipe }); NET = null; });
   $('bb-plan').addEventListener('click', planNetwork);
   document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
     FLOW_SRC = b.dataset.src;
@@ -61,7 +61,7 @@ export function openBlackboard() {
   fetch('/api/blackboard').then(r => r.json()).then(d => {
     DATA = d;
     FLUIDS = new Set(d.fluids || []);
-    LAYOUT = { positions: {}, routes: [], geysers: [], ...(d.layout || {}), belt: PROGRESS.belt, pipe: PROGRESS.pipe };
+    LAYOUT = { positions: {}, routes: [], geysers: [], ...(d.layout || {}) };
     LAYOUT.routes = (LAYOUT.routes || []).filter(r => factory(r.a) && factory(r.b));
     // A factory's "From factories" imports join it to where they come from
     let added = false;
@@ -72,8 +72,6 @@ export function openBlackboard() {
       }
     }));
     if (added) save();
-    fillTierSelect('bb-belt', d.transport.belts, LAYOUT.belt);
-    fillTierSelect('bb-pipe', d.transport.pipes, LAYOUT.pipe);
     renderFactories();
     if (TAB !== 'factories') showTab(TAB);
   });
@@ -101,11 +99,6 @@ function showTab(tab) {
   if (tab === 'map') renderMapTab();
   if (tab === 'flows') renderFlows();
   if (tab === 'items') renderItems();
-}
-
-function fillTierSelect(id, tiers, chosen) {
-  $(id).innerHTML = Object.entries(tiers)
-    .map(([t, c]) => `<option value="${t}" ${t === chosen ? 'selected' : ''}>${t} · ${c}/min</option>`).join('');
 }
 
 function saveNow() {
@@ -253,7 +246,8 @@ function drawRoutes() {
   svg.setAttribute('width', board.scrollWidth);
   svg.setAttribute('height', board.scrollHeight);
   svg.innerHTML = '';
-  board.querySelectorAll('.bb-link-label').forEach(x => x.remove());
+  // a label's box losing focus as it goes can redraw first: take only what's still there
+  board.querySelectorAll('.bb-link-label').forEach(x => { if (x.isConnected) x.remove(); });
   // One band per route, its items side by side; one scale for every band
   const flows = LAYOUT.routes.map((rt, i) => routeFlows(rt, i));
   const scale = bandScale(flows.map(fs => ({ total: fs.reduce((s, f) => s + f.rate, 0) })), 28);
@@ -294,14 +288,16 @@ function drawRoutes() {
     lab.innerHTML = `
       <select class="bb-mode">${Object.entries(MODES).map(([m, t]) =>
         `<option value="${m}" ${m === rt.mode ? 'selected' : ''}>${t}</option>`).join('')}</select>
-      ${rt.mode === 'belt' ? '' : `<input class="bb-trip" type="number" min="0.1" step="0.5" value="${rt.trip_min}"
-        title="Round trip, minutes"/> min`}
+      <input class="bb-trip" type="number" min="0.1" step="0.5" value="${rt.trip_min}"
+        title="One ${MODES[rt.mode].toLowerCase()}'s round trip, minutes — it holds ${HOLDS[rt.mode]}"/> min trip
       <span class="bb-x" title="Remove this route">✕</span>
       ${items.length ? `<div class="bb-route-sum" title="${items.map(flowTitle).join('\n')}">${items.length} item${items.length > 1 ? 's' : ''} · ${fmt(total)}/min</div>` : ''}
       ${plan ? `<div class="bb-route-load">${fmt(plan.load)} ${LOAD_UNIT[rt.mode]}</div>` : ''}`;
     lab.querySelector('.bb-mode').addEventListener('change', e => { rt.mode = e.target.value; NET = null; save(); drawRoutes(); });
     lab.querySelector('.bb-trip')?.addEventListener('change', e => {
-      rt.trip_min = Math.max(0.1, parseFloat(e.target.value) || 4); NET = null; save(); drawRoutes();
+      const v = Math.max(0.1, parseFloat(e.target.value) || 4);
+      if (v === rt.trip_min) return;
+      rt.trip_min = v; NET = null; save(); drawRoutes();
     });
     lab.querySelector('.bb-x').addEventListener('click', () => {
       LAYOUT.routes.splice(i, 1); NET = null; save(); drawRoutes(); renderNet();
@@ -321,7 +317,7 @@ function planNetwork() {
   panel.innerHTML = '<p class="bb-hint">Planning…</p>';
   fetch('/api/network', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ routes: LAYOUT.routes, belt: LAYOUT.belt, pipe: LAYOUT.pipe }),
+    body: JSON.stringify({ routes: LAYOUT.routes }),
   }).then(r => r.json()).then(out => { NET = out; drawRoutes(); renderNet(); })
     .catch(e => { panel.innerHTML = `<p class="bb-warn">Planning failed: ${e.message}</p>`; });
 }
@@ -338,7 +334,7 @@ function renderNet() {
     <button class="bsm act" id="bb-apply" style="margin-top:6px" title="Write this plan into the factories, then re-solve them in order">Apply to the factories…</button>
     <div id="bb-chain"></div>`;
   NET.routes.forEach(rt => {
-    h += `<div class="bb-net-s">${name(rt.a)} ⇄ ${name(rt.b)} · ${MODES[rt.mode]}${rt.mode === 'belt' ? '' : `, ${rt.trip_min} min trip`}
+    h += `<div class="bb-net-s">${name(rt.a)} ⇄ ${name(rt.b)} · ${MODES[rt.mode]}, ${rt.trip_min} min round trip
       — <b>${fmt(rt.load)} ${LOAD_UNIT[rt.mode]}</b></div>`;
     h += rt.items.length ? '<table class="bb-tab"><tr><th></th><th>/min</th><th>stacks/min</th><th>' + LOAD_UNIT[rt.mode] + '</th></tr>' +
       rt.items.map(i => `<tr><td>${name(i.from)} → ${name(i.to)}: ${itemName(i.item)}</td><td>${fmt(i.rate)}</td>

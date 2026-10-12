@@ -15,14 +15,8 @@ async function apiFetch(url, method = 'GET', body = null) {
 }
 
 // ── Game data — single combined boot fetch ────────────────
-// Returns { items, recipes, item_display } in one round-trip
-// instead of three, making startup feel instant.
+// Items, recipes, names, unlocks and tiers in one round-trip
 export const fetchBoot = () => apiFetch('/api/boot');
-
-// Individual endpoints kept for ad-hoc use:
-export const fetchAllItems    = ()        => apiFetch('/api/items');
-export const fetchRecipes     = ()        => apiFetch('/api/recipes');
-export const fetchItemDisplay = ()        => apiFetch('/api/item-display');
 
 // ── Scenarios ─────────────────────────────────────────────
 export const fetchScenarios   = ()        => apiFetch('/api/scenarios');

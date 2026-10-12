@@ -484,7 +484,11 @@ function openScenario(key) {
 function loadSaved() {
   fetchScenarios()
     .then(saved => {
-      renderSaved(saved, key => { if (mayLeave('Open another')) { closeFar(); openScenario(key); } }, key => deleteScenario(key).then(loadSaved), (key, v) =>
+      renderSaved(saved, key => { if (mayLeave('Open another')) { closeFar(); openScenario(key); } }, key => {
+        const f = saved.find(x => x.key === key);
+        if (confirm(`Delete "${f?.name || key}"? Its plan goes too; imports other factories take from it stop. A backup (Back up now) can bring it back.`))
+          deleteScenario(key).then(loadSaved);
+      }, (key, v) =>
         fetch(`/api/history/${key}/${v}/restore`, { method: 'POST' }).then(() => {
           loadSaved(); refreshOutputs();
           if (key === LOADED_KEY) openScenario(key);

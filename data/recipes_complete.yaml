@@ -3104,4 +3104,5 @@ stack_sizes:
 vehicles:
   train: {stacks: 32, fluid: 1600}    # per freight car / fluid car
   truck: {stacks: 48, fluid: 0}
+  tractor: {stacks: 25, fluid: 0}
   drone: {stacks: 9, fluid: 0}       # fluids only packaged

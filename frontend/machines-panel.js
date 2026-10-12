@@ -10,7 +10,7 @@
 
 import {
   SC, RECIPES,
-  mCol, MABBR, itemName, MTIERS, ALL_MACHINES, MINER_TIERS, PROGRESS,
+  mCol, MABBR, itemName, MTIERS, ALL_MACHINES, MINER_TIERS, PROGRESS, TRANSPORT,
   UNLOCKED_ALTS, isUnlocked, toggleUnlocked, setUnlockedAlts as setStateAlts, UNLOCKS,
 } from './state.js';
 import { saveProgress } from './api.js';
@@ -74,6 +74,7 @@ export function renderMachines() {
     p.appendChild(wrap);
   });
   renderMinerUnlock(p);
+  renderBeltUnlock(p);
 }
 
 // ── Progress: the tier you've reached and its sub-tiers, and MAM research ──
@@ -170,6 +171,33 @@ function renderMinerUnlock(p) {
       document.dispatchEvent(new CustomEvent('miner-changing', { detail: PROGRESS.miner }));
       PROGRESS.miner = t;
       saveProgress({ miner: t }).catch(() => {});
+      renderMachines();
+      document.dispatchEvent(new CustomEvent('progress-changed'));
+    });
+    chips.appendChild(chip);
+  });
+  wrap.appendChild(chips);
+  p.appendChild(wrap);
+}
+
+// Belt tier unlocked: the splitters and mergers the find box draws keep to it
+function renderBeltUnlock(p) {
+  const wrap = document.createElement('div');
+  wrap.style.marginBottom = '8px';
+  wrap.innerHTML = `<div style="font-size:10px;color:var(--t3);margin:2px 0 4px">Belt unlocked
+    <span style="color:var(--t4)">— inside factories; splits in the find box keep to it</span></div>`;
+  const chips = document.createElement('div');
+  chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;padding-left:2px';
+  Object.entries(TRANSPORT.belts || {}).forEach(([t, cap]) => {
+    const on = PROGRESS.belt === t, c = '#5aa0e8';
+    const chip = document.createElement('div');
+    chip.className = 'mchip';
+    chip.dataset.belt = t;
+    chip.style.cssText = `border-color:${on ? c : 'var(--b)'};background:${on ? c + '22' : 'var(--p3)'};color:${on ? c : 'var(--t3)'}`;
+    chip.textContent = `${t.replace('Mk', 'Mk.')} · ${cap}/min`;
+    chip.addEventListener('click', () => {
+      PROGRESS.belt = t;
+      saveProgress({ belt: t }).catch(() => {});
       renderMachines();
       document.dispatchEvent(new CustomEvent('progress-changed'));
     });

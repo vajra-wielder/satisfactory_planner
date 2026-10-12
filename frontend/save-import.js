@@ -1,7 +1,7 @@
 /**
  * save-import.js — read a game save: the nodes it mines (marked on the maps)
  * and what it has unlocked. The unlocks are shown against the planner's own
- * (alternates, machines, miner, belt, pipe); one click makes them match.
+ * (alternates, machines, miner, belt); one click makes them match.
  */
 
 import { PROGRESS, setUnlockedAlts, itemName, RECIPES, unlockName } from './state.js';
@@ -21,7 +21,7 @@ export function changesHTML(d) {
   const c = d?.changes || {};
   if (!d?.unlocks) return '';
   const rows = [];
-  ['miner', 'belt', 'pipe'].forEach(k => {
+  ['miner', 'belt'].forEach(k => {
     if (c[k]) rows.push(`${k[0].toUpperCase() + k.slice(1)} ${tier(c[k][0])} → <b>${tier(c[k][1])}</b>`);
   });
   if (c.machines?.add.length) rows.push(`+ ${c.machines.add.map(m => m.replace(/_/g, ' ')).join(', ')}`);
