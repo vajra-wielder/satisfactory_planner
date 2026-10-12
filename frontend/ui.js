@@ -3,7 +3,8 @@
  * Extracted from sidebar.js so sidebar.js only handles sidebar concerns.
  */
 
-import { RESULT, RECIPES, itemName, perMin } from './state.js';
+import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS } from './state.js';
+const TIERS = ['Mk1', 'Mk2', 'Mk3'];
 import { openDock, setBadge } from './dock.js';
 
 // ══════════════════════════════════════════════════════════
@@ -220,7 +221,8 @@ export function renderSaved(saved, onLoad, onDelete, onRestore) {
     row.innerHTML = `
       <div style="display:flex;align-items:center;gap:5px">
         <div style="flex:1;min-width:0">
-          <div style="font-size:12px;color:var(--t)">${s.fresh ? '' : '<span class="sv-stale" title="No current plan — solve it, or re-solve out of date">●</span> '}${s.name}${s.alerts?.length ? ` <span class="sv-alert" title="${
+          <div style="font-size:12px;color:var(--t)">${s.fresh ? '' : '<span class="sv-stale" title="No current plan — solve it, or re-solve out of date">●</span> '}${s.name}${
+            s.miners && TIERS.indexOf(s.miner) < TIERS.indexOf(PROGRESS.miner) ? ` <span class="sv-up" title="${s.miners} miner${s.miners > 1 ? 's' : ''} at ${s.miner.replace('Mk', 'Mk.')} — ${PROGRESS.miner.replace('Mk', 'Mk.')} is unlocked: open it to upgrade">⛏ ${s.miner.replace('Mk', 'Mk.')}</span>` : ''}${s.alerts?.length ? ` <span class="sv-alert" title="${
             s.alerts.map(a => `${a.item.replace(/_/g, ' ')}${a.storage ? ' to storage' : ` from ${a.factory_name || a.factory}`}: ${a.rate}/min asked, ${a.left}/min left — its source changed`).join('\n')}">⚠ ${s.alerts.length}</span>` : ''}</div>
           <div style="font-size:10px;color:var(--t3);margin-top:1px">${(s.resources||[]).slice(0,3).map(r => r.replace(/_/g, ' ')).join(', ')}</div>
         </div>

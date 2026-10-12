@@ -105,6 +105,14 @@ function renderProgress(p) {
   const makes = Object.fromEntries(Object.entries(made).map(([id, l]) => [id, new Set(l.map(([o, i]) =>
     count[o] > 1 && i ? short(o, i) : itemName(o)))]));
   const what = id => [...(makes[id] || [])].join(' · ');
+  // a milestone: the machine it gives you, else its first products
+  const gives = {};
+  Object.entries(UNLOCKS.machines).forEach(([m, id]) => (gives[id] = gives[id] || []).push(m.replace(/_/g, ' ')));
+  const brief = id => {
+    if (gives[id]) return gives[id].join(' · ');
+    const l = [...(makes[id] || [])];
+    return l.length > 2 ? `${l.slice(0, 2).join(' · ')} +${l.length - 2}` : l.join(' · ') || S[id].name;
+  };
   const chip = (id, label) => `<button class="mchip pg-c ${done?.has(id) ? 'on' : ''}" data-s="${id}"
     title="${S[id].name}${what(id) ? ` — makes ${what(id)}` : ''}">${label || S[id].name}</button>`;
   const trees = {};
@@ -113,7 +121,7 @@ function renderProgress(p) {
     <div class="pg-h">Progress <span class="n-hint">${done ? `Tier ${reached} · ${ms.filter(id => done.has(id)).length} milestones, ${mam.filter(id => done.has(id)).length} research` : 'not set — every recipe allowed'}</span></div>
     <div class="pg-tiers">${tiers.map(t => `<button class="bsm pg-t ${reached === t ? 'act' : ''}" data-t="${t}" title="Tier ${t}: every sub-tier below it done">${t}</button>`).join('')}
       <button class="bsm pg-t ${done ? '' : 'act'}" data-t="none" title="Everything unlocked: every recipe and machine">All</button></div>
-    ${done ? `<div class="pg-sub"><span class="n-hint">Tier ${reached}:</span>${ms.filter(id => S[id].tier === reached).map(id => chip(id)).join('')}</div>
+    ${done ? `<div class="pg-sub"><span class="n-hint">Tier ${reached}:</span>${ms.filter(id => S[id].tier === reached).map(id => chip(id, brief(id))).join('')}</div>
     <div class="pg-mam"><span class="n-hint">MAM</span>${Object.entries(trees).map(([t, l]) =>
       `<div class="pg-tree"><b>${t}</b><span>${l.map(id => chip(id, what(id))).join('')}</span></div>`).join('')}</div>` : ''}`;
   const save = sch => {
@@ -159,6 +167,7 @@ function renderMinerUnlock(p) {
     chip.style.cssText = `border-color:${on ? c : 'var(--b)'};background:${on ? c + '22' : 'var(--p3)'};color:${on ? c : 'var(--t3)'}`;
     chip.textContent = `Miner ${t.replace('Mk', 'Mk.')} · ${MINER_TIERS[t]}/min`;
     chip.addEventListener('click', () => {
+      document.dispatchEvent(new CustomEvent('miner-changing', { detail: PROGRESS.miner }));
       PROGRESS.miner = t;
       saveProgress({ miner: t }).catch(() => {});
       renderMachines();

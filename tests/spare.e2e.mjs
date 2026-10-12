@@ -109,7 +109,8 @@ try {
     assert.match(await page.locator('#mp-filters .mp-addview').innerText(), /All on screen added/);
     await page.click('#mp-apply'); await sleep(400);
     const s = await page.evaluate(() => { const r = [...document.querySelectorAll('#kv-res .nrow')].map(x => x.innerText); return r.join('|'); });
-    assert.match(s, /Copper Ore[\s\S]*× 3/, s);
+    assert.match(s, /Copper Ore/, s);
+    assert.equal((s.match(/\d(?=[PNI]\b)/g) || []).reduce((a, n) => a + +n, 0), 3, `three nodes: ${s}`);
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

@@ -53,18 +53,28 @@ try {
     assert.ok(await x('Iron_Ore') < await x('Iron_Ingot') && await x('Iron_Ingot') < await x('Steel_Beam'), 'deeper is further right');
     assert.match(await tile('Coal').innerText(), /240\/min/);
   });
-  await step('a tile sets its goal and storage — at least, a range, maximize — into the goals on the left', async () => {
-    await tile('Steel_Beam').click(); await page.waitForSelector('#gt-pop .gp-k');
-    await page.click('#gt-pop [data-k="min"]'); await page.fill('#gt-pop [data-f="min"]', '10');
+  await step('a tile sets its goals and storage — several at once: maximize with a floor, a range', async () => {
+    await tile('Steel_Beam').click(); await page.waitForSelector('#gt-pop .gp-g');
+    await page.fill('#gt-pop [data-f="min"]', '10');                    // typing ticks it
     await page.fill('#gt-pop [data-f="sto"]', '2'); await page.click('#gt-pop [data-a="apply"]'); await sleep(300);
     assert.deepEqual(await rows('kv-min'), ['Steel Beam=10']);
     assert.match(await tile('Steel_Beam').innerText(), /≥10[\s\S]*📦2/);
-    await tile('Steel_Pipe').click(); await page.click('#gt-pop [data-k="range"]');
+    await tile('Steel_Pipe').click();
     await page.fill('#gt-pop [data-f="min"]', '5'); await page.fill('#gt-pop [data-f="max"]', '4*5'); await page.press('#gt-pop [data-f="max"]', 'Enter'); await sleep(300);
     assert.deepEqual(await rows('kv-max'), ['Steel Pipe=20']);
     assert.ok((await rows('kv-min')).includes('Steel Pipe=5'));
-    await tile('Quickwire').click(); await page.click('#gt-pop [data-k="obj"]'); await page.click('#gt-pop [data-a="apply"]'); await sleep(300);
+    assert.match(await tile('Steel_Pipe').innerText(), /5–20/);
+    // maximize it, but never let the weights take it below 30
+    await tile('Quickwire').click(); await page.check('#gt-pop [data-on="obj"]');
+    await page.fill('#gt-pop [data-f="min"]', '30'); await page.click('#gt-pop [data-a="apply"]'); await sleep(300);
     assert.deepEqual(await rows('kv-obj'), ['Quickwire=1']);
+    assert.ok((await rows('kv-min')).includes('Quickwire=30'));
+    assert.match(await tile('Quickwire').innerText(), /max[\s\S]*≥30/);
+    // exactly stands alone: ticking it clears the others
+    await tile('Quickwire').click(); await page.check('#gt-pop [data-on="must"]');
+    assert.equal(await page.isChecked('#gt-pop [data-on="obj"]'), false);
+    assert.equal(await page.isChecked('#gt-pop [data-on="min"]'), false);
+    await page.click('#gt-pop [data-a="close"]');
     const s = await page.evaluate(() => [...document.querySelectorAll('#kv-sto .f-item')].map(i => i.value));
     assert.deepEqual(s, ['Steel Beam']);
   });
@@ -83,6 +93,7 @@ try {
   await step('Unlocks: tier 2 — steel waits on Tier 3; the tree and the solver follow; All: back', async () => {
     await page.keyboard.press('Escape'); await page.keyboard.press('Control+u'); await page.waitForSelector('.pg-t');
     await page.click('.pg-t[data-t="2"]'); await sleep(300);
+    assert.match(await page.locator('.pg-sub').innerText(), /Assembler/, 'a sub-tier says what it gives');
     const p = await api('/api/progress');
     assert.ok(p.schematics.includes('Schematic_2-1') && !p.schematics.includes('Schematic_3-4'));
     assert.ok(!p.machines.includes('Foundry'), 'the Foundry is Tier 3');
@@ -94,12 +105,34 @@ try {
     await page.keyboard.press('Escape'); await sleep(300);
     assert.ok(await real('Steel_Ingot'));
   });
+  await step('miners: one built at Mk.2 stays Mk.2, says what Mk.3 gives, and upgrades when told', async () => {
+    const ids = (await api('/api/map-nodes')).nodes.filter(n => n.r === 'Iron_Ore' && !n.w && n.p === 'pure').slice(0, 2).map(n => n.id);
+    await api('/api/scenarios/old_mine', { name: 'Old mine', miner: 'Mk2', alternate_recipes_enabled: [], unlimited_resources: [],
+      resource_nodes: [{ resource: 'Iron_Ore', extractor: 'Miner', nodes: ids }], objective: { Iron_Ingot: 1 } });
+    page.once('dialog', d => d.accept());
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#fac-drawer.show .sv-row');
+    assert.match(await page.locator('.sv-row', { hasText: 'Old mine' }).innerText(), /⛏ Mk\.2/, 'the drawer says so');
+    await page.locator('.sv-row', { hasText: 'Old mine' }).locator('button').first().click(); await sleep(900);
+    const note = page.locator('#kv-res .n-up');
+    assert.match(await note.innerText(), /2 miners are Mk\.2[\s\S]*Mk\.3 gives \+480 Iron Ore/);
+    assert.match(await page.locator('#kv-res .nrow-c').first().innerText(), /Iron Ore[\s\S]*2P[\s\S]*480\/min/, "one line: name, purity, rate");
+    await note.locator('button').click(); await sleep(300);
+    assert.equal(await page.locator('#kv-res .n-up').count(), 0);
+    assert.match(await page.locator("#kv-res .nrow-c").first().innerText(), /960\/min/);
+    await page.keyboard.press('Control+s'); await sleep(900);
+    assert.equal((await api('/api/scenarios/old_mine')).miner, 'Mk3');
+  });
   await step('solve: the plan shows; T goes back to the tree', async () => {
     await page.keyboard.press('Control+r');
     await page.waitForFunction(() => !document.getElementById('bsolve').disabled, null, { timeout: 120000 }); await sleep(500);
     assert.equal(await page.locator('#gt.show').count(), 0, 'the plan');
     await page.mouse.click(800, 500); await page.keyboard.press('t'); await sleep(200);
     assert.equal(await page.locator('#gt.show').count(), 1);
+    await page.click('#gt-close'); await sleep(150);
+    assert.equal(await page.locator('#gt.show').count(), 0, '✕ Plan');
+    await page.click('#btn-tree'); await sleep(150);
+    assert.equal(await page.locator('#gt.show').count(), 1, 'the Goals section\'s button');
+    assert.equal(await page.locator('#gv-seg').count(), 0, 'no switch in the plan space');
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

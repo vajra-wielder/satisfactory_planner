@@ -33,7 +33,7 @@ import {
 
 import { startChain, watchChain, onChain, chainHTML } from './chain.js';
 import { uploadSave, changesHTML, wireChanges } from './save-import.js';
-import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards,
+import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards, minerOf,
          refreshOutputs, applyCut, onResult } from './supply-panel.js';
 
 import {
@@ -406,6 +406,7 @@ let LOADED_KEY = null, LOADED_NAME = null;
 
 function handleSave() {
   readUI();
+  SC.miner = minerOf();          // saved with the miners it's built with
   const key = keyOf(SC.name);
   // Saved under a new name: rename it (its links follow), or keep both
   const body = { ...SC };
@@ -461,6 +462,7 @@ function openScenario(key) {
     SC.from_factories = scenario.from_factories || [];
     SC.to_storage = scenario.to_storage || [];
     if (scenario.machines_first == null) SC.machines_first = false;
+    if (!scenario.miner) SC.miner = null;              // not saved with one yet: the tier unlocked
     if (!scenario.sloop_search) SC.sloop_search = 'dive';
     // Cached plan from the last solve of exactly these settings
     setResult(last ? last.result : null);
@@ -539,6 +541,9 @@ const soonSummaries = () => { clearTimeout(_sumT); _sumT = setTimeout(updateSumm
   if (t !== 'click' || e.target.closest('#map-modal, #dock button, #sidebar button, #gt-pop button')) TOUCHED = true;
   soonSummaries();
 }, true));
+
+// A better miner unlocked: an open saved factory keeps the miners it was built with
+document.addEventListener('miner-changing', e => { if (LOADED_KEY && !SC.miner) SC.miner = e.detail; });
 
 // the goal tree sets goals, storage and supply: the left panel and summaries follow
 ['goals-changed', 'supply-changed'].forEach(ev => document.addEventListener(ev, () => { TOUCHED = true; soonSummaries(); }));

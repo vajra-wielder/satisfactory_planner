@@ -216,6 +216,8 @@ def _clean_scenario(d) -> dict:
     for k in ("power_shards_available", "somersloops_available"):
         if d.get(k) is not None:
             out[k] = int(_num(d.get(k), 0, 0))
+    if "miner" in d and d.get("miner") not in supply.MINER_TIERS:
+        out.pop("miner")                 # the tier its miners are built at, or none (the one unlocked)
     if d.get("max_power_mw") not in (None, ""):
         mw = _num(d.get("max_power_mw"), None)
         out["max_power_mw"] = None if mw is None else max(0.0, mw)
@@ -391,6 +393,14 @@ def _scenario_files() -> list:
         except Exception:
             continue
     return out
+
+def _stamp_miner(tier: str) -> None:
+    """Every saved factory with miners and no tier of its own: it was built at
+    `tier` — written down before a better one is unlocked, so it stays as built."""
+    for key, d in _scenario_files():
+        if d.get("miner") not in supply.MINER_TIERS and supply.miner_count({**d, "miner": tier}):
+            d["miner"] = tier
+            (SCENARIOS_DIR / f"{key}.yaml").write_text(yaml.safe_dump(d, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 def _claims(files) -> dict:
     """{source factory: {item: {taker: rate}}}: every From factories row, and
@@ -1555,8 +1565,10 @@ class Handler(BaseHTTPRequestHandler):
             for name in names:
                 try:
                     s = load_scenario(self._scenario_path(name))
+                    raw = yaml.safe_load(self._scenario_path(name).read_text(encoding="utf-8")) or {}
                     out.append({"key": name, "name": s.name,
                                 "description": s.description,
+                                "miner": supply.miner_of(raw), "miners": supply.miner_count(raw),
                                 "resources": list(s.available_resources.keys()),
                                 "objectives": list(s.objective.keys())})
                 except Exception as e:
@@ -1945,7 +1957,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/progress":
-            self._json(200, supply.save_progress(self._read_obj()))
+            p = self._read_obj()
+            old = supply.load_progress()["miner"]
+            if p.get("miner") in supply.MINER_TIERS and p["miner"] != old:
+                _stamp_miner(old)        # built factories keep the miners they have
+            self._json(200, supply.save_progress(p))
             return
 
         if path == "/api/blackboard":

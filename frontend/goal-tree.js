@@ -129,7 +129,7 @@ export function showTree(on = true) {
   const el = $('gt');
   if (!el) return;
   el.classList.toggle('show', on);
-  document.querySelectorAll('#gv-seg button').forEach(b => b.classList.toggle('on', (b.dataset.v === 'tree') === on));
+  $('btn-tree')?.classList.toggle('on', on);
   document.getElementById('graph').classList.toggle('tree-on', on);
   if (on) renderTree(true);
 }
@@ -211,24 +211,18 @@ function place(pop, t) {
   pop.style.top = `${Math.max(8, Math.min(y, box.height - h - 8))}px`;
 }
 
-const KINDS = [['none', 'None'], ['obj', 'Maximize'], ['must', 'Exactly'], ['min', 'At least'], ['max', 'At most'], ['range', 'Range']];
-function kindOf(g) {
-  if (g.obj != null) return 'obj';
-  if (g.must != null) return 'must';
-  if (g.min != null && g.max != null) return 'range';
-  if (g.min != null) return 'min';
-  if (g.max != null) return 'max';
-  return 'none';
-}
+// Goals that go together on one part: maximize it, and keep at least (a
+// floor, so the weights can't trade it away to nothing) or at most some of it;
+// or make exactly so much — that one alone
+const GOALS = [['obj', 'Maximize', 'weight', 'how much it counts against the other maximized parts'],
+  ['min', 'At least', '/min', 'a floor: never less than this'], ['max', 'At most', '/min', 'a cap: never more than this'],
+  ['must', 'Exactly', '/min', 'this much, no more, no less — on its own']];
 function goalBox(item, rate) {
-  const g = goalOf(item), kind = kindOf(g), st = storageOf(item);
-  return `<div class="gp-k">${KINDS.map(([k, l]) => `<button class="bsm ${k === kind ? 'act' : ''}" data-k="${k}">${l}</button>`).join('')}</div>
-    <div class="gp-f">
-      <label data-for="obj">Weight <input data-f="obj" inputmode="decimal" value="${g.obj ?? 1}"/></label>
-      <label data-for="must">/min <input data-f="must" inputmode="decimal" value="${g.must ?? rate ?? ''}"/></label>
-      <label data-for="min range">At least /min <input data-f="min" inputmode="decimal" value="${g.min ?? rate ?? ''}"/></label>
-      <label data-for="max range">At most /min <input data-f="max" inputmode="decimal" value="${g.max ?? ''}"/></label>
-    </div>
+  const g = goalOf(item), st = storageOf(item);
+  const dflt = { obj: 1, min: rate ?? '', max: '', must: rate ?? '' };
+  return `<div class="gp-f">${GOALS.map(([k, l, u, tip]) => `<label class="gp-g" title="${tip}">
+      <input type="checkbox" data-on="${k}" ${g[k] != null ? 'checked' : ''}/><span>${l}</span>
+      <input data-f="${k}" inputmode="decimal" value="${g[k] ?? dflt[k]}"/><span class="n-hint">${u}</span></label>`).join('')}</div>
     <label class="gp-st">📦 Store <input data-f="sto" inputmode="decimal" value="${st || ''}" placeholder="0"/> /min
       <span class="n-hint">taken out of what it makes</span></label>
     <div class="gp-b"><button class="bsm" data-a="recipes">Recipes ↗</button><span style="flex:1"></span>
@@ -298,20 +292,20 @@ function needsHTML(item, rate) {
 }
 
 function wire(pop, item) {
-  let kind = kindOf(goalOf(item));
-  const show = () => {
-    pop.querySelectorAll('.gp-k button').forEach(b => b.classList.toggle('act', b.dataset.k === kind));
-    pop.querySelectorAll('.gp-f label').forEach(l => { l.style.display = l.dataset.for.split(' ').includes(kind) ? '' : 'none'; });
+  const box = k => pop.querySelector(`[data-on="${k}"]`);
+  // Exactly stands alone; typing in a goal's box ticks it
+  const tick = (k, on) => {
+    if (!box(k)) return;
+    box(k).checked = on;
+    if (on && k === 'must') ['obj', 'min', 'max'].forEach(o => { box(o).checked = false; });
+    if (on && k !== 'must') box('must').checked = false;
   };
-  show();
-  pop.querySelectorAll('.gp-k button').forEach(b => b.addEventListener('click', () => { kind = b.dataset.k; show(); }));
+  pop.querySelectorAll('[data-on]').forEach(c => c.addEventListener('change', () => tick(c.dataset.on, c.checked)));
+  pop.querySelectorAll('.gp-g [data-f]').forEach(i => i.addEventListener('input', () => tick(i.dataset.f, true)));
   const val = f => { const v = evalExpr(pop.querySelector(`[data-f="${f}"]`)?.value || ''); return v == null ? null : v; };
   const apply = () => {
     const g = {};
-    if (kind === 'obj') g.obj = val('obj') ?? 1;
-    if (kind === 'must') g.must = val('must');
-    if (kind === 'min' || kind === 'range') g.min = val('min');
-    if (kind === 'max' || kind === 'range') g.max = val('max');
+    ['obj', 'min', 'max', 'must'].forEach(k => { if (box(k)?.checked) g[k] = val(k) ?? (k === 'obj' ? 1 : null); });
     setGoal(item, g);
     setStorage(item, val('sto') || 0);
     document.dispatchEvent(new Event('goals-changed'));
@@ -369,7 +363,8 @@ export function initTree() {
   const box = $('gt');
   if (!box || box._wired) return;
   box._wired = true;
-  document.querySelectorAll('#gv-seg button').forEach(b => b.addEventListener('click', () => showTree(b.dataset.v === 'tree')));
+  $('btn-tree')?.addEventListener('click', () => showTree(!treeShown()));
+  $('gt-close').addEventListener('click', () => showTree(false));
   $('gt-next').addEventListener('change', e => { NEXT = e.target.checked; renderTree(); });
   $('gt-fit').addEventListener('click', () => { fitNext = true; draw(); });
   box.addEventListener('wheel', e => {
@@ -417,7 +412,8 @@ export function initTree() {
   });
   box.addEventListener('mouseleave', () => box.classList.remove('hl'));
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && OPEN && treeShown()) { closeEditor(); }
+    if (e.key !== 'Escape' || e.defaultPrevented || !treeShown() || document.querySelector('.far.show, #map-modal.show, #nav-pal.show, #nav-help.show')) return;
+    if (OPEN) closeEditor(); else if (!/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) showTree(false);
   });
   new ResizeObserver(() => { if (treeShown() && T && !VIEW?.touched) { fitNext = true; draw(); } }).observe(box);
   ['progress-changed', 'unlocks-changed'].forEach(ev => document.addEventListener(ev, () => renderTree()));

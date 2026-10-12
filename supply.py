@@ -160,12 +160,23 @@ def node_rate(n: dict, miner: str = "Mk3") -> float:
     return each * max(0, int(1 if count is None or count == "" else count))
 
 
+def miner_of(data: dict) -> str:
+    """The miners a factory is built with: its own tier, saved with it — or,
+    for one that hasn't one yet, the tier unlocked. A factory keeps its tier
+    when a better one is unlocked (its supply and power stay what's built);
+    it's upgraded when you say so."""
+    m = data.get("miner") if isinstance(data, dict) else None
+    return m if m in MINER_TIERS else load_progress()["miner"]
+
+def miner_count(data: dict) -> int:
+    return sum(c for kind, c, _ in _extractors(data, miner_of(data)) if kind == "Miner")
+
 def available(data: dict, miner: Optional[str] = None) -> Dict[str, float]:
     """available_resources for a scenario dict: nodes + imports from factories."""
     nodes, imports = data.get("resource_nodes"), data.get("from_factories")
     if nodes is None and imports is None:
         return {k: float(v or 0) for k, v in (data.get("available_resources") or {}).items()}
-    miner = miner or load_progress()["miner"]
+    miner = miner or miner_of(data)
     out: Dict[str, float] = {}
     for n in nodes or []:
         if n.get("resource") and n.get("extractor") != GEOTHERMAL:
@@ -215,7 +226,7 @@ def _extractors(data: dict, miner: str):
 
 def extractor_power(data: dict, miner: Optional[str] = None) -> float:
     """MW the extractors draw (not part of the solve: they're built whatever the plan)."""
-    miner = miner or load_progress()["miner"]
+    miner = miner or miner_of(data)
     total = 0.0
     for kind, count, clock in _extractors(data, miner):
         base = MINER_POWER[miner] if kind == "Miner" else EXTRACTOR_POWER.get(kind, 0.0)
@@ -225,7 +236,7 @@ def extractor_power(data: dict, miner: Optional[str] = None) -> float:
 
 def extractor_build(data: dict, miner: Optional[str] = None) -> Dict[str, dict]:
     """{extractor: {count, cost: {item: amount}}} to build a scenario's extractors."""
-    miner = miner or load_progress()["miner"]
+    miner = miner or miner_of(data)
     out: Dict[str, dict] = {}
     for kind, count, _ in _extractors(data, miner):
         if not count:

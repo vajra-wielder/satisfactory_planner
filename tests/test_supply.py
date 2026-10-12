@@ -70,6 +70,19 @@ class Extractors(unittest.TestCase):
         self.assertEqual(p, {"miner": "Mk3", "machines": ["A", "B"], "belt": "Mk6", "pipe": "Mk2", "schematics": None})
 
 
+class Miners(unittest.TestCase):
+    """A factory keeps the miners it's built with: its own tier, not the one unlocked."""
+    def test_its_own_tier(self):
+        ids = _ids("Iron_Ore", "pure", 2)
+        d = {"resource_nodes": [{"resource": "Iron_Ore", "extractor": "Miner", "nodes": ids}]}
+        mk2, mk3 = supply.available({**d, "miner": "Mk2"}), supply.available({**d, "miner": "Mk3"})
+        self.assertAlmostEqual(mk3["Iron_Ore"], 2 * mk2["Iron_Ore"])
+        self.assertLess(supply.extractor_power({**d, "miner": "Mk2"}), supply.extractor_power({**d, "miner": "Mk3"}))
+        self.assertIn("Miner_Mk2", supply.extractor_build({**d, "miner": "Mk2"}))
+        self.assertEqual(supply.miner_count(d), 2)
+        self.assertEqual(supply.miner_of({**d, "miner": "nope"}), supply.load_progress()["miner"])   # none of its own: the one unlocked
+
+
 class Milestones(unittest.TestCase):
     """Tier + sub-tier and MAM research: what each recipe waits on (data/unlocks.json)."""
     def test_not_set_locks_nothing(self):

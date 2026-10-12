@@ -349,6 +349,13 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .n-tools-sh { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--t3); }
 .n-tools-sh input { width: 44px; padding: 3px 5px; font-size: 11px; }
 .n-map-res { font-size: 12px; color: var(--t); padding-left: 4px; }
+.nrow-c { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+.nrow-c .n-map-res { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nrow-c .n-rate { margin-left: 0; }
+.nrow-c .bi { flex: none; }
+.nrow-c .n-sh-sel { width: auto; }
+.n-up { display: flex; align-items: center; gap: 6px; justify-content: space-between; font-size: 11px; color: var(--warn);
+  border: 1px solid rgba(251,146,60,.35); background: rgba(251,146,60,.08); border-radius: 5px; padding: 4px 6px; margin-bottom: 5px; }
 .n-map-ex { font-size: 11px; color: var(--t2); }
 .n-mix { font-size: 11px; color: var(--t3); white-space: nowrap; }
 .nrow-2 .bsm { padding: 1px 6px; font-size: 10px; }
@@ -390,6 +397,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .pg-tree b { font-size: 10px; color: var(--t3); font-weight: 600; padding-top: 3px; }
 .mchip.pg-c { cursor: pointer; font-family: var(--font); }
 .mchip.pg-c.on { border-color: #34d399; background: rgba(52,211,153,.12); color: #34d399; }
+.sv-up { font-size: 10px; color: var(--warn); border: 1px solid rgba(251,146,60,.4); border-radius: 3px; padding: 0 4px; }
 .mp-spare-r { fill: none; stroke: #4ade80; stroke-width: 2; pointer-events: none; }
 .mp-f i.ring { background: none !important; width: 8px; height: 8px; }
 .mp-f i.ring.sp { border: 2px solid #4ade80; }
@@ -593,7 +601,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 ══════════════════════════════════════════════════════════ */
 #graph { grid-area: gr; position: relative; overflow: hidden; background: var(--bg); }
 /* Plan | Tree, and the goal tree */
-#gv-seg { position: absolute; top: 10px; left: 12px; z-index: 30; }
 #gt { display: none; position: absolute; inset: 0; z-index: 25; background: var(--bg); overflow: clip; cursor: grab; }
 #gt.show { display: block; }
 #graph.tree-on #rb, #graph.tree-on #gctrl { display: none !important; }
@@ -624,7 +631,8 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
   background: var(--p2); border: 1px solid var(--b2); border-radius: var(--rlg); box-shadow: 0 16px 48px rgba(0,0,0,.6); padding: 10px 12px; font-size: 12px; }
 .gp-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .gp-h b { font-size: 13px; }
-.gp-k { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 8px; }
+.gp-f .gp-g { display: grid; grid-template-columns: 16px 70px 80px 1fr; align-items: center; gap: 6px; }
+.gp-g input[type=checkbox] { width: auto; margin: 0; accent-color: var(--acc); }
 .gp-f { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
 .gp-f label, .gp-st, .gn-rate { display: flex; align-items: center; gap: 6px; color: var(--t2); font-size: 11.5px; }
 .gp-f input, .gp-st input, .gn-rate input { width: 90px; font-family: var(--mono); text-align: right; }
@@ -987,6 +995,10 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
           Goals <span class="sec-sum" id="sum-goals"></span><span class="chev" style="margin-left:auto">&#9660;</span>
         </div>
         <div class="secb">
+          <div class="n-tools">
+            <button class="bsm act" id="btn-tree" title="What your resources can become — click a part there to set its goals  (T)">🌳 Goal tree</button>
+            <span class="n-hint" style="margin:0">set goals on what your resources make</span>
+          </div>
           <div class="goals-group">
             <div style="font-size:11px;color:var(--t3);margin-bottom:4px">Maximize <span style="color:var(--t4);font-size:10px">— weight sets priority between items</span></div>
             <div id="kv-obj"></div>
@@ -1062,14 +1074,13 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
 
 <div id="graph">
   <canvas id="gc"></canvas>
-  <div class="seg" id="gv-seg" title="Plan: the solved factory · Tree: what your resources can become — set goals there  (T)">
-    <button type="button" data-v="plan" class="on">Plan</button><button type="button" data-v="tree">Tree</button></div>
   <div id="gt">
     <svg id="gt-e"></svg><div id="gt-c"></div>
     <div class="gt-bar">
       <span class="gt-count n-hint"></span>
       <label class="gt-nx" title="Faded: what you can't make yet — other resources, milestones not done. Click one for what it needs"><input type="checkbox" id="gt-next"/> What's next</label>
       <button class="gbt" id="gt-fit" title="Fit what you can make">&#x229F;</button>
+      <button class="bsm" id="gt-close" title="Back to the plan  (T or Esc)">✕ Plan</button>
     </div>
     <div id="gt-empty" class="n-hint">Pick resources on the left (or on the map) — what they can become grows here, and you set goals on it.</div>
     <div id="gt-pop"></div>

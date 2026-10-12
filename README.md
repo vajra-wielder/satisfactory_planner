@@ -61,8 +61,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   further for its name and who mines it. A factory that has nodes opens
   the map on them. Zoom with the wheel, + / −,
   double-click or the buttons; 0 shows the whole map; arrows pan
-- Shared unlocks, for every factory: the machines, the miner tier (miners always
-  run at it), the best belt and pipe, the tier and milestones reached
+- Shared unlocks, for every factory: the machines, the miner tier, the best
+  belt and pipe, the tier and milestones reached
+- Miners: a new factory uses the best unlocked; a saved one keeps the tier it's
+  built with, so its supply and power stay true. When a better one's unlocked
+  it says so — "26 miners are Mk.2 — Mk.3 gives +2,880 Iron Ore" in its
+  resources, ⛏ Mk.2 in Your factories — and Upgrade rebuilds them
 - From factories: take items another saved factory makes — an import adds to
   what the factory makes of it, it doesn't cap it. Pick the item (from
   everything your other factories' last plans make) and the factory; the rate
@@ -111,15 +115,17 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 
 ### Goal tree — what your resources can become
 - Pick resources (on the map or typed in) and the Tree view in the middle
-  (T, or Plan | Tree at its top left) grows from them: each resource a root
+  (🌳 Goal tree in Goals, or T; ✕ Plan or Esc goes back) grows from them: each resource a root
   on the left, each step of processing a column to the right — branches meet
   where a recipe takes two of them and split where one part feeds many.
   Packing fluids is for moving them, so unpacking never shows and a packaged
   item only where a recipe takes it (Packaged Water for Diluted Packaged
   Fuel), a step after its fluid. A
   factory with no plan yet opens on it; solving switches to the plan
-- Click a tile to set its goal — maximize (with a weight), exactly, at least,
-  at most, or a range — and how much of it to store; the goals and storage
+- Click a tile to set its goals — several at once: maximize it (with a
+  weight) and keep at least some (a floor, so the weights can't trade it away
+  to nothing) or at most some; or exactly so much, on its own — and how much
+  of it to store; the goals and storage
   on the left fill in, and the tile wears a badge (max ×2, ≥10, 5–20, 📦2)
 - What's next adds, faded, what you can't make yet — from resources you
   don't have, or a milestone not done. Hover one to see it; it stays out of
@@ -132,7 +138,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 
 ### Progress — tier, sub-tiers and MAM research
 - In Unlocks: the tier you've reached (0–9), its sub-tiers (milestones) to
-  tick, and MAM research by tree, each chip saying what it lets you make
+  tick (each named for the machine it gives you, or what it makes: Refinery,
+  Manufacturer, Motor · Stator +2), and MAM research by tree, each chip saying what it lets you make
   (Quickwire, Silica, Hog Protein, Blue Shard…) — or All, everything. Picking a tier counts
   every sub-tier below it done; the machines follow. Read a save and it says
   which it has done; one click makes them match

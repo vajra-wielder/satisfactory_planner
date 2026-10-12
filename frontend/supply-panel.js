@@ -46,7 +46,9 @@ const facName = k => k === STORAGE ? 'Storage' : OUTPUTS?.factories.find(x => x.
 
 // ── Rates ─────────────────────────────────────────────────
 const canon = ex => (/^Miner_Mk\d$/.test(ex) ? 'Miner' : ex);
-const baseRate = ex => (ex === 'Miner' ? MINER_TIERS[PROGRESS.miner] : EXTRACTORS[ex]?.rate);
+// The miners this factory is built with: its own tier once saved, else the best unlocked
+export const minerOf = () => (MINER_TIERS[SC.miner] ? SC.miner : PROGRESS.miner);
+const baseRate = ex => (ex === 'Miner' ? MINER_TIERS[minerOf()] : EXTRACTORS[ex]?.rate);
 const clockOf = s => 100 + 50 * Math.min(MAX_SHARDS, Math.max(0, parseInt(s, 10) || 0));
 const isWell = n => n.extractor === 'Resource_Well';
 const GEO = 'Geothermal_Generator';
@@ -82,7 +84,7 @@ const resourcePool = () => {     // node resources first, then anything else (a 
 const extractorsFor = res => Object.entries(EXTRACTORS).filter(([, e]) => e.for.includes(res)).map(([k]) => k);
 const defaultExtractor = res => ['Miner', 'Oil_Extractor', 'Water_Extractor', 'Resource_Well']
   .find(k => extractorsFor(res).includes(k)) || 'fixed';
-const exName = ex => (ex === 'Miner' ? `Miner ${PROGRESS.miner.replace('Mk', 'Mk.')}` : EXTRACTORS[ex]?.display || 'Fixed rate');
+const exName = ex => (ex === 'Miner' ? 'Miner' : EXTRACTORS[ex]?.display || 'Fixed rate');
 
 /**
  * Put `budget` shards where they add the most: every extractor (a map node, a
@@ -273,6 +275,12 @@ export function syncSupply() {
 const opt = (v, label, on) => `<option value="${v}" ${on ? 'selected' : ''}>${label}</option>`;
 const shardOpts = s => [...Array(MAX_SHARDS + 1).keys()].map(k => opt(k, `⚡${k} · ${clockOf(k)}%`, k === (parseInt(s, 10) || 0))).join('');
 
+// "2P 1N" — pure, normal, impure counts
+function mixShort(ids) {
+  const c = {};
+  ids.forEach(id => { const p = mapNode(id)?.p || 'normal'; c[p] = (c[p] || 0) + 1; });
+  return ['pure', 'normal', 'impure'].filter(p => c[p]).map(p => `${c[p]}${p[0].toUpperCase()}`).join(' ');
+}
 function purityMix(ids) {
   const c = {};
   ids.forEach(id => { const p = mapNode(id)?.p || 'normal'; c[p] = (c[p] || 0) + 1; });
@@ -310,10 +318,38 @@ const focusIn = (box, i, sel) => requestAnimationFrame(() => {
   if (el) { el.focus(); el.select?.(); }
 });
 
+// Built with older miners than you've unlocked: how many, what upgrading
+// them gives — kept as built (supply and power true) until you upgrade
+function minerNote(c) {
+  const tiers = Object.keys(MINER_TIERS), mine = minerOf(), best = PROGRESS.miner;
+  if (tiers.indexOf(mine) >= tiers.indexOf(best)) return;
+  const miners = NODES.filter(n => n.extractor === 'Miner' && n.resource);
+  const count = miners.reduce((a, n) => a + (n.nodes?.length || Math.max(0, parseInt(n.count ?? 1, 10) || 0)), 0);
+  if (!count) return;
+  const gain = {};
+  miners.forEach(n => {
+    const now = nodeRate(n);
+    SC.miner = best; const up = nodeRate(n); SC.miner = mine;
+    gain[n.resource] = (gain[n.resource] || 0) + up - now;
+  });
+  const el = document.createElement('div');
+  el.className = 'n-up';
+  el.innerHTML = `<span>⛏ <b>${count} miner${count > 1 ? 's' : ''}</b> ${count > 1 ? 'are' : 'is'} ${mine.replace('Mk', 'Mk.')} —
+    ${best.replace('Mk', 'Mk.')} gives ${Object.entries(gain).filter(([, v]) => v > 0.05).map(([k, v]) => `+${fmt(v)} ${itemName(k)}`).join(', ')}</span>
+    <button class="bsm act" title="Rebuild them as ${best.replace('Mk', 'Mk.')}: more ore, more power — solve again after">Upgrade</button>`;
+  el.querySelector('button').addEventListener('click', () => {
+    SC.miner = best;
+    syncSupply(); renderNodes();
+    document.dispatchEvent(new Event('supply-changed'));
+  });
+  c.appendChild(el);
+}
+
 function renderNodes(focus = -1, what = '.n-res') {
   const c = $('kv-res');
   if (!c) return;
   c.innerHTML = '';
+  minerNote(c);
   const taken = nodesTaken();
   NODES.forEach((n, i) => {
     const row = document.createElement('div');
@@ -322,38 +358,30 @@ function renderNodes(focus = -1, what = '.n-res') {
     const unl = UNLIM.has(n.resource);
     const map = n.nodes?.length > 0;
     const clash = map ? n.nodes.filter(id => taken[id]) : [];
+    const who = clash.length ? `<div class="n-sh n-warn">${clash.length} mined by ${[...new Set(clash.map(id => taken[id]))].join(', ')}</div>` : '';
     if (map && isGeo(n)) {
       row.innerHTML = `
-        <div class="nrow-1">
-          <div class="n-map-res">Geothermal</div>
-          <div class="n-map-ex">Generator × ${n.nodes.length}</div>
-          <span></span>
+        <div class="nrow-c">
+          <span class="n-map-res">Geothermal</span>
+          <span class="n-mix" title="${purityMix(n.nodes)}">${mixShort(n.nodes)}</span>
+          <span class="n-rate" title="Geysers swing between half and 1.5× this; the average is counted. It adds to the power cap.">≈${fmt(geoMW(n))} MW</span>
+          <button class="bi n-edit" title="Edit on the map">🗺</button>
           <button class="bi n-x" title="Remove">✕</button>
-        </div>
-        <div class="nrow-2">
-          <span class="n-mix">${purityMix(n.nodes)} geyser${n.nodes.length > 1 ? 's' : ''}</span>
-          <button class="bsm n-edit" title="Edit on the map">map</button>
-          <span class="n-rate" title="Geysers swing between half and 1.5× this; the average is counted. It adds to the power cap.">≈ ${fmt(geoMW(n))} MW</span>
-          ${clash.length ? `<span class="n-sh n-warn">${clash.length} used by ${[...new Set(clash.map(id => taken[id]))].join(', ')}</span>` : ''}
-        </div>`;
+        </div>${who}`;
       row.querySelector('.n-edit').addEventListener('click', () => pickOnMap('Geyser'));
     } else if (map) {
       const sh = rowShards(n);
       row.innerHTML = `
-        <div class="nrow-1">
-          <div class="n-map-res">${itemName(n.resource)}</div>
-          <div class="n-map-ex">${exName(n.extractor)}${isWell(n) ? '' : ` × ${n.nodes.length}`}</div>
+        <div class="nrow-c">
+          <span class="n-map-res">${itemName(n.resource)}</span>
+          <span class="n-mix" title="${isWell(n) ? `${n.nodes.length} satellites: ` : ''}${purityMix(n.nodes)}">${isWell(n) ? 'well ' : ''}${mixShort(n.nodes)}</span>
+          ${isWell(n) ? `<select class="n-sh-sel" title="Shards on the pressurizer">${shardOpts(n.shards)}</select>`
+                      : sh ? `<span class="n-mix" title="Power shards on these extractors">⚡${sh}</span>` : ''}
+          <span class="n-rate">${unl ? '∞' : `${fmt(nodeRate(n))}/min`}</span>
+          <button class="bi n-edit" title="Edit on the map">🗺</button>
           <button class="bi binf ${unl ? 'on' : ''}" title="${unl ? 'Unlimited — click to use the rate' : 'Unlimited (no cap, not scored)'}">∞</button>
           <button class="bi n-x" title="Remove">✕</button>
-        </div>
-        <div class="nrow-2">
-          <span class="n-mix">${isWell(n) ? `${n.nodes.length} satellites: ` : ''}${purityMix(n.nodes)}</span>
-          ${isWell(n) ? `<select class="n-sh-sel" title="Shards on the pressurizer">${shardOpts(n.shards)}</select>`
-                      : `<span class="n-mix">⚡${sh}</span>`}
-          <button class="bsm n-edit" title="Edit on the map">map</button>
-          <span class="n-rate">${unl ? '∞' : `= ${fmt(nodeRate(n))}/min`}</span>
-          ${clash.length ? `<span class="n-sh n-warn">${clash.length} mined by ${[...new Set(clash.map(id => taken[id]))].join(', ')}</span>` : ''}
-        </div>`;
+        </div>${who}`;
       row.querySelector('.n-edit').addEventListener('click', () => pickOnMap(n.resource));
       row.querySelector('.n-sh-sel')?.addEventListener('change', ev => { n.shards = +ev.target.value; syncSupply(); renderNodes(); });
     } else {
@@ -457,7 +485,7 @@ export function pickOnMap(resource = null) {
   const pins = NODES.filter(n => n.at).map(n => ({ x: n.at[0], y: n.at[1], count: parseInt(n.count ?? 1, 10) || 1, shards: parseInt(n.shards, 10) || 0 }));
   openMapPicker({
     // the nodes this factory has are its own, whatever it's saved under now
-    resource, picked, shards, pins, taken: Object.fromEntries(Object.entries(nodesTaken()).filter(([id]) => !picked.has(id))), minerRate: MINER_TIERS[PROGRESS.miner], spare: spareOffers(),
+    resource, picked, shards, pins, taken: Object.fromEntries(Object.entries(nodesTaken()).filter(([id]) => !picked.has(id))), minerRate: MINER_TIERS[minerOf()], spare: spareOffers(),
     onApply: (ids, sh, newPins, brought = []) => {
       // what's brought from other factories' unused nodes: their import rows here
       brought.forEach(b => {

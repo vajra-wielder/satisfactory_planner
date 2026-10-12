@@ -35,6 +35,7 @@ export let SC = DEF_SC();
 export function setScenario(s) { Object.assign(SC, s); }
 export function resetSC() {
   Object.assign(SC, DEF_SC());
+  SC.miner = null;              // a new factory: the best miners unlocked
 }
 
 // Solver result
