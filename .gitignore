@@ -13,7 +13,7 @@ venv/
 # Logs
 *.log
 # Cached solve results (per machine, regenerated on demand)
-scenarios/
+scenarios/.results/
 # Blackboard layout (your own board: positions, links, tiers)
 data/blackboard.yaml
 # What you have unlocked (miner tier) — yours, like the board
