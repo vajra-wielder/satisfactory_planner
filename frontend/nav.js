@@ -160,7 +160,7 @@ const HELP = [
     [['Alt+←', 'Alt+→'], 'Previous / next system — or the wheel over the top bar or the Blackboard\'s tabs'],
     [['Alt+1', '~…', 'Alt+8'], 'A system: 1 Planner, 2–8 the Blackboard\'s tabs'], [['Alt+↑', 'Alt+↓'], 'Previous / next saved factory'],
     [['Ctrl+O'], 'Your factories (open, history, new, backups)'], [['Ctrl+U'], 'Unlocks for every factory'],
-    [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Recipe lookup'], [['?'], 'This sheet'],
+    [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Recipes: what makes and uses an item — click a part to look it up; sums work'], [['?'], 'This sheet'],
     [['Esc'], 'Close what\'s on top']]],
   ['This factory', [[['Ctrl+R'], 'Solve'], [['Ctrl+S'], 'Save'], [['Ctrl+M'], 'Pick nodes on the map'],
     [['1', '~or', 'Ctrl+I'], 'Analysis'], [['2'], 'Alternates: new ones to unlock, the solver\'s pruning'],
@@ -172,7 +172,8 @@ const HELP = [
     [['~2*240+120'], 'Sums work in any amount']]],
   ['Maps', [[['+', '−'], 'Zoom'], [['0'], 'The whole map'], [['←', '↑', '→', '↓'], 'Pan'], [['~double-click'], 'Zoom in there (with Shift: out)'],
     [['G'], 'Geothermal (the Blackboard\'s map)'], [['Shift', '~+ drag'], 'Pick a box of nodes (picking nodes)'],
-    [['Enter'], 'Use these nodes (picking nodes)']]],
+    [['Enter'], 'Use these nodes (picking nodes)'], [['~Leftover'], 'Every node a factory leaves some of unused'],
+    [['~In your save'], 'Nodes your save mines that no factory has — add the ones on screen']]],
 ];
 const keysHTML = ks => ks.map(k => (k.startsWith('~') ? `<span class="nh-say">${k.slice(1)}</span>` : `<kbd>${k}</kbd>`)).join(' ');
 
@@ -235,6 +236,6 @@ export function initNav(api) {
     if (e.key === 'Enter' && !typing && $('map-modal')?.classList.contains('show')) { e.preventDefault(); $('mp-apply').click(); }
   }, true);
   // The wheel over the top bar or the Blackboard's tabs moves between systems
-  wheelSteps(document.querySelector('header'), d => goSystem(current() + d), '#tb-rl-panel');
+  wheelSteps(document.querySelector('header'), d => goSystem(current() + d));
   wheelSteps($('bb-tabs'), d => goSystem(current() + d));
 }

@@ -52,10 +52,15 @@ try {
   await step('the factory leaves ore unused, and it\'s offered', async () => {
     assert.ok(spare > 1, `spare ${spare}`);
   });
-  await step('picking nodes: its nodes say "+N unused", and the side lists it', async () => {
+  await step('picking nodes: a ring on its nodes; Leftover shows them all, and up close how much', async () => {
     await page.fill('#sc-name', 'Next door'); await page.dispatchEvent('#sc-name', 'change');
     await page.keyboard.press('Control+m'); await page.waitForSelector('#mp-map [data-id]'); await sleep(300);
     await page.click('.mp-f[data-r="Iron_Ore"]'); await sleep(200);
+    assert.equal(await page.locator('#mp-map .mp-spare-r').count(), 2, 'a ring on each of its nodes');
+    assert.equal(await page.locator('#mp-map .mp-spare').count(), 0, 'from afar, no tag');
+    await page.click('#mp-filters [data-only="spare"]'); await sleep(300);
+    assert.equal(await page.locator('#mp-map [data-id]').count(), 2, 'only the nodes with some left');
+    await page.screenshot({ path: (process.env.TMPDIR || '/tmp') + '/map-leftover.png' });
     const tag = page.locator('#mp-map .mp-spare');
     assert.equal(await tag.count(), 1);
     assert.match(await tag.textContent(), new RegExp(`\\+${Math.round(spare)}`));
@@ -76,7 +81,7 @@ try {
     const sc2 = await api('/api/scenarios/next_door');
     assert.deepEqual(sc2.from_factories, [{ item: 'Iron_Ore', factory: 'iron_intermediate', rate: 20 }]);
     await page.keyboard.press('Control+m'); await page.waitForSelector('#mp-map [data-id]'); await sleep(300);
-    await page.click('.mp-f[data-r="Iron_Ore"]'); await sleep(200);
+    await page.click('#mp-filters [data-only="spare"]'); await sleep(300);
     assert.match(await page.locator('#mp-map .mp-spare').textContent(), /→ 20 of/);         // its own share shows as brought
     await page.locator('#mp-spare button').first().click(); await sleep(100);             // leave it there
     await page.click('#mp-apply'); await sleep(300);
@@ -84,9 +89,27 @@ try {
   });
   await step('the Blackboard\'s map shows what\'s unused', async () => {
     await page.keyboard.press('Alt+6'); await page.waitForSelector('.mp-view [data-id]'); await sleep(400);
-    await page.click('.mp-filters .mp-f[data-r="Iron_Ore"]'); await sleep(200);
+    await page.click('.mp-filters [data-only="spare"]'); await sleep(300);
     assert.match(await page.locator('.mp-view .mp-spare').textContent(), /unused/);
     assert.match(await page.locator('.mp-legend').innerText(), /Unused at factories[\s\S]*Iron intermediate/);
+  });
+
+  await step('nodes your save mines: In your save shows them, and adds the ones on screen', async () => {
+    await page.keyboard.press('Escape'); await sleep(200);
+    const mined = (await api('/api/map-nodes')).nodes.filter(n => n.r === 'Copper_Ore' && !n.w).slice(0, 3).map(n => n.id);
+    await page.evaluate(ids => document.dispatchEvent(new CustomEvent('save-read', { detail: { nodes: ids, file: 'test.sav' } })), mined);
+    await page.keyboard.press('Control+m'); await page.waitForSelector('#mp-map [data-id]'); await sleep(300);
+    const chip = page.locator('#mp-filters [data-only="save"]');
+    assert.match(await chip.innerText(), /In your save 3/);
+    await chip.click(); await sleep(300);
+    assert.equal(await page.locator('#mp-map [data-id]').count(), 3);
+    await page.screenshot({ path: (process.env.TMPDIR || '/tmp') + '/map-insave.png' });
+    assert.match(await page.locator('#mp-filters .mp-addview').innerText(), /Add the 3 on screen/);
+    await page.click('#mp-filters .mp-addview'); await sleep(200);
+    assert.match(await page.locator('#mp-filters .mp-addview').innerText(), /All on screen added/);
+    await page.click('#mp-apply'); await sleep(400);
+    const s = await page.evaluate(() => { const r = [...document.querySelectorAll('#kv-res .nrow')].map(x => x.innerText); return r.join('|'); });
+    assert.match(s, /Copper Ore[\s\S]*× 3/, s);
   });
 
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }

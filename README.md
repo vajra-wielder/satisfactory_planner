@@ -39,13 +39,18 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   number of shards where they add the most. Water extractors are pins you drop where there's water. A fixed
   rate covers anything else
 - Unused node supply: what a factory's own nodes give that its plan doesn't
-  use is offered to the others. Picking nodes on the map, another factory's
-  nodes show "+230 unused"; click the tag (or set an amount in "Unused nearby",
-  nearest first) to bring some of it over as an import — the rest stays
-  theirs. Its plan holds: what's sent on comes off its own supply
+  use is offered to the others. On the maps those nodes have a green ring;
+  Leftover (beside the resources) shows every one of them, and zoomed in each
+  says how much is left ("+230 unused"). Picking nodes, click the tag (or set
+  an amount in "Unused nearby", nearest first) to bring some of it over as an
+  import — the rest stays theirs. Its plan holds: what's sent on comes off
+  its own supply
 - Your save: read a .sav (Unlocks, or the map) to mark the nodes your
-  game already mines, on the map and on the Blackboard's Map tab, so you can
-  plan which to take next — and to see what it has unlocked (alternates,
+  game already mines (a yellow ring), on the map and on the Blackboard's Map
+  tab, so you can plan which to take next. In your save (beside the
+  resources) shows the ones no factory has yet — to rebuild factories planned
+  before you used the map: picking nodes, "+ Add the N on screen" adds the
+  ones in view (zoom to one site), or Shift+drag a box — and to see what it has unlocked (alternates,
   machines, miner, belt and pipe tiers) against the planner's; one click makes
   them match
 - The map is drawn on the game's own map picture (fetched once into data/ the
@@ -178,7 +183,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   per-recipe power for variable-power machines)
 - Enable/disable alternate recipes
 - Enable/disable machine tiers
-- Searchable recipe database
+- Recipes (Ctrl+Q, or the box in the top bar): a window in the middle with
+  every recipe that makes an item and every one that uses it, side by side.
+  Click any part on a card to look that one up (the trail goes back;
+  Backspace in the empty box too). Set a rate ("at 120/min") and each card
+  says how many machines that takes and how much of each part — a part looked
+  up from there carries its rate. Sums work: 240*2/3 is worked out, and Enter
+  makes it the rate. Alternates you haven't unlocked are marked 🔒
 - Scenario-based planning
 
 ### Interactive Graph

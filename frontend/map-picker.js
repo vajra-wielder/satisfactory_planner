@@ -11,6 +11,9 @@
  *                  The list on the right sets each extractor's shards.
  *   mountMapView   the Blackboard's map: whose node is whose, what your save
  *                  already mines, and what's still free.
+ * Leftover (a green ring) and In your save (yellow) are views of their own:
+ * every node a factory leaves some of unused, and every node your save mines
+ * that no factory has — those the picker can add at once.
  * Load a save to mark the nodes your game already mines (yellow rings), and
  * your own map picture to draw them on (it's lined up with the in-game map's
  * edges; nudge it if it's off).
@@ -96,10 +99,17 @@ function makeMap(el, M) {
   // have picked one or two resources; its name and whose it is up close
   const level = () => {
     const rel = M.view.scale / (M.fitScale || M.view.scale);
-    return rel >= 4.5 ? 2 : rel >= 2 || M.filter.size <= 2 ? 1 : 0;
+    return rel >= 4.5 ? 2 : rel >= 2 || (!M.only && M.filter.size <= 2) ? 1 : 0;
   };
   const SIZE = [{ impure: 2.5, normal: 3.5, pure: 4.5 }, { impure: 5, normal: 6.5, pure: 8 }, { impure: 6, normal: 7.5, pure: 9.5 }];
   const LETTER = { impure: 'I', normal: 'N', pure: 'P' };
+
+  // What's on the map: the resources picked above — or, in a view of its own,
+  // every node some factory leaves unused, or every node your save mines that
+  // no factory has yet (to rebuild those factories on)
+  const spareIds = () => new Set((M.spare || []).filter(sp => sp.left > 0.05).flatMap(sp => sp.ids));
+  const inSave = n => SAVE.has(n.id) && !M.taken?.[n.id] && !M.owner?.[n.id];
+  M.shows = (n, spare = spareIds()) => M.only === 'spare' ? spare.has(n.id) : M.only === 'save' ? inSave(n) : M.filter.has(n.r);
 
   function drawPicture() {
     if (!IMG?.ext) { bg.style.display = 'none'; return; }
@@ -114,10 +124,11 @@ function makeMap(el, M) {
 
   // What a factory's nodes give that its plan doesn't use: a tag on its nodes
   // of that resource ("+230 unused"); in the picker, click it to bring it here
-  function spareTags() {
+  function spareTags(lv) {
     let out = '';
+    if (M.only === 'save' || !(lv === 2 || (M.only === 'spare' && lv >= 1))) return out;   // from afar, the rings say it
     (M.spare || []).forEach((sp, i) => {
-      if (!M.filter.has(sp.item) || !(sp.left > 0.05)) return;
+      if ((M.only !== 'spare' && !M.filter.has(sp.item)) || !(sp.left > 0.05)) return;
       const ns = sp.ids.map(id => BY[id]).filter(Boolean);
       if (!ns.length) return;
       const x = sx(ns.reduce((a, n) => a + n.x, 0) / ns.length), y = sy(Math.min(...ns.map(n => n.y))) - 16;
@@ -144,22 +155,25 @@ function makeMap(el, M) {
       for (let y = Math.ceil(BOUNDS.y[0] / step) * step; y <= BOUNDS.y[1]; y += step)
         g += `<line class="mp-grid" x1="${sx(BOUNDS.x[0])}" y1="${sy(y)}" x2="${sx(BOUNDS.x[1])}" y2="${sy(y)}"/>`;
     }
-    const wells = {};
-    MAP.forEach(n => { if (n.w && M.filter.has(n.r)) (wells[n.w] = wells[n.w] || []).push(n); });
+    const wells = {}, spare = spareIds(), vis = [];
+    MAP.forEach(n => { if (n.w && M.shows(n, spare)) (wells[n.w] = wells[n.w] || []).push(n); });
     let labels = '';
     Object.values(wells).forEach(list => {
       const cx = list.reduce((s, n) => s + n.x, 0) / list.length, cy = list.reduce((s, n) => s + n.y, 0) / list.length;
       const rad = Math.max(...list.map(n => Math.hypot(n.x - cx, n.y - cy))) * M.view.scale + 10;
       g += `<circle class="mp-well" cx="${sx(cx)}" cy="${sy(cy)}" r="${rad}"/>`;
-      if (lv === 2) labels += `<text class="mp-lbl" x="${sx(cx)}" y="${sy(cy) - rad - 5}" text-anchor="middle">${M.filter.size > 1 ? shortOf(list[0].r) + ' ' : ''}well ×${list.length}</text>`;
+      if (lv === 2) labels += `<text class="mp-lbl" x="${sx(cx)}" y="${sy(cy) - rad - 5}" text-anchor="middle">${M.only || M.filter.size > 1 ? shortOf(list[0].r) + ' ' : ''}well ×${list.length}</text>`;
     });
     const order = { impure: 0, normal: 1, pure: 2 };
     const placed = [];
-    [...MAP].filter(n => M.filter.has(n.r)).sort((a, b) => order[a.p] - order[b.p]).forEach(n => {
+    [...MAP].filter(n => M.shows(n, spare)).sort((a, b) => order[a.p] - order[b.p]).forEach(n => {
       const x = sx(n.x), y = sy(n.y);
       if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
+      if (x >= 0 && y >= 0 && x <= w && y <= h) vis.push(n.id);
       const r = SIZE[lv][n.p] * (n.w ? 0.8 : 1);
       const taken = M.taken?.[n.id], picked = M.picked?.has(n.id), own = M.owner?.[n.id];
+      // the leftover ring outside the node, so a taken (faded) node's still shows
+      if (spare.has(n.id)) g += `<circle cx="${x}" cy="${y}" r="${r + 5.5}" class="mp-spare-r"/>`;
       g += `<g data-id="${n.id}" class="mp-n ${taken ? 'taken' : ''} ${picked ? 'on' : ''}">
         ${SAVE.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 3.5}" class="mp-save"/>` : ''}
         ${own ? `<circle cx="${x}" cy="${y}" r="${r + 2}" fill="none" stroke="${M.ownerColor(own)}" stroke-width="2.5"/>` : ''}
@@ -173,7 +187,7 @@ function makeMap(el, M) {
         // whose it is, once per cluster: not again for a node of the same one close by
         if (who && placed.some(q => q.who === who && Math.hypot(q.x - x, q.y - y) < 70)) who = '';
         else if (who) placed.push({ who, x, y });
-        const what = [M.filter.size > 1 ? shortOf(n.r) : '', n.r === 'Geyser' ? `${GEO_MW[n.p]} MW` : ''].filter(Boolean).join(' ');
+        const what = [M.only || M.filter.size > 1 ? shortOf(n.r) : '', n.r === 'Geyser' ? `${GEO_MW[n.p]} MW` : ''].filter(Boolean).join(' ');
         if (what) labels += `<text class="mp-lbl" x="${x + r + 3}" y="${y - (who ? 1 : -3.5)}">${what}</text>`;
         if (who) labels += `<text class="mp-lbl sub" x="${x + r + 3}" y="${what ? y + 10 : y + 3.5}">${who}</text>`;
       }
@@ -185,7 +199,10 @@ function makeMap(el, M) {
       if (lv === 2 && p.label) labels += `<text class="mp-lbl" x="${x + 10}" y="${y + 3.5}">${p.label}</text>`;
     });
     svg.innerHTML = g + labels + spareTags(lv);
-    el.querySelector('.mp-level').textContent = ['Zoom in or pick one resource for purity', 'Zoom in more for names and owners', ''][lv];
+    el.querySelector('.mp-level').textContent = M.only === 'spare' && !lv ? 'Zoom in for how much each leaves'
+      : ['Zoom in or pick one resource for purity', 'Zoom in more for names and owners', ''][lv];
+    M.visible = vis;
+    M.afterDraw?.();
   }
 
   // One redraw a frame, however many wheel or drag events come in
@@ -257,7 +274,7 @@ function makeMap(el, M) {
       const x = ev.clientX - r.left, y = ev.clientY - r.top;
       if (box) {
         const [ax, bx, ay, by] = [Math.min(x0, x), Math.max(x0, x), Math.min(y0, y), Math.max(y0, y)];
-        M.onBox(MAP.filter(n => M.filter.has(n.r) && !M.taken?.[n.id]
+        M.onBox(MAP.filter(n => M.shows(n) && !M.taken?.[n.id]
           && sx(n.x) >= ax && sx(n.x) <= bx && sy(n.y) >= ay && sy(n.y) <= by).map(n => n.id));
         rect.remove();
       } else if (!moved && M.onPin) M.onPin(Math.round(wx(x)), Math.round(wy(y)));
@@ -320,19 +337,51 @@ function makeMap(el, M) {
   return { draw, fitTo, refit: () => { M.view = null; draw(); } };
 }
 
-// Filter chips for a map
+// Filter chips for a map: the resources, All — and two views across every
+// resource: Leftover (what factories' nodes give that their plans don't use)
+// and In your save (mined in the game, in no factory yet). In the picker, the
+// save's view can add what's on screen at once.
 function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
-  el.innerHTML = kinds.map(r =>
-    `<button class="mp-f ${M.filter.has(r) ? 'on' : ''}" data-r="${r}"><i style="background:${COLORS[r]}"></i>${nameOf(r)}</button>`).join('')
-    + '<button class="mp-f" data-r="*" title="Shift- or Ctrl-click a resource to add it">All</button>';
-  el.querySelectorAll('.mp-f').forEach(b => b.addEventListener('click', e => {
-    const r = b.dataset.r;
-    if (r === '*') M.filter = new Set(kinds);
-    else if (e.shiftKey || e.ctrlKey || e.metaKey) M.filter.has(r) ? M.filter.delete(r) : M.filter.add(r);
-    else M.filter = new Set([r]);
-    el.querySelectorAll('.mp-f').forEach(x => x.classList.toggle('on', M.filter.has(x.dataset.r)));
-    redraw();
-  }));
+  const draw = () => {
+    const nSpare = new Set((M.spare || []).filter(sp => sp.left > 0.05).flatMap(sp => sp.ids)).size;
+    const nSave = MAP.filter(n => SAVE.has(n.id) && !M.taken?.[n.id] && !M.owner?.[n.id]).length;
+    el.innerHTML = kinds.map(r =>
+      `<button class="mp-f ${!M.only && M.filter.has(r) ? 'on' : ''}" data-r="${r}"><i style="background:${COLORS[r]}"></i>${nameOf(r)}</button>`).join('')
+      + '<button class="mp-f" data-r="*" title="Shift- or Ctrl-click a resource to add it">All</button>'
+      + `<span class="mp-f-sep"></span>
+      <button class="mp-f ${M.only === 'spare' ? 'on' : ''}" data-only="spare" ${nSpare ? '' : 'disabled'}
+        title="${nSpare ? 'Every node a factory has that its plan leaves some of unused' : 'No factory leaves any of its nodes unused'}"><i class="ring sp"></i>Leftover${nSpare ? ` ${nSpare}` : ''}</button>
+      <button class="mp-f ${M.only === 'save' ? 'on' : ''}" data-only="save" ${nSave ? '' : 'disabled'}
+        title="${nSave ? 'Every node your save mines that no factory here has yet' : SAVE.size ? 'Every node your save mines is in a factory' : 'Load a save to see what you already mine'}"><i class="ring sv"></i>In your save${nSave ? ` ${nSave}` : ''}</button>
+      ${M.only === 'save' && M.onBox ? '<button class="bsm act mp-addview" title="Add the save\'s nodes on screen to this factory — zoom or pan to choose; Shift+drag a box for fewer"></button>' : ''}`;
+    el.querySelectorAll('.mp-f').forEach(b => b.addEventListener('click', e => {
+      const r = b.dataset.r, only = b.dataset.only;
+      if (only) M.only = M.only === only ? null : only;
+      else {
+        M.only = null;
+        if (r === '*') M.filter = new Set(kinds);
+        else if (e.shiftKey || e.ctrlKey || e.metaKey) M.filter.has(r) ? M.filter.delete(r) : M.filter.add(r);
+        else M.filter = new Set([r]);
+      }
+      draw(); redraw();
+      // a view of its own: the map fits what's in it
+      if (only && M.only && M.map) M.map.fitTo(MAP.filter(n => M.shows(n)).map(n => [n.x, n.y]), 400);
+    }));
+    el.querySelector('.mp-addview')?.addEventListener('click', () => {
+      const ids = (M.visible || []).filter(id => !M.picked?.has(id));
+      if (ids.length) M.onBox(ids);
+    });
+  };
+  // the add button follows the map: what's on screen and not picked yet
+  M.afterDraw = () => {
+    const b = el.querySelector('.mp-addview');
+    if (!b) return;
+    const n = (M.visible || []).filter(id => !M.picked?.has(id)).length;
+    b.textContent = n ? `+ Add the ${n} on screen` : 'All on screen added';
+    b.disabled = !n;
+  };
+  el._chips = draw;
+  draw();
 }
 
 // Save and map-picture tools, shared by both maps
@@ -366,6 +415,7 @@ function tools(el, redraw) {
     uploadSave(f).then(d => {
       SAVE = new Set(d.nodes); SAVE_INFO = d;
       el.querySelector('.mp-save-info').textContent = `${SAVE.size} nodes mined in ${d.file}`;
+      document.querySelectorAll('.mp-filters').forEach(f => f._chips?.());
       const u = el.querySelector('.mp-unl');
       u.innerHTML = changesHTML(d);
       wireChanges(u, () => { u.innerHTML = '<span class="mp-hint">Unlocks now match the save.</span>'; });
@@ -609,7 +659,7 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
       if (!lg) return;                      // redrawn meanwhile (a newer render is under way)
       const count = {}, free = {}, inSave = {};
       MAP.forEach(n => {
-        if (!M.filter.has(n.r)) return;
+        if (!M.shows(n)) return;
         if (owners[n.id]) count[owners[n.id]] = (count[owners[n.id]] || 0) + 1;
         else if (SAVE.has(n.id)) inSave[n.r] = (inSave[n.r] || 0) + 1;
         else if (n.p === 'pure' && !M.grid.has(n.id)) free[n.r] = (free[n.r] || 0) + 1;
@@ -655,8 +705,8 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
     geoBtn.addEventListener('click', () => {
       M.geoMode = !M.geoMode;
       geoBtn.classList.toggle('act', M.geoMode);
-      if (M.geoMode) M.filter = new Set(['Geyser']);
-      el.querySelectorAll('.mp-filters .mp-f').forEach(x => x.classList.toggle('on', M.filter.has(x.dataset.r)));
+      if (M.geoMode) { M.filter = new Set(['Geyser']); M.only = null; }
+      el.querySelector('.mp-filters')._chips?.();
       redraw();
     });
     requestAnimationFrame(() => { M.map.refit(); legend(); });

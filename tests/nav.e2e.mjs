@@ -89,6 +89,31 @@ try {
     assert.equal(await page.inputValue('#bb-find-q'), 'Iron Plate');
     await page.keyboard.press('Escape');
   });
+  await step('Ctrl+Q: Recipes in the middle; drill into a part, the rate carried; sums; Esc', async () => {
+    await page.keyboard.press('Control+q'); await page.waitForSelector('#rl-modal.show');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'rl-q');
+    await page.keyboard.type('motor'); await sleep(150);
+    assert.ok(await page.locator('#rl-body .rl-opt').count() >= 2, 'every item with the word');
+    await page.keyboard.press('Enter'); await sleep(200);
+    assert.match(await page.locator('#rl-body').innerText(), /Made by\s+\d+[\s\S]*Used in\s+\d+/i);
+    await page.fill('#rl-rate', '5*2'); await page.press('#rl-rate', 'Enter'); await sleep(200);
+    assert.equal(await page.inputValue('#rl-rate'), '10');
+    const motor = page.locator('#rl-body .rl-card.prod').filter({ has: page.locator('.rl-n', { hasText: /^Motor$/ }) }).first();
+    assert.match(await motor.innerText(), /×2[\s\S]*Rotor\s+20\/min/);
+    await motor.locator('.rl-io.in', { hasText: 'Rotor' }).click(); await sleep(200);
+    assert.match(await page.locator('#rl-trail').innerText(), /Motor\s+10\/min[\s\S]*Rotor\s+20\/min/);
+    assert.equal(await page.inputValue('#rl-rate'), '20', 'the rate carried down');
+    await page.click('#rl-q'); await page.keyboard.type('240*2/3'); await sleep(150);
+    assert.match(await page.locator('#rl-body').innerText(), /=\s*160/);
+    await page.keyboard.press('Enter'); await sleep(150);
+    assert.equal(await page.inputValue('#rl-rate'), '160');
+    await page.keyboard.press('Backspace'); await sleep(150);           // empty box: back up the trail
+    assert.match(await page.locator('#rl-trail .now').innerText(), /Motor/);
+    await page.keyboard.press('Escape'); await sleep(150);
+    assert.equal(await page.locator('#rl-modal.show').count(), 0);
+    await page.click('#tb-rl-open'); await page.waitForSelector('#rl-modal.show');   // the top bar's box opens it too
+    await page.keyboard.press('Escape');
+  });
   await step('? shows every shortcut, Esc closes it', async () => {
     await page.keyboard.press('Shift+Slash'); await sleep(200);
     assert.match(await page.locator('#nav-help').innerText(), /Go to anything[\s\S]*Solve[\s\S]*The whole map/);

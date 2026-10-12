@@ -42,7 +42,7 @@ import {
   renderSaved, renderIssues,
 } from './ui.js';
 
-import { initRecipeLookup } from './recipe-lookup.js';
+import { initRecipeLookup, openRecipes } from './recipe-lookup.js';
 import { openUnlockedModal } from './machines-panel.js';
 import { KVS, renderKv, syncKv } from './kv-panel.js';
 import { openAnalysis, closeAnalysis, showAnalysis } from './analysis.js';
@@ -691,12 +691,7 @@ window.addEventListener('keydown', e => {
     case 'm': e.preventDefault(); pickOnMap(); break;
     case 'o': e.preventDefault(); openFactories(); break;
     case 'u': e.preventDefault(); openUnlocks(); break;
-    case 'q': {
-      e.preventDefault();
-      const inp = document.getElementById('tb-rl-input');
-      if (inp) { inp.focus(); inp.select(); }
-      break;
-    }
+    case 'q': e.preventDefault(); openRecipes(); break;
     case 'f':
       e.preventDefault();
       openSearch();
@@ -734,7 +729,7 @@ Promise.all([fetchBoot()])
         { label: 'Alternates for this factory', keys: '2', run: () => openDock('alts') },
         { label: 'Build cost', keys: '3', run: () => openDock('build') },
         { label: 'Issues', keys: '4', run: () => openDock('issues') },
-        { label: 'Recipe lookup', keys: 'Ctrl+Q', run: () => { const i = document.getElementById('tb-rl-input'); i.focus(); i.select(); } },
+        { label: 'Recipe lookup', keys: 'Ctrl+Q', run: () => openRecipes() },
         { label: 'Your factories', keys: 'Ctrl+O', run: openFactories },
         { label: 'Unlocks for every factory (machines, miner, hard drives, a save)', keys: 'Ctrl+U', run: openUnlocks },
         { label: 'Re-solve out of date', run: () => startChain() },

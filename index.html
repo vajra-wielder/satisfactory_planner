@@ -141,44 +141,60 @@ html, body {
   display: flex; align-items: center; gap: 7px; flex-shrink: 0;
 }
 
-/* Recipe lookup wrapper — absolutely centered in topbar */
-#tb-rl-wrap {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  flex-shrink: 0;
-}
-#tb-rl-wrap input {
-  width: 300px;
-  background: var(--p3); border: 1px solid var(--b);
-  border-radius: var(--rsm); color: var(--t);
-  font-family: var(--mono); font-size: 12px;
-  padding: 5px 8px 5px 28px;
-  outline: none; transition: border-color .15s;
-}
-#tb-rl-wrap input:focus { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc-glow); }
-
-/* Floating recipe results panel */
-#tb-rl-panel {
-  display: none;
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  width: 440px;
-  max-height: 70vh;
-  background: var(--p2);
-  border: 1px solid var(--b2);
-  border-radius: var(--rlg);
-  box-shadow: 0 16px 48px rgba(0,0,0,.7);
-  z-index: 500;
-  flex-direction: column;
-  overflow: hidden;
-}
-#tb-rl-results {
-  overflow-y: auto;
-  padding: 10px 12px 12px;
-  max-height: 70vh;
-}
+/* Recipe lookup: a box in the top bar that opens the Recipes window */
+#tb-rl-wrap { position: absolute; left: 50%; transform: translateX(-50%); flex-shrink: 0; }
+#tb-rl-open { display: flex; align-items: center; gap: 8px; width: 300px; padding: 5px 8px; background: var(--p3);
+  border: 1px solid var(--b); border-radius: var(--rsm); color: var(--t3); font-family: var(--mono); font-size: 12px; cursor: text; }
+#tb-rl-open span { flex: 1; text-align: left; }
+#tb-rl-open:hover { border-color: var(--acc); }
+#tb-rl-open kbd { font-size: 9px; }
+#rl-modal { align-items: flex-start; justify-content: center; padding-top: 6vh; }
+#rl-box { width: min(1240px, 95vw); height: 86vh; border: 1px solid var(--b2); border-radius: var(--rlg); padding: 0; gap: 0; overflow: hidden; }
+.rl-top { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--b); color: var(--t3); }
+#rl-q { flex: 1; background: none; border: none; outline: none; color: var(--t); font-size: 17px; font-family: var(--font); }
+.rl-ratel { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--t3); white-space: nowrap; }
+#rl-rate { width: 90px; font-family: var(--mono); font-size: 13px; text-align: right; }
+#rl-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 16px; min-height: 30px; border-bottom: 1px solid var(--b); font-size: 12px; }
+#rl-trail:empty { display: none; }
+.rl-crumb { background: none; border: none; color: var(--t2); cursor: pointer; padding: 2px 5px; border-radius: 4px; font-size: 12px; font-family: var(--font); }
+button.rl-crumb:hover { background: var(--p3); color: var(--acc); }
+.rl-crumb.now { color: var(--t); cursor: default; }
+.rl-crumb small { color: var(--t3); font-family: var(--mono); margin-left: 3px; }
+.rl-sep { color: var(--t4); }
+#rl-body { flex: 1; overflow-y: auto; padding: 12px 16px 16px; display: flex; gap: 16px; align-items: flex-start; }
+.rl-col { flex: 1; min-width: 0; }
+.rl-h { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; position: sticky; top: -12px; background: var(--p2); padding: 4px 0; z-index: 1; }
+.rl-h.prod { color: var(--ok); } .rl-h.cons { color: #60a5fa; }
+.rl-h span { color: var(--t3); margin-left: 4px; }
+.rl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.rl-card { background: var(--p3); border: 1px solid var(--b); border-radius: var(--rsm); padding: 7px 9px; font-size: 11.5px; }
+.rl-card.prod { border-left: 2px solid var(--ok); } .rl-card.cons { border-left: 2px solid #60a5fa; }
+.rl-card.dim { opacity: .62; }
+.rl-ch { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; }
+.rl-m, .rl-alt { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-weight: 600; flex: none; }
+.rl-alt { background: var(--acc-glow); color: var(--acc); border: 1px solid var(--acc); }
+.rl-alt.lk { background: none; color: var(--t3); border-color: var(--b2); }
+.rl-n { flex: 1; min-width: 0; color: var(--t); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-k { font-family: var(--mono); color: var(--acc); font-weight: 600; }
+.rl-io { display: flex; justify-content: space-between; gap: 8px; padding: 1.5px 4px; margin: 0 -4px; border-radius: 3px; color: var(--t2); cursor: pointer; text-decoration: none; }
+.rl-io span:last-child { font-family: var(--mono); color: var(--t3); }
+.rl-io.out span:first-child { color: var(--ok); }
+.rl-io.me span:first-child { font-weight: 700; }
+.rl-io:hover { background: var(--p2); }
+.rl-io:hover span:first-child { color: var(--acc); text-decoration: underline; }
+.rl-div { border-top: 1px solid var(--b); margin: 3px 0; }
+.rl-note { font-size: 10px; color: var(--warn); margin-top: 3px; }
+.rl-opts { flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; align-content: start; }
+.rl-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 7px 10px; text-align: left; cursor: pointer;
+  background: var(--p3); border: 1px solid var(--b); border-radius: var(--rsm); color: var(--t); font-family: var(--font); font-size: 12.5px; }
+.rl-opt small { font-size: 10px; color: var(--t3); }
+.rl-opt.on, .rl-opt:hover { border-color: var(--acc); background: var(--acc-glow); }
+.rl-sum { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 18px 4px; }
+.rl-sum-q { font-family: var(--mono); font-size: 18px; color: var(--t3); }
+.rl-sum-v { font-family: var(--mono); font-size: 34px; font-weight: 700; color: var(--acc); }
+.rl-empty { color: var(--t3); font-size: 13px; line-height: 1.7; max-width: 640px; padding: 18px 4px; }
+.rl-empty code, .rl-body code { font-family: var(--mono); color: var(--t2); }
+@media (max-width: 760px) { #rl-body { flex-direction: column; } .rl-col { width: 100%; } }
 
 /* Topbar action buttons */
 .tb-action-btn {
@@ -362,6 +378,13 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .mp-lg i.geo { border: 2.5px solid #facc15; }
 .pw-grid td { border-top: 1px solid var(--b2); }
 .mp-save { fill: none; stroke: #facc15; stroke-width: 2; stroke-dasharray: 3 2; }
+.mp-spare-r { fill: none; stroke: #4ade80; stroke-width: 2; pointer-events: none; }
+.mp-f i.ring { background: none !important; width: 8px; height: 8px; }
+.mp-f i.ring.sp { border: 2px solid #4ade80; }
+.mp-f i.ring.sv { border: 1.6px dashed #facc15; }
+.mp-f:disabled { opacity: .45; cursor: default; }
+.mp-f-sep { width: 1px; background: var(--b2); margin: 2px 4px; }
+.mp-filters .mp-addview { margin-left: 4px; }
 .mp-save-t { color: #facc15 !important; }
 .mp-pin text { font-size: 9px; fill: #fff; font-family: var(--mono); pointer-events: none; }
 .mp-pin { cursor: pointer; }
@@ -834,17 +857,10 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
     <span id="tb-fac-name">New Factory</span> <span class="tb-caret">▾</span>
   </button>
   <div id="tb-rl-wrap">
-    <div style="position:relative;display:flex;align-items:center">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#616880" stroke-width="2"
-           style="position:absolute;left:8px;pointer-events:none">
-        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-      </svg>
-      <input id="tb-rl-input" type="text" placeholder="Recipe lookup" autocomplete="off"
-        style="padding-left:28px;width:300px;background:var(--p3);border:1px solid var(--b);
-               border-radius:var(--rsm);color:var(--t);font-family:var(--mono);font-size:12px;
-               padding-top:5px;padding-bottom:5px;outline:none"/>
-    </div>
-    <div id="tb-rl-panel"><div id="tb-rl-results"></div></div>
+    <button id="tb-rl-open" title="Recipes: what makes an item and what uses it, with sums and rates  (Ctrl+Q)">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <span>Recipe lookup</span><kbd>Ctrl Q</kbd>
+    </button>
   </div>
   <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
     <button id="btn-goto" class="tb-action-btn" title="Go to a system, a factory, an action or who makes an item  (Ctrl+K)">
@@ -1107,6 +1123,19 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       <div style="display:flex;gap:6px;align-items:center"><button class="bsm" id="fac-new" title="Start a new factory (clears the planner)">+ New factory</button>
       <button class="wmc" data-far-close>&times;</button></div></div>
     <div class="far-body ts"><div id="savedlist"></div></div>
+  </div>
+</div>
+<div id="rl-modal" class="far">
+  <div class="far-box" id="rl-box">
+    <div class="rl-top">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input id="rl-q" type="text" placeholder="An item — or a sum, like 240*2/3" autocomplete="off" spellcheck="false"/>
+      <label class="rl-ratel" title="What you need of it: each card says how many machines that takes (sums work)">at
+        <input id="rl-rate" type="text" inputmode="decimal" placeholder="—" autocomplete="off"/>/min</label>
+      <button class="wmc" id="rl-x" data-far-close title="Close  (Esc)">&times;</button>
+    </div>
+    <div id="rl-trail"></div>
+    <div id="rl-body" class="ts"></div>
   </div>
 </div>
 <div id="unlocks-modal" class="far">
