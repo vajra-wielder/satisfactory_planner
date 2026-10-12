@@ -64,11 +64,14 @@ export let EXTRACTORS = {}, PURITY = {}, MINER_TIERS = {}, MAX_SHARDS = 3;
 export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2', schematics: null };
 // What unlocks each recipe and machine (data/unlocks.json): milestones (tier + sub-tier), MAM research
 export let UNLOCKS = { schematics: {}, recipes: {}, machines: {} };
+// Belt and pipe tiers: /min each
+export let TRANSPORT = { belts: {}, pipes: {} };
 export function setExtractors(b) {
   EXTRACTORS = b.extractors || {}; PURITY = b.purity || {};
   MINER_TIERS = b.miner_tiers || {}; MAX_SHARDS = b.max_shards ?? 3;
   Object.assign(PROGRESS, b.progress || {});
   if (b.unlocks) UNLOCKS = b.unlocks;
+  if (b.transport) TRANSPORT = b.transport;
 }
 /** The milestone or research that unlocks a recipe, if it's one you haven't done (null: you can use it). */
 export function lockedBy(key) {

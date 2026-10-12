@@ -85,9 +85,9 @@ try {
     const labels = await page.$$eval('#bb-sankey .sk-lab', ls => ls.map(l => l.textContent));
     assert.ok(labels.some(l => /3 items · 95\/min/.test(l)), labels.join(' | '));
   });
-  check('storage lists what is stored', async () => {
-    await page.click('#bb-tabs button[data-tab="storage"]'); await sleep(200);
-    assert.match(await page.locator('#bb-storage').innerText(), /Iron Rod\s+10\s+600/);
+  check('items: with nothing typed, what is stored or moved', async () => {
+    await page.click('#bb-tabs button[data-tab="items"]'); await sleep(200);
+    assert.match(await page.locator('#bb-items-out').innerText(), /Iron Rod[\s\S]*10 stored/);
   });
   check('power and map render', async () => {
     await page.click('#bb-tabs button[data-tab="power"]'); await sleep(200);
@@ -119,13 +119,17 @@ try {
     assert.match(t, /Smelter/, t); assert.match(t, /Geothermal Generator\s+×2/, t);
     await page.keyboard.press('3'); await page.click('#btn-blackboard'); await page.waitForSelector('#bb-modal.show'); await sleep(300);
   });
-  check('who makes Iron Rod: sent out, taken, stored and free', async () => {
-    await page.click('#bb-tabs button[data-tab="find"]');
-    await page.fill('#bb-find-q', 'Iron Rod'); await sleep(200);
-    const t = await page.locator('#bb-find-out').innerText();
-    assert.match(t, /Iron Rod/); assert.match(t, /15\/min free to import/, t);
-    const row = await page.locator('#bb-find-out tr', { hasText: 'iron' }).first().innerText();
-    assert.match(row, /30\s+frames 5\s+10\s+15/, row);
+  check('items: Iron Rod — sent out, taken, stored and free; storage changed here is saved in its factory', async () => {
+    await page.click('#bb-tabs button[data-tab="items"]');
+    await page.fill('#bb-items-q', 'Iron Rod'); await sleep(200);
+    const t = await page.locator('#bb-items-out').innerText();
+    assert.match(t, /Iron Rod/); assert.match(t, /15\/min free/, t);
+    const row = page.locator('#bb-items-out tr', { hasText: 'iron' }).first();
+    assert.match(await row.innerText(), /30\s+frames 5\s+15/, await row.innerText());
+    assert.equal(await row.locator('[data-sto]').inputValue(), '10');
+    await row.locator('[data-sto]').fill('4'); await row.locator('[data-sto]').press('Enter');
+    await page.waitForFunction(() => /21\/min free/.test(document.querySelector('#bb-items-out')?.innerText || ''));
+    assert.deepEqual((await api('/api/scenarios/iron')).to_storage, [{ item: 'Iron_Rod', rate: 4 }]);
   });
   check('planning the network redraws the band from the plan', async () => {
     await page.click('#bb-tabs button[data-tab="factories"]'); await sleep(200);

@@ -71,3 +71,9 @@ export const fetchDuals = () => apiFetch('/api/duals');
 // ── Unlocked alternate recipes ────────────────────────────
 export const fetchUnlockedAlts = ()      => apiFetch('/api/unlocked-alts');
 export const saveUnlockedAlts  = (keys) => apiFetch('/api/unlocked-alts', 'POST', { unlocked: keys });
+
+/** A saved factory's To storage of an item, set (rate 0: none) — kept to what it has free. */
+export function setStored(key, item, rate) {
+  return fetch('/api/storage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, item, rate }) }).then(r => r.json());
+}

@@ -58,6 +58,23 @@ class Cards(_Temp):
         self.assertGreater(p["machines"], 0)
         self.assertEqual(p["generators"], 0)
 
+    def test_import_past_free_comes_out_of_storage(self):
+        # iron makes 15 rods: 5 to wires, 10 stored — none free. Importing 8 more
+        # takes them out of iron's storage, and iron is saved so
+        import yaml
+        data = {"name": "frames", "from_factories": [{"item": "Iron_Rod", "factory": "iron", "rate": 8}]}
+        moved = server._draw_storage("frames", data)
+        self.assertEqual([(m["item"], m["factory"], m["rate"]) for m in moved], [("Iron_Rod", "iron", 8)])
+        iron = yaml.safe_load((self.dir / "iron.yaml").read_text())
+        self.assertEqual(iron["to_storage"], [{"item": "Iron_Rod", "rate": 2}])
+        self.assertEqual(server._hold_claims("frames", data), [])        # it fits now: nothing cut
+        self.assertEqual(data["from_factories"][0]["rate"], 8)
+        # no more than is stored: the rest is cut as before
+        data = {"name": "more", "from_factories": [{"item": "Iron_Rod", "factory": "iron", "rate": 5}]}
+        self.save("frames", **{"from_factories": [{"item": "Iron_Rod", "factory": "iron", "rate": 8}]})
+        self.assertEqual(server._draw_storage("more", data)[0]["rate"], 2)
+        self.assertEqual(server._hold_claims("more", data)[0]["rate"], 2)
+
     def test_owed_rod_is_made(self):
         # iron must keep making the rods others take and it stores (15 exact covers 15 owed)
         _, res = server._factory_plan("iron")

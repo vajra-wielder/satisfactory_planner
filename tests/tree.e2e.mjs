@@ -126,11 +126,12 @@ try {
     assert.ok(await tile('Wire').locator('.gc.on').count(), 'picked on its tile');
     await page.keyboard.press('Escape');
   });
-  await step('the solver says what to bring in for a faded part, at a rate', async () => {
+  await step('the solver says what to bring in for a faded part, for the amount in its goal', async () => {
     await tile('Computer').click(); await page.waitForFunction(() => !/Working/.test(document.querySelector('#gt-pop .gn-list')?.innerText || 'Working'));
     assert.match(await page.locator('#gt-pop .gn-list').innerText(), /Circuit Board|Plastic/);
-    await page.fill('#gt-pop [data-f="need"]', '5'); await page.press('#gt-pop [data-f="need"]', 'Enter');
-    await page.waitForFunction(() => !/Working/.test(document.querySelector('#gt-pop .gn-list')?.innerText || 'Working'));
+    await page.fill('#gt-pop [data-f="must"]', '5'); await page.locator('#gt-pop [data-f="must"]').dispatchEvent('change');
+    await page.waitForFunction(() => document.querySelector('#gt-pop [data-need]')?.textContent === '5'
+      && !/Working/.test(document.querySelector('#gt-pop .gn-list')?.innerText || 'Working'));
     assert.match(await page.locator('#gt-pop .gn-list').innerText(), /\d+\/min/);
     await page.keyboard.press('Escape');
   });

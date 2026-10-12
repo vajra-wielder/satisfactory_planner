@@ -21,13 +21,15 @@
  * alternates that get it from what you have (use them), what to bring in —
  * the solver's answer — and where from, and the milestone it waits on.
  * Search (Ctrl+Q, or the top bar's box) finds a part and opens it; a sum
- * there is worked out.
+ * there is worked out, and belts — "4 x 120 into 5 x 80 + 40 + 20 + 20" — get
+ * the splitters and mergers that make the exact rates, drawn (splits.js).
  */
-import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR } from './state.js';
+import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, TRANSPORT, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR } from './state.js';
 import { goalOf, setGoal, evalExpr } from './kv-panel.js';
 import { storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './supply-panel.js';
 import { saveProgress, fetchNeeds } from './api.js';
 import { gainText } from './new-alts.js';
+import { parseSplit, design, splitSVG } from './splits.js';
 
 const $ = id => document.getElementById(id);
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -326,15 +328,20 @@ function goalBox(item, rate) {
       <button class="bsm" data-a="close">Cancel</button><button class="bsm act" data-a="apply">Set</button></div>`;
 }
 
-// Every recipe that makes it: pick one (offered to the solver); at a rate, the machines and parts
+// The rate a part is looked at: the plan's, else its goal's, else none (one machine each)
+function rateOf(item) {
+  const g = goalOf(item);
+  return T.plan?.rate[item] || g.must || g.min || g.max || null;
+}
+// Every recipe that makes it: pick one (offered to the solver); at its rate, the machines and parts
 function recipesHTML(item, rate) {
   const ws = ways(item), cur = picks()[item], P = T.plan, used = P?.by[item] || new Set();
   if (!ws.length) return `<p class="n-hint">${raw().has(item) ? 'Mined, pumped or found — no recipe makes it.' : 'No recipe makes it.'}</p>`;
   const io = (items, per, dir) => Object.entries(items).map(([i, v]) =>
     `<a class="rl-io ${dir} ${i === item ? 'me' : ''}" data-go="${i}"><span>${dir === 'in' ? '←' : '→'} ${esc(itemName(i))}</span><span>${num(v * per)}</span></a>`).join('');
-  return `<div class="gp-sec">Made by <label class="gp-rate">at <input data-f="rate" inputmode="decimal" value="${+(+rate).toFixed(3)}"/> /min</label></div>
+  return `<div class="gp-sec">Made by <span class="n-hint">${rate ? `at ${num(rate)}/min${T.plan?.rate[item] ? ' (the plan)' : ' (its goal)'}` : '· one machine each'}</span></div>
     ${ws.map(([k, r]) => {
-      const c = mCol(r.machine), per = rate / r.outputs[item], lock = lockedBy(k), noMach = !machineOn(r.machine);
+      const c = mCol(r.machine), per = rate ? rate / r.outputs[item] : 1, lock = lockedBy(k), noMach = !machineOn(r.machine);
       const own = !r.alternate || UNLOCKED_ALTS.has(k);
       const on = r.alternate ? cur === k : !cur;
       return `<div class="gp-r ${on ? 'on' : ''} ${lock || noMach ? 'dim' : ''}">
@@ -343,11 +350,22 @@ function recipesHTML(item, rate) {
           ${r.alternate ? `<span class="rl-alt ${own ? '' : 'lk'}" title="${own ? 'Unlocked' : 'Not unlocked — its hard drive'}">${own ? 'ALT' : '🔒 ALT'}</span>` : ''}
           <span class="rl-n" title="${esc(r.display)}">${esc(rname(r))}</span>
           ${used.has(k) ? '<span class="gp-used" title="The last solve made it this way">✓ plan</span>' : ''}
-          <span class="rl-k" title="Machines at 100%">×${num(per)}</span></label>
+          <span class="rl-k" title="${rate ? 'Machines at 100%' : 'Made by one machine'}">${rate ? `×${num(per)}` : `${num(r.outputs[item])}/min`}</span></label>
         ${lock ? `<div class="rl-note">🔒 ${esc(unlockName(lock))}</div>` : noMach ? `<div class="rl-note">needs a ${esc(r.machine.replace(/_/g, ' '))}</div>` : ''}
         <div class="gp-io">${io(r.inputs, per, 'in')}${Object.keys(r.outputs).length > 1 ? io(r.outputs, per, 'out') : ''}</div></div>`;
     }).join('')}
     <p class="n-hint" style="margin:4px 0 0">A pick is offered to the solver — it uses it if it's better.</p>`;
+}
+// Other factories with some of it free (or stored): import it from there
+function elsewhereHTML(item) {
+  const src = sourcesOf(item);
+  if (!src.length) return '';
+  const have = (SC.from_factories || []).filter(r => r.item === item);
+  return `<div class="gp-sec">From your other factories</div><div class="gn-src">${src.map(s => {
+    const on = have.find(r => r.factory === s.factory);
+    return `<button class="bsm ${on ? '' : 'act'}" data-bring="${item}" data-rate="${s.left}" data-fac="${s.factory}"
+      title="${num(s.free)}/min free there${s.stored ? `, ${num(s.stored)}/min stored — saving takes what's needed out of its storage` : ''}${s.stale ? ' (its plan is out of date)' : ''}">${on ? `Importing ${num(+on.rate)} · all` : 'Import'} ${num(s.left)} from ${esc(s.name)}${s.stored && s.left > s.free + 1e-6 ? ` <span class="n-hint">(${num(s.left - s.free)} stored)</span>` : ''}</button>`;
+  }).join('')}</div>`;
 }
 function usedInHTML(item) {
   const uses = [...new Set(Object.entries(RECIPES).filter(([k, r]) => usable(k, r) && r.inputs[item])
@@ -355,11 +373,10 @@ function usedInHTML(item) {
   return uses.length ? `<div class="gp-sec">Used in</div><div class="gp-uses">${uses.map(u =>
     `<a class="gp-u ${T.tiles[u] && !T.tiles[u].ghost ? '' : 'gh'}" data-go="${u}">${esc(itemName(u))}</a>`).join('')}</div>` : '';
 }
-function editorHTML(item, rate) {
+function editorHTML(item) {
   const t = T.tiles[item], made = T.plan?.rate[item];
-  rate = rate ?? made ?? ways(item)[0]?.[1].outputs[item] ?? 1;
   return `<div class="gp-h"><b>${esc(itemName(item))}</b><span class="n-hint">${made ? `${num(made)}/min in the plan` : t.root ? 'a resource you have' : `${t.level} step${t.level > 1 ? 's' : ''} from your resources`}</span></div>
-    ${recipesHTML(item, rate)}${usedInHTML(item)}${goalBox(item)}`;
+    ${recipesHTML(item, rateOf(item))}${elsewhereHTML(item)}${usedInHTML(item)}${goalBox(item)}`;
 }
 
 // A part you can't make yet: the alternates that get it from what you have,
@@ -390,22 +407,25 @@ function waitsOf(item) {
   if (!machineOn(r.machine)) out.push(`<div class="gn-w">🔒 Needs a <b>${esc(r.machine.replace(/_/g, ' '))}</b>${UNLOCKS.machines[r.machine] ? ` <span class="n-hint">(${esc(unlockName(UNLOCKS.machines[r.machine]))})</span>` : ''} <button class="bsm" data-mach="${r.machine}">Unlock it</button></div>`);
   return out;
 }
-function needsHTML(item, rate) {
-  rate = rate ?? ways(item)[0]?.[1].outputs[item] ?? 1;
-  const via = viaAlts(item);
+// How much of a part you can't make yet to bring in for: its goal, else one machine's
+const needRate = item => rateOf(item) || ways(item)[0]?.[1].outputs[item] || 1;
+function needsHTML(item) {
+  const via = viaAlts(item), rate = needRate(item);
   return `<div class="gp-h"><b>${esc(itemName(item))}</b><span class="n-hint">not yet</span></div>
     ${waitsOf(item).join('')}
     ${via ? `<div class="gn-via"><div>You can make it with what you have, with these alternates:</div>
       <ul>${Object.entries(via).map(([i, k]) => `<li>${esc(rname(RECIPES[k]))} <span class="n-hint">for ${esc(itemName(i))}${UNLOCKED_ALTS.has(k) ? '' : ' · 🔒 its hard drive'}</span></li>`).join('')}</ul>
       <button class="bsm act" data-via='${esc(JSON.stringify(via))}'>Use them</button></div>` : ''}
-    <label class="gn-rate">at <input data-f="need" inputmode="decimal" value="${+(+rate).toFixed(3)}"/> /min, bring in:</label>
+    <div class="gn-rate">For <b data-need>${num(rate)}</b>/min <span class="n-hint">(${rateOf(item) ? 'its goal' : 'one machine — set a goal below for more'})</span>, bring in:</div>
     <div class="gn-list"><p class="n-hint">Working it out…</p></div>
-    ${recipesHTML(item, rate)}
+    ${recipesHTML(item, rateOf(item))}
     <div class="gn-goal">${goalBox(item, +(+rate).toFixed(3))}</div>`;
 }
 let NEED_SEQ = 0;
-function loadNeeds(pop, item) {
-  const rate = evalExpr(pop.querySelector('[data-f="need"]')?.value || '') || 1, mine = ++NEED_SEQ;
+function loadNeeds(pop, item, rate = needRate(item)) {
+  const mine = ++NEED_SEQ;
+  const at = pop.querySelector('[data-need]');
+  if (at) at.textContent = num(rate);
   fetchNeeds(SC, item, rate).then(d => {
     if (mine !== NEED_SEQ || OPEN !== item) return;
     const list = pop.querySelector('.gn-list');
@@ -454,26 +474,19 @@ function wire(pop, item) {
     if (e.key === 'Enter') { e.preventDefault(); apply(); }
   }));
   pop.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); closeEditor(); } }));
-  // a recipe picked; the rate the recipes are shown at
+  // a recipe picked
   pop.querySelectorAll('[data-pick]').forEach(r => r.addEventListener('change', () => pick(item, r.dataset.pick)));
-  const rate = pop.querySelector('[data-f="rate"]');
-  const rerate = () => {
-    const v = evalExpr(rate.value);
-    if (!(v > 0)) return;
-    const t = T.tiles[item];
-    pop.innerHTML = t.ghost ? needsHTML(item, v) : editorHTML(item, v);
-    wire(pop, item); place(pop, t);
-    if (t.ghost) loadNeeds(pop, item);
-  };
-  rate?.addEventListener('change', rerate);
-  rate?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); rerate(); } });
-  const need = pop.querySelector('[data-f="need"]');
-  need?.addEventListener('change', () => {
-    const v = evalExpr(need.value);
-    if (!(v > 0)) return;
-    pop.innerHTML = needsHTML(item, v); wire(pop, item); loadNeeds(pop, item);
-  });
-  need?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); need.dispatchEvent(new Event('change')); } });
+  // a part not made yet: what to bring in follows the amount typed in its goal
+  if (T.tiles[item]?.ghost) ['must', 'min'].forEach(k => pop.querySelector(`[data-f="${k}"]`)?.addEventListener('change', () => {
+    const v = val(k);
+    if (v > 0) loadNeeds(pop, item, v);
+  }));
+  // from another factory (the popover's own list; the needs list wires its own)
+  pop.querySelectorAll(':scope > .gn-src [data-bring]').forEach(b => b.addEventListener('click', () => {
+    bringIn(b.dataset.bring, +b.dataset.rate, b.dataset.fac);
+    document.dispatchEvent(new Event('supply-changed'));
+    after(item);
+  }));
   pop.querySelector('[data-via]')?.addEventListener('click', e => {
     Object.entries(JSON.parse(e.target.dataset.via)).forEach(([i, k]) => { picks()[i] = k; });
     document.dispatchEvent(new Event('goals-changed'));
@@ -529,9 +542,29 @@ function searchHits(q) {
 }
 const isSum = t => /[\d)]\s*[-+*/%]\s*[\d(.]|^\(/.test(t) && evalExpr(t) !== null;
 let HIT = 0;
+// "4 x 120 into 5 x 80 + 40 + 20 + 20": the splitters and mergers for it, drawn
+function drawSplit(q) {
+  const el = $('gt-split'), p = q && parseSplit(q, evalExpr);
+  el.style.display = p ? 'block' : 'none';
+  if (!p) return false;
+  const tier = PROGRESS.belt, cap = TRANSPORT.belts?.[tier] ?? Infinity;
+  const d = design(p.ins, p.outs, { cap });
+  const list = v => { const c = new Map(); v.forEach(r => c.set(r, (c.get(r) || 0) + 1)); return [...c].map(([r, n]) => (n > 1 ? `${n} × ` : '') + num(r)).join(' + '); };
+  if (d.error) { el.innerHTML = `<div class="sp-h">${list(p.ins)} → ${list(p.outs)}</div><p class="n-warn">${esc(d.error)}</p>`; return true; }
+  const notes = [
+    d.merged && 'The belts merge into one first.',
+    d.loop > 1e-6 && `${num(d.loop)}/min loops back into the belt it came from (dashed).`,
+    d.rest > 1e-6 && `↯ ${num(d.rest)}/min left over — into a sink or storage, so nothing backs up.`,
+    d.over && `Red: over a ${tier} belt (${num(cap)}/min).`,
+    d.splitters && 'Exact while every output flows freely.',
+  ].filter(Boolean);
+  el.innerHTML = `<div class="sp-h">${list(p.ins)} → ${list(p.outs)}<span><b>${d.splitters}</b> splitter${d.splitters === 1 ? '' : 's'} · <b>${d.mergers}</b> merger${d.mergers === 1 ? '' : 's'}</span></div>
+    <div class="sp-d">${splitSVG(d.graph, num)}</div>${notes.map(n => `<p class="n-hint">${n}</p>`).join('')}`;
+  return true;
+}
 function drawSearch() {
   const q = $('gt-q').value.trim(), out = $('gt-hits');
-  if (!q) { out.style.display = 'none'; return; }
+  if (drawSplit(q) || !q) { out.style.display = 'none'; return; }
   out.style.display = 'block';
   if (isSum(q)) { out.innerHTML = `<div class="gt-sum">${esc(q)} = <b>${num(evalExpr(q))}</b></div>`; return; }
   const hits = searchHits(q);
@@ -581,7 +614,7 @@ export function initTree() {
   q.addEventListener('focus', drawSearch);
 
   box.addEventListener('wheel', e => {
-    if (e.target.closest('#gt-pop, #gt-hits') || !VIEW) return;
+    if (e.target.closest('#gt-pop, #gt-hits, #gt-split') || !VIEW) return;
     e.preventDefault();
     const r = box.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
     const d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
@@ -593,7 +626,7 @@ export function initTree() {
   }, { passive: false });
   let drag = null;
   box.addEventListener('mousedown', e => {
-    if (e.button !== 0 || e.target.closest('.gt-t, #gt-pop, .gt-bar')) return;
+    if (e.button !== 0 || e.target.closest('.gt-t, #gt-pop, .gt-bar, .gt-find')) return;
     drag = { x: e.clientX, y: e.clientY, ox: VIEW?.ox, oy: VIEW?.oy, moved: false };
   });
   window.addEventListener('mousemove', e => {

@@ -602,8 +602,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .gt-s.pl { color: #34d399; font-weight: 600; }
 .gp-sec { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--t3); margin: 10px 0 5px; display: flex; align-items: center; gap: 8px; }
 .gp-sec:first-of-type { margin-top: 2px; }
-.gp-rate { margin-left: auto; text-transform: none; letter-spacing: 0; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--t2); }
-.gp-rate input { width: 64px; font-family: var(--mono); text-align: right; padding: 2px 4px; }
 .gp-r { border: 1px solid var(--b); border-radius: var(--rsm); padding: 5px 7px; margin-bottom: 4px; background: var(--p3); }
 .gp-r.on { border-color: var(--acc); background: var(--acc-glow); }
 .gp-r.dim { opacity: .6; }
@@ -624,6 +622,23 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .gt-hit.on, .gt-hit:hover { background: var(--acc-glow); }
 .gt-sum { padding: 8px 10px; font-family: var(--mono); font-size: 13px; color: var(--t2); }
 .gt-sum b { color: var(--acc); font-size: 16px; }
+#gt-split { display: none; margin-top: 3px; width: max-content; min-width: 260px; max-width: min(960px, calc(100vw - 440px)); max-height: 72vh; overflow: auto;
+  background: var(--p2); border: 1px solid var(--b2); border-radius: var(--rsm); box-shadow: 0 10px 30px rgba(0,0,0,.5); padding: 8px 10px; }
+#gt-split .n-hint, #gt-split .n-warn { margin: 2px 0 0; }
+.sp-h { display: flex; gap: 12px; justify-content: space-between; font-family: var(--mono); font-size: 12px; color: var(--t2); margin-bottom: 4px; }
+.sp-h b { color: var(--acc); }
+.sp-d { overflow: auto; }
+.sp-svg { display: block; }
+.sp-e { fill: none; stroke: #5aa0e8; stroke-width: 2; opacity: .8; }
+.sp-e.back { stroke-dasharray: 5 4; stroke: #8f7cf0; }
+.sp-e.over { stroke: var(--red, #e5484d); }
+.sp-r { font: 9.5px var(--mono); fill: var(--t2); paint-order: stroke; stroke: var(--p2); stroke-width: 3px; }
+.sp-r.over { fill: var(--red, #e5484d); stroke: var(--p2); }
+.sp-b { fill: var(--p3); stroke: var(--b2); }
+.sp-b.in { stroke: #5aa0e8; } .sp-b.out { stroke: #7bc96f; } .sp-b.rest { stroke: #e6a23c; stroke-dasharray: 3 3; }
+.sp-bt { font: 600 11px var(--mono); fill: var(--t1); }
+.sp-n.split { fill: #e6a23c33; stroke: #e6a23c; } .sp-n.merge { fill: #4fb3a933; stroke: #4fb3a9; }
+.sp-nt { font: 700 10px var(--mono); fill: var(--t1); pointer-events: none; }
 .gt-bar { position: absolute; top: 10px; right: 12px; background: var(--bg); padding: 2px 4px; border-radius: 6px; display: flex; align-items: center; gap: 10px; z-index: 2; cursor: default; }
 .gt-nx { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--t2); cursor: pointer; }
 .gt-nx input { width: auto; margin: 0; }
@@ -637,7 +652,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .gp-g input[type=checkbox] { width: auto; margin: 0; accent-color: var(--acc); }
 .gp-f { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
 .gp-f label, .gp-st, .gn-rate { display: flex; align-items: center; gap: 6px; color: var(--t2); font-size: 11.5px; }
-.gp-f input, .gp-st input, .gn-rate input { width: 90px; font-family: var(--mono); text-align: right; }
+.gp-f input, .gp-st input { width: 90px; font-family: var(--mono); text-align: right; }
 .gp-st { flex-wrap: wrap; padding-top: 6px; border-top: 1px solid var(--b); }
 .gp-b { display: flex; gap: 5px; margin-top: 10px; }
 .gn-rate { margin-bottom: 8px; }
@@ -762,7 +777,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bb-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; font-size: 11px; color: var(--t3);
   border-bottom: 1px solid var(--b); flex-wrap: wrap; }
 .bb-bar select { font-size: 11px; width: auto; padding: 2px 6px; }
-.bb-bar input#bb-find-q { font-size: 12px; padding: 4px 8px; }
+.bb-bar input#bb-items-q { font-size: 12px; padding: 4px 8px; }
 #bb-board { position: relative; flex: 1; overflow: auto; user-select: none; background:
   radial-gradient(circle, var(--b) 1px, transparent 1px) 0 0 / 22px 22px; }
 #bb-links { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
@@ -808,8 +823,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bb-tab td { padding: 1px 0; }
 .bb-tab td + td, .bb-tab th + th { text-align: right; font-family: var(--mono); padding-left: 6px; }
 .bb-ok { color: var(--ok); }
-.bb-out-row label { display: flex; align-items: center; gap: 3px; font-size: 10px; white-space: nowrap; }
-.bb-out-row label input { width: auto; }
 #bb-sankey { flex: 1; overflow: auto; padding: 14px; }
 #bb-sankey svg text { font-size: 11px; fill: var(--t2); }
 #bb-sankey .sk-node { fill: var(--p3); stroke: var(--b2); }
@@ -820,25 +833,16 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 #bb-sankey .sk-link:hover { fill-opacity: .8; }
 #bb-sankey .sk-lab { font-size: 10px; fill: var(--t); pointer-events: none; paint-order: stroke; stroke: #0c0e13; stroke-width: 3px; }
 #bb-power { overflow: auto; padding: 14px; font-size: 12px; color: var(--t2); }
-#bb-find-out { overflow: auto; padding: 14px; font-size: 12px; color: var(--t2); flex: 1; }
+#bb-items-out { overflow: auto; padding: 14px; font-size: 12px; color: var(--t2); flex: 1; }
 .fd-item { margin-bottom: 16px; }
 .fd-item h4 { margin: 0 0 4px; font-size: 13px; color: var(--t); font-weight: 600; }
-#bb-storage { overflow: auto; padding: 14px; font-size: 12px; color: var(--t2); }
 .st-tab { border-collapse: collapse; width: 100%; max-width: 820px; }
 .st-tab th { text-align: left; font-weight: 400; color: var(--t3); font-size: 11px; padding: 4px 8px; border-bottom: 1px solid var(--b2); }
 .st-tab td { padding: 5px 8px; border-bottom: 1px solid var(--b); vertical-align: top; }
 .st-tab td.num { font-family: var(--mono); text-align: right; color: var(--t); white-space: nowrap; }
 .st-bar { height: 6px; border-radius: 3px; background: var(--ok); opacity: .7; margin-top: 3px; }
 .st-by { font-size: 11px; color: var(--t3); }
-#bb-splits { overflow: auto; padding: 14px; gap: 14px; flex-direction: row; align-items: flex-start; }
-.bb-form { width: 240px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; font-size: 11px; color: var(--t3); }
-.bb-out-row { display: flex; gap: 4px; }
-.bb-out-row input { flex: 1; }
-#bb-split-result { flex: 1; display: flex; flex-direction: column; gap: 10px; }
-.bb-design { border: 1px solid var(--b2); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--t2); line-height: 1.6; }
-.bb-design-t { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--acc); margin-bottom: 4px; }
-.bb-design ol, .bb-design ul { margin: 6px 0 0 18px; padding: 0; }
-.bb-sum { font-family: var(--mono); font-size: 11px; color: var(--t3); }
+.st-in { width: 64px; text-align: right; font-family: var(--mono); font-size: 11px; padding: 1px 4px; }
 .bb-hint { font-size: 11px; color: var(--t3); }
 .bb-warn { color: var(--warn); }
 
@@ -924,13 +928,13 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
     <span id="tb-fac-name">New Factory</span> <span class="tb-caret">▾</span>
   </button>
   <div id="tb-rl-wrap">
-    <button id="tb-rl-open" title="Find a part on the goal tree — its recipes, what it's used in, its goals; sums work  (Ctrl+Q)">
+    <button id="tb-rl-open" title="Find a part on the goal tree — its recipes, what it's used in, its goals; sums; belts: 4 x 120 into 480  (Ctrl+Q)">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       <span>Find a part</span><kbd>Ctrl Q</kbd>
     </button>
   </div>
   <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-    <button id="btn-goto" class="tb-action-btn" title="Go to a system, a factory, an action or who makes an item  (Ctrl+K)">
+    <button id="btn-goto" class="tb-action-btn" title="Go to a system, a factory, an action or an item across your factories  (Ctrl+K)">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
       Go to <kbd>Ctrl K</kbd>
     </button>
@@ -1078,8 +1082,9 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
   <canvas id="gc"></canvas>
   <div id="gt">
     <svg id="gt-e"></svg><div id="gt-c"></div>
-    <div class="gt-find"><input id="gt-q" type="text" placeholder="Find a part — or a sum" autocomplete="off" spellcheck="false"/>
-      <div id="gt-hits"></div></div>
+    <div class="gt-find"><input id="gt-q" type="text" placeholder="A part, a sum, or 4 x 120 into 480" autocomplete="off" spellcheck="false"
+        title="A part: its recipes and goals. A sum: worked out. Belts — 4 x 120 into 5 x 80 + 40 + 20 + 20 — the splitters and mergers for it"/>
+      <div id="gt-hits"></div><div id="gt-split"></div></div>
     <div class="gt-bar">
       <span class="gt-count n-hint"></span>
       <label class="gt-nx" title="Faded: what you can't make yet — other resources, milestones not done. Click one for what it needs"><input type="checkbox" id="gt-next"/> What's next</label>
@@ -1150,11 +1155,9 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       <div class="seg" id="bb-tabs">
         <button type="button" data-tab="factories" class="on">Between factories</button>
         <button type="button" data-tab="flows">Flows</button>
-        <button type="button" data-tab="storage">Storage</button>
         <button type="button" data-tab="power">Power</button>
         <button type="button" data-tab="map">Map</button>
-        <button type="button" data-tab="find">Who makes</button>
-        <button type="button" data-tab="splits">Inside a factory</button>
+        <button type="button" data-tab="items">Items</button>
       </div>
       <button id="btn-close-bb" class="wmc" style="margin-left:auto">&times;</button>
     </div>
@@ -1180,23 +1183,13 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       </div>
       <div id="bb-sankey"></div>
     </div>
-    <div id="bb-storage" class="bb-pane" style="display:none"></div>
     <div id="bb-power" class="bb-pane" style="display:none"></div>
     <div id="bb-map" class="bb-pane" style="display:none"></div>
-    <div id="bb-find" class="bb-pane" style="display:none">
-      <div class="bb-bar"><input type="text" id="bb-find-q" list="bb-find-items" placeholder="An item — e.g. Plastic" autocomplete="off" style="width:240px"/>
-        <datalist id="bb-find-items"></datalist>
-        <span>Every factory that makes it, what others take and store, and what's still free to import</span></div>
-      <div id="bb-find-out"></div>
-    </div>
-    <div id="bb-splits" class="bb-pane" style="display:none">
-      <div class="bb-form">
-        Incoming /min <input type="number" id="bb-split-in" min="0" step="any" placeholder="e.g. 400"/>
-        Outputs /min <div id="bb-split-outs" style="display:flex;flex-direction:column;gap:4px"></div>
-        <button id="bb-split-add" class="bsm">+ Add output</button>
-        <span>Belt tier for the checks is the one chosen on the factories tab.</span>
-      </div>
-      <div id="bb-split-result"></div>
+    <div id="bb-items" class="bb-pane" style="display:none">
+      <div class="bb-bar"><input type="text" id="bb-items-q" list="bb-items-list" placeholder="An item — e.g. Plastic" autocomplete="off" style="width:240px"/>
+        <datalist id="bb-items-list"></datalist>
+        <span>Who makes it, who takes it, what's stored and what's free · type a stored amount to change it</span></div>
+      <div id="bb-items-out"></div>
     </div>
   </div>
 </div>

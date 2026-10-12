@@ -126,6 +126,7 @@ def _build_boot_bytes():
         "max_shards":   supply.MAX_SHARDS,
         "progress":     _progress(),
         "unlocks":      supply.UNLOCKS,
+        "transport":    logistics.META["transport"],
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
@@ -765,6 +766,49 @@ def _hold_claims(key: str, data: dict) -> list:
     if data.get("resource_nodes") is not None or data.get("from_factories") is not None:
         data["available_resources"] = supply.available(data)
     return cut
+
+def _set_stored(data: dict, item: str, rate: float) -> None:
+    """A factory's To storage of `item` set to `rate` (0: none), in place."""
+    rows = [t for t in data.get("to_storage") or [] if t.get("item") != item]
+    if rate > 1e-6:
+        rows.append({"item": item, "rate": round(rate, 6)})
+    data["to_storage"] = rows
+
+def _write_factory(key: str, data: dict) -> None:
+    _history_keep(key, data)
+    _write_yaml(SCENARIOS_DIR / f"{key}.yaml", data)
+    for k in [k for k in _scenario_load_cache if k[0] == key]:
+        del _scenario_load_cache[k]
+
+def _draw_storage(key: str, data: dict) -> list:
+    """Imports beyond what their source has free come out of its storage: the
+    source's To storage drops by the difference, and it's saved so — what it
+    makes doesn't change, it goes to this factory instead of storage.
+    Returns [{item, factory, rate}] moved."""
+    want: dict = {}
+    for r in data.get("from_factories") or []:
+        src, it = r.get("factory"), r.get("item")
+        if src and it and src != key:
+            want[(src, it)] = want.get((src, it), 0.0) + max(0.0, float(r.get("rate") or 0))
+    if not want:
+        return []
+    out = _factory_outputs()
+    made = {f["key"]: f["made"] for f in out["factories"]}
+    moved = []
+    for (src, it), asked in want.items():
+        if it not in made.get(src, {}):
+            continue
+        by = out["claims"].get(src, {}).get(it, {})
+        free = made[src][it] - sum(v for k, v in by.items() if k != key)
+        take = min(asked - max(0.0, free), by.get(STORAGE, 0.0))
+        p = SCENARIOS_DIR / f"{src}.yaml"
+        if take > 1e-6 and p.exists():
+            sd = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            stored = sum(float(t.get("rate") or 0) for t in sd.get("to_storage") or [] if t.get("item") == it)
+            _set_stored(sd, it, stored - take)
+            _write_factory(src, sd)
+            moved.append({"item": it, "factory": src, "factory_name": sd.get("name", src), "rate": round(take, 6)})
+    return moved
 
 def _rename(old: str, new: str, new_name: str) -> None:
     """Saving a factory under a new name: its links follow it — other factories'
@@ -1880,6 +1924,28 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"restored": vid})
             return
 
+        if path == "/api/storage":
+            # one factory's To storage of an item, changed from elsewhere (the Blackboard)
+            body = self._read_obj()
+            key, item = body.get("key"), body.get("item")
+            if not isinstance(key, str) or not _valid_key(key) or not isinstance(item, str) or item not in ALL_ITEMS:
+                raise _BadRequest("Bad factory or item")
+            p = SCENARIOS_DIR / f"{key}.yaml"
+            if not p.exists():
+                raise _BadRequest("No such factory")
+            rate = _num(body.get("rate"), 0.0, lo=0.0)
+            with _save_lock:
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                out = _factory_outputs()
+                made = next((f["made"] for f in out["factories"] if f["key"] == key), {})
+                if item in made:      # no more than it has free of what it makes
+                    by = out["claims"].get(key, {}).get(item, {})
+                    rate = min(rate, max(0.0, made[item] - sum(v for k, v in by.items() if k not in (key, STORAGE))))
+                _set_stored(data, item, rate)
+                _write_factory(key, data)
+            self._json(200, {"key": key, "item": item, "rate": round(rate, 6)})
+            return
+
         if path == "/api/backup":
             with _save_lock:
                 f = _backup_make()
@@ -2067,6 +2133,7 @@ class Handler(BaseHTTPRequestHandler):
             if renamed is not None and not _valid_key(str(renamed)):
                 renamed = None
             with _save_lock:
+                moved = _draw_storage(name, data)
                 cut = _hold_claims(name, data)
                 _history_keep(name, data)
                 _write_yaml(p, data)
@@ -2074,7 +2141,7 @@ class Handler(BaseHTTPRequestHandler):
                     del _scenario_load_cache[k]
                 if renamed and renamed != name and self._scenario_path(renamed).exists():
                     _rename(renamed, name, data.get("name", name))
-            self._json(200, {"status": "saved", "key": name, "cut": cut,
+            self._json(200, {"status": "saved", "key": name, "cut": cut, "moved": moved,
                              **{k: data.get(k) for k in ("from_factories", "to_storage", "resource_nodes",
                                                          "power_shards_available", "somersloops_available")}})
             return

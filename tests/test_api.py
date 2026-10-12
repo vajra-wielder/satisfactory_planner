@@ -42,6 +42,17 @@ class API(_Temp):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"null")
 
+    def test_storage_set_from_elsewhere(self):
+        self.save("depot", to_storage=[{"item": "Iron_Plate", "rate": 5}, {"item": "Wire", "rate": 3}])
+        code, d = self.call("POST", "/api/storage", {"key": "depot", "item": "Iron_Plate", "rate": 9})
+        self.assertEqual((code, d["rate"]), (200, 9))
+        got = self.call("GET", "/api/scenarios/depot")[1]["to_storage"]
+        self.assertEqual(sorted((t["item"], t["rate"]) for t in got), [("Iron_Plate", 9), ("Wire", 3)])
+        self.call("POST", "/api/storage", {"key": "depot", "item": "Wire", "rate": 0})
+        self.assertEqual([t["item"] for t in self.call("GET", "/api/scenarios/depot")[1]["to_storage"]], ["Iron_Plate"])
+        for bad in ({"key": "../x", "item": "Wire"}, {"key": "nope", "item": "Wire"}, {"key": "depot", "item": "Nope"}):
+            self.assertEqual(self.call("POST", "/api/storage", bad)[0], 400)
+
     def test_keys_stay_in_their_folder(self):
         for method, path in (("GET", "/api/scenarios/../../x"), ("POST", "/api/scenarios/..%2Fevil"),
                              ("DELETE", "/api/scenarios/../x"), ("GET", "/api/history/../x"),

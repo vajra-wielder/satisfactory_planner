@@ -125,8 +125,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - ⟳ on a tile cycles its alternates (1/4 … 4/4, then none): the pick is
   offered to the solver — it uses it if it's better — and saved with the
   factory. Its popover lists every recipe that makes it (pick one there too)
-  at a rate — machines and parts, a part clicked goes to it — and what it's
-  used in
+  at the plan's rate, else its goal's, else one machine each — machines and
+  parts, a part clicked goes to it — what it's used in, and your other
+  factories with some free (or stored): Import
 - After a solve the tree shows the plan: the rate each part's made at, the
   recipe the solver chose (✓ plan), the plan's links lit; parts it doesn't
   make fade. Alternates worth unlocking show as ✨ on the parts they'd change —
@@ -139,7 +140,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - What's next adds, faded, what you can't make yet — from resources you
   don't have, or a milestone not done. Hover one to see it; it stays out of
   the fit. Click it: the alternates that get it from what you have ("Use
-  them"), and what to bring in at a rate you pick — the solver's answer: the
+  them"), and what to bring in for the amount in its goal (one machine's
+  until you set one) — the solver's answer: the
   parts you can't make and resources you're short of, never what's only found
   — with where to get each (a saved factory with some left, nodes on the map,
   or a fixed supply), and the milestone or machine it waits on ("I've done it"). Accept one and it's in your
@@ -179,10 +181,10 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 
 ### Getting around
 - Go to anything (Ctrl+K or /): a system, a saved factory, an action (solve,
-  save, back up, plan the network…), or who makes an item
+  save, back up, plan the network…), or an item across your factories
 - The systems in a ring — the planner, then each Blackboard tab: Alt+← / Alt+→
   (or Ctrl+PgUp / PgDn, or the wheel over the top bar or the Blackboard's
-  tabs) steps through them, Alt+1 … Alt+8 jumps to one; a strip shows where
+  tabs) steps through them, Alt+1 … Alt+6 jumps to one; a strip shows where
   you are
 - Alt+↑ / Alt+↓ opens the previous / next saved factory
 - 1 / 2 / 3 / 4 the right panel's tabs, Ctrl+O your factories, Ctrl+U unlocks,
@@ -208,7 +210,6 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Flows: a Sankey of everything moving between factories and into storage —
   as set in each factory, or as the network plan would send it; one band per
   pair of factories, its items as stripes inside it.
-- Storage: every item sent to storage, per minute and per hour, by factory.
 - Power: what each factory's machines and extractors draw and its generators
   make, the power grid's geothermal, the grid's balance — on average and with
   every geyser at its low (½×) and its high (1½×) — and which factories their
@@ -217,15 +218,17 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   still free. ⚡ Geothermal: click geysers to put a geothermal generator on
   them for the power grid (100 / 200 / 400 MW by purity), or add the ones your
   save has. Geysers belong to the grid, not to a factory.
-- Who makes: type an item — every factory that makes it, what it sends out,
-  who takes it, what's stored, what's still free to import, and what's made
-  and used up inside a factory.
+- Items: with nothing typed, everything stored or moved between factories;
+  type an item — every factory that makes it, what it sends out, who takes
+  it, what's stored, what's still free to import, and what's made and used up
+  inside a factory. Change a stored amount there and that factory is saved
+  with it (the open one follows).
+- Imports and storage share one pool: importing more than a factory has free
+  takes the rest out of its storage — saving moves it, and that factory is
+  saved with less stored. What it makes doesn't change; it goes to you instead.
 - Apply a network plan: what it sends between factories becomes their imports,
   the alternates it uses are switched on, then they're re-solved in order. A
   factory's own goals are always made in it.
-- Inside a factory: belt splits with the fewest structures — a manifold for
-  outputs that feed machines, an exact splitter tree with loop-back only where
-  an output needs an exact rate.
 
 ### Recipe Management
 - Recipe data checked against the 1.0 game files (rates, machines, build costs,
@@ -233,8 +236,14 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Enable/disable alternate recipes
 - Enable/disable machine tiers
 - Find a part (Ctrl+Q, or the box in the top bar): it opens on the goal tree
-  with its popover — every recipe that makes it at a rate, what it's used in.
+  with its popover — every recipe that makes it, what it's used in.
   Sums work: 240*2/3 is worked out
+- Belts in the same box: `4 x 120 into 5 x 80 + 40 + 20 + 20` draws the
+  splitters and mergers that give every output exactly its rate — each belt
+  feeds a few outputs (the ways of sharing them out are searched, and merging
+  them all first), the fewest structures win; spare streams loop back
+  (dashed), what's left over leaves on its own belt, and a belt over your tier
+  shows red. `into`, `to`, `->` or `>`; `n x rate` for n belts; sums work
 - Scenario-based planning
 
 ### Interactive Graph

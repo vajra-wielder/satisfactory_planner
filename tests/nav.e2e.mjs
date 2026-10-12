@@ -52,19 +52,19 @@ try {
     await page.keyboard.press('Alt+ArrowRight'); await sleep(300);
     assert.equal(await bbTab(), 'map');
     await page.keyboard.press('Alt+ArrowLeft'); await page.keyboard.press('Alt+ArrowLeft'); await sleep(300);
-    assert.equal(await bbTab(), 'storage');
-    assert.match(await page.locator('#nav-ring').innerText(), /Planner[\s\S]*Storage[\s\S]*Inside a factory/);
+    assert.equal(await bbTab(), 'flows');
+    assert.match(await page.locator('#nav-ring').innerText(), /Planner[\s\S]*Flows[\s\S]*Items/);
     await page.keyboard.press('Alt+1'); await sleep(300);
     assert.equal(await bbOpen(), false);
     await page.keyboard.press('Alt+ArrowLeft'); await sleep(300);              // round the ring
-    assert.equal(await bbTab(), 'splits');
+    assert.equal(await bbTab(), 'items');
   });
   await step('the wheel over the Blackboard\'s tabs moves along them', async () => {
     await page.keyboard.press('Alt+3'); await sleep(300);
     const b = await page.locator('#bb-tabs').boundingBox();
     await page.mouse.move(b.x + 20, b.y + b.height / 2);
     await page.mouse.wheel(0, 120); await sleep(300);
-    assert.equal(await bbTab(), 'storage');
+    assert.equal(await bbTab(), 'power');
     await page.mouse.wheel(0, -120); await sleep(300);
     assert.equal(await bbTab(), 'flows');
   });
@@ -80,29 +80,33 @@ try {
     const b = await page.inputValue('#sc-name');
     assert.ok(['Alpha', 'Bravo', 'Charlie'].includes(a) && ['Alpha', 'Bravo', 'Charlie'].includes(b) && a !== b, `${a} then ${b}`);
   });
-  await step('the palette opens a factory and finds who makes an item', async () => {
+  await step('the palette opens a factory and an item across the factories', async () => {
     await page.keyboard.press('Control+k'); await page.keyboard.type('charlie'); await page.keyboard.press('Enter'); await sleep(700);
     assert.equal(await page.inputValue('#sc-name'), 'Charlie');
-    await page.click('#btn-goto'); await page.keyboard.type('who iron plate'); await sleep(150);
+    await page.click('#btn-goto'); await page.keyboard.type('iron plate across'); await sleep(150);
     await page.keyboard.press('Enter'); await sleep(800);
-    assert.equal(await bbTab(), 'find');
-    assert.equal(await page.inputValue('#bb-find-q'), 'Iron Plate');
+    assert.equal(await bbTab(), 'items');
+    assert.equal(await page.inputValue('#bb-items-q'), 'Iron Plate');
     await page.keyboard.press('Escape');
   });
-  await step('Ctrl+Q: find a part on the tree — its recipes at a rate, a part to go to; sums; Esc', async () => {
+  await step('Ctrl+Q: find a part on the tree — its recipes, a part to go to; sums; belts; Esc', async () => {
     await page.keyboard.press('Control+q'); await page.waitForSelector('#gt.show');
     assert.equal(await page.evaluate(() => document.activeElement.id), 'gt-q');
     await page.keyboard.type('motor'); await sleep(150);
     assert.ok(await page.locator('#gt-hits .gt-hit').count() >= 2, 'every part with the word');
     await page.keyboard.press('Enter'); await page.waitForSelector('#gt-pop .gp-r');
     assert.match(await page.locator('#gt-pop .gp-h').innerText(), /^Motor/);
-    await page.fill('#gt-pop [data-f="rate"]', '5*2'); await page.press('#gt-pop [data-f="rate"]', 'Enter'); await sleep(200);
     const motor = page.locator('#gt-pop .gp-r').filter({ has: page.locator('.rl-n', { hasText: /^Motor$/ }) }).first();
-    assert.match(await motor.innerText(), /×2[\s\S]*Rotor\s+20/);
+    assert.match(await motor.innerText(), /5\/min[\s\S]*Rotor\s+10/, 'one machine each, no goal yet');
     await motor.locator('[data-go="Rotor"]').click(); await sleep(250);
     assert.match(await page.locator('#gt-pop .gp-h').innerText(), /^Rotor/, 'a part on a card goes to it');
     await page.click('#gt-q'); await page.keyboard.type('240*2/3'); await sleep(150);
     assert.match(await page.locator('#gt-hits').innerText(), /=\s*160/);
+    await page.fill('#gt-q', '4 x 120 into 5 x 80 + 40 + 20 + 20'); await sleep(200);
+    assert.ok(await page.locator('#gt-split svg .sp-n').count() > 0, 'the splitters and mergers, drawn');
+    assert.match(await page.locator('#gt-split .sp-h').innerText(), /4 × 120 → 5 × 80 \+ 40 \+ 2 × 20[\s\S]*splitter/);
+    await page.fill('#gt-q', '100 into 60 + 50'); await sleep(150);
+    assert.match(await page.locator('#gt-split').innerText(), /only 100\/min in/);
     await page.keyboard.press('Escape'); await page.mouse.click(600, 500); await sleep(150);
     await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await sleep(150);
     assert.equal(await page.locator('#gt.show').count(), 0);

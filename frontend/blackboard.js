@@ -10,16 +10,16 @@
  * factory draws, and what the leftovers could still make (network.py).
  * Clicking a factory's name opens it.
  *
- * Inside a factory: split one belt — a manifold where the outputs feed
- * machines, a balancer only where an exact rate is needed (splits.js).
+ * Items: every item across the factories — who makes it, who takes it,
+ * what's stored (change it here, for any factory) and what's still free.
+ * (Splitting belts inside a factory is the find box's: "480 into 3 x 160".)
  */
 
 import { itemName, RECIPES, PROGRESS } from './state.js';
-import { saveProgress, fetchFactoryOutputs } from './api.js';
+import { saveProgress, fetchFactoryOutputs, setStored } from './api.js';
 import { mountMapView, loadMap, mapNode } from './map-picker.js';
 import { onChain, chainHTML } from './chain.js';
 import { bundle, bandStripes, bandScale, sankeyLayout, itemColor as colorOf } from './bundles.js';
-import { recommend, tierFor } from './splits.js';
 
 let DATA = null;          // { factories, fluids, transport }
 let LAYOUT = { positions: {}, routes: [], belt: 'Mk5', pipe: 'Mk2' };
@@ -42,7 +42,7 @@ export function initBlackboard({ onOpenFactory: open }) {
   document.querySelectorAll('#bb-tabs button').forEach(b =>
     b.addEventListener('click', () => showTab(b.dataset.tab)));
   // Belt and pipe tiers are unlocked once, for every factory
-  $('bb-belt').addEventListener('change', e => { LAYOUT.belt = PROGRESS.belt = e.target.value; saveProgress({ belt: PROGRESS.belt }); NET = null; renderSplit(); });
+  $('bb-belt').addEventListener('change', e => { LAYOUT.belt = PROGRESS.belt = e.target.value; saveProgress({ belt: PROGRESS.belt }); NET = null; });
   $('bb-pipe').addEventListener('change', e => { LAYOUT.pipe = PROGRESS.pipe = e.target.value; saveProgress({ pipe: PROGRESS.pipe }); NET = null; });
   $('bb-plan').addEventListener('click', planNetwork);
   document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
@@ -50,10 +50,7 @@ export function initBlackboard({ onOpenFactory: open }) {
     document.querySelectorAll('#bb-flow-src button').forEach(x => x.classList.toggle('on', x === b));
     renderFlows();
   }));
-  $('bb-split-in').addEventListener('input', renderSplit);
-  $('bb-split-add').addEventListener('click', () => { addOutputRow('', true); renderSplit(); });
-  addOutputRow('', false);
-  addOutputRow('', true);
+  $('bb-items-q').addEventListener('input', renderItems);
   window.addEventListener('resize', () => { if (isOpen()) drawRoutes(); });
 }
 
@@ -78,8 +75,7 @@ export function openBlackboard() {
     fillTierSelect('bb-belt', d.transport.belts, LAYOUT.belt);
     fillTierSelect('bb-pipe', d.transport.pipes, LAYOUT.pipe);
     renderFactories();
-    renderSplit();
-    if (TAB !== 'factories' && TAB !== 'splits') showTab(TAB);
+    if (TAB !== 'factories') showTab(TAB);
   });
 }
 
@@ -87,26 +83,24 @@ export function closeBlackboard() { $('bb-modal').classList.remove('show'); }
 
 let TAB = 'factories';
 // The Blackboard's tabs, in order — the systems you move between (nav.js)
-export const BB_TABS = [['factories', 'Between factories'], ['flows', 'Flows'], ['storage', 'Storage'], ['power', 'Power'],
-  ['map', 'Map'], ['find', 'Who makes'], ['splits', 'Inside a factory']];
+export const BB_TABS = [['factories', 'Between factories'], ['flows', 'Flows'], ['power', 'Power'], ['map', 'Map'], ['items', 'Items']];
 export const blackboardOpen = () => isOpen();
 export const blackboardTab = () => TAB;
-/** Open the Blackboard on a tab (and, for Who makes, an item). */
+/** Open the Blackboard on a tab (and, for Items, an item). */
 export function goBlackboard(tab, item) {
-  if (item !== undefined) $('bb-find-q').value = itemName(item);
+  if (item !== undefined) $('bb-items-q').value = itemName(item);
   showTab(tab);
   if (!isOpen()) openBlackboard();
 }
 function showTab(tab) {
   TAB = tab;
   document.querySelectorAll('#bb-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  ['factories', 'flows', 'storage', 'power', 'map', 'find', 'splits'].forEach(t => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
+  BB_TABS.forEach(([t]) => { $('bb-' + t).style.display = t === tab ? '' : 'none'; });
   if (tab === 'factories') drawRoutes();
   if (tab === 'power') renderPower();
   if (tab === 'map') renderMapTab();
   if (tab === 'flows') renderFlows();
-  if (tab === 'storage') renderStorage();
-  if (tab === 'find') renderFind();
+  if (tab === 'items') renderItems();
 }
 
 function fillTierSelect(id, tiers, chosen) {
@@ -375,69 +369,6 @@ function renderNet() {
 }
 
 // ══════════════════════════════════════════════════════════
-// INSIDE A FACTORY — splits
-// ══════════════════════════════════════════════════════════
-
-function addOutputRow(v, machines) {
-  const row = document.createElement('div');
-  row.className = 'bb-out-row';
-  row.innerHTML = `<input type="number" min="0" step="any" placeholder="/min" value="${v}"/>
-    <label title="Feeds machines that take only their share — no balancing needed">
-      <input type="checkbox" ${machines ? 'checked' : ''}/> machines</label>
-    <button class="bsm" title="Remove">✕</button>`;
-  row.querySelectorAll('input').forEach(i => i.addEventListener('input', renderSplit));
-  row.querySelector('button').addEventListener('click', () => { row.remove(); renderSplit(); });
-  $('bb-split-outs').appendChild(row);
-}
-
-function renderSplit() {
-  const el = $('bb-split-result');
-  if (!el || !DATA) return;
-  const input = parseFloat($('bb-split-in').value);
-  const outs = [...document.querySelectorAll('#bb-split-outs .bb-out-row')].map(r => ({
-    rate: parseFloat(r.querySelector('input[type=number]').value),
-    machines: r.querySelector('input[type=checkbox]').checked,
-  })).filter(o => o.rate > 0);
-  if (!(input > 0) || !outs.length) {
-    el.innerHTML = '<p class="bb-hint">Enter the incoming rate and the outputs. Tick "machines" for outputs that feed machines (they take only their share); leave it off for ones that need an exact rate (a belt to elsewhere, a station, storage).</p>';
-    return;
-  }
-  const total = outs.reduce((s, o) => s + o.rate, 0);
-  if (total > input + 1e-9) {
-    el.innerHTML = `<p class="bb-warn">The outputs add up to ${fmt(total)}/min — more than the ${fmt(input)}/min coming in.</p>`;
-    return;
-  }
-  const belts = DATA.transport.belts, cap = belts[LAYOUT.belt];
-  const tierNote = r => r > cap + 1e-9
-    ? `<span class="bb-warn">over a ${LAYOUT.belt} belt (${cap}/min)</span>` : `fits ${tierFor(r, belts) || LAYOUT.belt}`;
-  const rec = recommend(input, outs);
-  if (!rec) { el.innerHTML = '<p class="bb-warn">No design for these numbers.</p>'; return; }
-  let h = `<div class="bb-design"><div class="bb-design-t">Recommended</div>
-    <div class="bb-sum">${rec.splitters} splitter${rec.splitters === 1 ? '' : 's'} · ${rec.mergers} merger${rec.mergers === 1 ? '' : 's'}</div><ol>`;
-  if (rec.manifold.length) {
-    h += `<li><b>Manifold</b> the machine-fed outputs off the ${fmt(input)}/min belt (${tierNote(input)}):
-      one splitter per branch (${rec.manifold.map(fmt).join(', ')}/min)${rec.exact || rec.mainLine > 1e-9 ? '' : ', the belt ending in the last'}.
-      Each branch backs up and takes only its share.</li>`;
-  }
-  if (rec.exact) {
-    const r = rec.exact;
-    h += `<li><b>Balance</b> the ${fmt(rec.mainLine)}/min left on the main line into exact shares:
-      ${r.loopback.streams ? `merge ${fmt(r.loopback.rate)}/min back into it first (the belt then carries <b>${fmt(r.inputLoad)}/min</b>, ${tierNote(r.inputLoad)});` : ''}
-      <ol>${r.steps.map(st => `<li>split ${st.count > 1 ? `${st.count} branches of` : 'the'} ${fmt(st.rate)}/min ${st.ways} ways → ${fmt(st.into)}/min each</li>`).join('')}</ol>
-      <ul>${r.outputs.map(o => `<li><b>${fmt(o.rate)}/min</b>${o.rest ? ' (left over)' : ''}: ${o.pieces.length > 1
-        ? `join ${o.pieces.length} branches (${o.pieces.map(p => fmt(p * r.perStream)).join(' + ')}) with ${o.mergers} merger${o.mergers > 1 ? 's' : ''}`
-        : 'one branch'}</li>`).join('')}
-      ${r.loopback.streams ? `<li><b>${fmt(r.loopback.rate)}/min</b> loops back into the input merger</li>` : ''}</ul></li>`;
-  } else if (rec.impractical) {
-    h += `<li class="bb-warn">The exact shares need too many streams for a practical balancer — round the rates.</li>`;
-  } else if (outs.some(o => !o.machines)) {
-    h += `<li>The ${fmt(rec.mainLine)}/min left on the main line is the exact output.</li>`;
-  }
-  h += `</ol>${rec.notes.map(n => `<p class="bb-hint">${n}</p>`).join('')}</div>`;
-  el.innerHTML = h;
-}
-
-// ══════════════════════════════════════════════════════════
 // FLOWS — a Sankey of what moves between factories
 // ══════════════════════════════════════════════════════════
 
@@ -503,84 +434,68 @@ function renderFlows() {
 }
 
 // ══════════════════════════════════════════════════════════
-// STORAGE — what every factory sends to storage, per item
+// ITEMS — every item across the factories: made, taken, stored, free
 // ══════════════════════════════════════════════════════════
 
-function renderStorage() {
-  const el = $('bb-storage');
+function renderItems() {
   if (!DATA) return;
-  const items = {};
-  DATA.factories.forEach(f => Object.entries(f.storage || {}).forEach(([it, r]) => {
-    if (!(r > 0)) return;
-    const made = f.exports?.[it] ?? f.surplus?.[it];
-    (items[it] = items[it] || { total: 0, by: [] }).total += r;
-    items[it].by.push({ key: f.key, name: f.name, rate: r, short: made != null && r > made + 1e-6 ? r - made : 0 });
-  }));
-  const rows = Object.entries(items).sort((a, b) => b[1].total - a[1].total);
-  if (!rows.length) {
-    el.innerHTML = '<p class="bb-hint">Nothing is stored yet — add "To storage" in a factory (under its Goals).</p>';
+  const all = new Set();
+  DATA.factories.forEach(f => [f.exports, f.surplus, f.inside, f.imports, f.storage].forEach(o => Object.keys(o || {}).forEach(it => all.add(it))));
+  $('bb-items-list').innerHTML = [...all].sort().map(it => `<option value="${itemName(it)}">`).join('');
+  const out = $('bb-items-out');
+  const want = $('bb-items-q').value.trim().toLowerCase().replace(/_/g, ' ');
+  // nothing typed: what moves — stored or taken by another factory, most first
+  const moved = it => DATA.factories.reduce((s, f) => s + Object.values(f.taken_by?.[it] || {}).reduce((a, r) => a + r, 0), 0);
+  const exact = want ? [...all].filter(it => itemName(it).toLowerCase() === want) : [];
+  const items = !want ? [...all].filter(it => moved(it) > 1e-6).sort((a, b) => moved(b) - moved(a))
+    : exact.length ? exact : [...all].filter(it => itemName(it).toLowerCase().includes(want)).sort().slice(0, 12);
+  if (!items.length) {
+    out.innerHTML = `<p class="bb-hint">${want ? 'No factory makes or takes that.' : 'Nothing stored or moved between factories yet — type an item to see who makes it.'}</p>`;
     return;
   }
-  const max = rows[0][1].total;
-  el.innerHTML = `<table class="st-tab"><tr><th>Item</th><th style="text-align:right">Stored /min</th><th style="text-align:right">per hour</th><th>From</th></tr>
-    ${rows.map(([it, x]) => `<tr><td>${itemName(it)}${FLUIDS.has(it) ? ' 💧' : ''}<div class="st-bar" style="width:${Math.max(4, 100 * x.total / max)}%"></div></td>
-      <td class="num">${fmt(x.total)}</td><td class="num">${fmt(x.total * 60)}</td>
-      <td class="st-by">${x.by.map(b => `<span class="bb-name" data-key="${b.key}" style="font-weight:400">${b.name}</span> ${fmt(b.rate)}${
-        b.short ? ` <span class="bb-warn">(makes ${fmt(b.rate - b.short)} now)</span>` : ''}`).join(' · ')}</td></tr>`).join('')}
-    </table>
-    <p class="bb-hint" style="margin-top:10px">Stored items are held out of every factory's "From factories" — solving a factory makes at least what it stores.</p>`;
-  el.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
-}
-
-// ══════════════════════════════════════════════════════════
-// WHO MAKES — an item across every factory
-// ══════════════════════════════════════════════════════════
-
-function renderFind() {
-  if (!DATA) return;
-  const q = $('bb-find-q');
-  const all = new Set();
-  DATA.factories.forEach(f => [f.exports, f.surplus, f.inside, f.imports].forEach(o => Object.keys(o || {}).forEach(it => all.add(it))));
-  $('bb-find-items').innerHTML = [...all].sort().map(it => `<option value="${itemName(it)}">`).join('');
-  if (!q.dataset.wired) {
-    q.dataset.wired = '1';
-    q.addEventListener('input', renderFind);
-  }
-  const out = $('bb-find-out');
-  const want = q.value.trim().toLowerCase().replace(/_/g, ' ');
-  if (!want) { out.innerHTML = '<p class="bb-hint">Type an item.</p>'; return; }
-  const exact = [...all].filter(it => itemName(it).toLowerCase() === want);
-  const items = exact.length ? exact : [...all].filter(it => itemName(it).toLowerCase().includes(want)).sort().slice(0, 12);
-  if (!items.length) { out.innerHTML = '<p class="bb-hint">No factory makes or takes that.</p>'; return; }
   const unit = it => (FLUIDS.has(it) ? ' m³' : '') + '/min';
+  const nm = k => `<span class="bb-name" data-key="${k}" style="font-weight:400">${factory(k)?.name || k}</span>`;
   out.innerHTML = items.map(it => {
     const makers = DATA.factories.map(f => {
       const made = it in (f.exports || {}) ? f.exports[it] : f.surplus?.[it];   // null: a goal not solved yet
       const by = f.taken_by?.[it] || {};
-      const stored = by['@storage'] || 0;
-      const others = Object.entries(by).filter(([k]) => k !== '@storage');
+      const stored = by[STORE] || 0;
+      const others = Object.entries(by).filter(([k]) => k !== STORE && k !== f.key);
       const taken = others.reduce((s, [, r]) => s + r, 0);
       return { f, made, stored, others, left: made == null ? null : made - taken - stored, inside: f.inside?.[it] || 0 };
-    }).filter(m => m.made !== undefined || m.inside > 0)
+    }).filter(m => m.made !== undefined || m.inside > 0 || m.stored > 0)
       .sort((a, b) => (b.left ?? -1) - (a.left ?? -1) || (b.made || 0) - (a.made || 0));
     const takers = DATA.factories.filter(f => (f.sources || []).some(s => s.item === it && !factory(s.factory)));
     const free = makers.reduce((s, m) => s + Math.max(0, m.left || 0), 0);
-    const nm = k => `<span class="bb-name" data-key="${k}" style="font-weight:400">${factory(k)?.name || k}</span>`;
+    const stored = makers.reduce((s, m) => s + m.stored, 0);
     const rows = makers.map(m => {
       const sends = m.made !== undefined;
       return `<tr><td>${nm(m.f.key)}${m.f.solved ? '' : ' <span class="bb-hint">(not solved)</span>'}</td>
         <td class="num">${sends ? (m.made == null ? 'max' : fmt(m.made)) : '—'}</td>
         <td class="st-by">${m.others.length ? m.others.map(([k, r]) => `${nm(k)} ${fmt(r)}`).join(' · ') : ''}</td>
-        <td class="num">${m.stored ? fmt(m.stored) : ''}</td>
+        <td class="num"><input class="st-in" data-sto="${m.f.key}" data-item="${it}" inputmode="decimal" value="${m.stored ? fmt(m.stored).replace(/,/g, '') : ''}" placeholder="0"
+          title="Sent to storage by ${m.f.name} — change it here; that factory is saved with it"/></td>
         <td class="num ${m.left != null && m.left < -1e-6 ? 'bb-warn' : m.left > 1e-6 ? 'bb-ok' : ''}">${m.left == null ? '—' : fmt(m.left)}</td>
         <td class="bb-hint">${m.inside > 0 && !sends ? `makes ${fmt(m.inside)} inside and uses it all` : m.inside > (m.made || 0) + 1e-6 ? `${fmt(m.inside)} made, ${fmt(m.inside - (m.made || 0))} used inside` : ''}</td></tr>`;
     }).join('');
-    return `<div class="fd-item"><h4>${itemName(it)}${FLUIDS.has(it) ? ' 💧' : ''} <span class="bb-hint" style="font-weight:400">· ${fmt(free)}${unit(it)} free to import</span></h4>
+    return `<div class="fd-item"><h4>${itemName(it)}${FLUIDS.has(it) ? ' 💧' : ''} <span class="bb-hint" style="font-weight:400">· ${fmt(free)}${unit(it)} free${stored ? ` · ${fmt(stored)} stored` : ''}</span></h4>
       ${makers.length ? `<table class="st-tab"><tr><th>Factory</th><th style="text-align:right">Sends out</th><th>Taken by</th>
         <th style="text-align:right">Stored</th><th style="text-align:right">Free</th><th></th></tr>${rows}</table>` : '<p class="bb-hint">No saved factory makes it.</p>'}
       ${takers.length ? `<p class="bb-hint">Also brought in from outside the planner by ${takers.map(f => nm(f.key)).join(', ')}.</p>` : ''}</div>`;
-  }).join('');
+  }).join('') + '<p class="bb-hint">Importing more than a factory has free takes the rest out of its storage. Stored items are held out of every import.</p>';
   out.querySelectorAll('.bb-name[data-key]').forEach(t => t.addEventListener('click', () => onOpenFactory(t.dataset.key)));
+  out.querySelectorAll('[data-sto]').forEach(inp => {
+    const set = () => {
+      const v = Math.max(0, parseFloat(inp.value) || 0);
+      setStored(inp.dataset.sto, inp.dataset.item, v).then(d => {
+        if (d.error) { inp.classList.add('bb-warn'); inp.title = d.error; return; }
+        document.dispatchEvent(new CustomEvent('factory-edited', { detail: { key: inp.dataset.sto, item: inp.dataset.item, storage: d.rate } }));
+        openBlackboard();
+      });
+    };
+    inp.addEventListener('change', set);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
+  });
 }
 
 // ══════════════════════════════════════════════════════════

@@ -41,6 +41,7 @@ let UNLIM = new Set();
 let OUTPUTS = null;   // /api/factory-outputs
 let PAINTS = [];      // import + storage notes, repainted together (they share what's left)
 let CUT = [];         // what the last save cut back
+let MOVED = [];       // what the last save took out of other factories' storage
 
 const facName = k => k === STORAGE ? 'Storage' : OUTPUTS?.factories.find(x => x.key === k)?.name || k;
 
@@ -146,8 +147,9 @@ function offer(fac, item, row = null) {
   const mine = FROM.filter(r => r !== row && r.factory === fac && r.item === item)
     .reduce((s, r) => s + (parseFloat(r.rate) || 0), 0);
   if (mine > 0) by[ownKey()] = mine;
-  const others = Object.values(by).reduce((s, v) => s + v, 0);
-  return { made, by, left: Math.max(0, made - others), stale: f.stale, solved: f.solved };
+  const others = Object.values(by).reduce((s, v) => s + v, 0), stored = by[STORAGE] || 0;
+  // room: what's free, and what it sends to storage (an import past what's free takes it out of storage)
+  return { made, by, left: Math.max(0, made - others), stored, room: Math.max(0, made - others + stored), stale: f.stale, solved: f.solved };
 }
 
 // What this factory makes now: its current plan, else its saved one
@@ -542,6 +544,9 @@ function renderFrom(focus = -1, what = '.f-rate') {
       CUT.map(x => x.kind === 'node' ? `a ${itemName(x.item || '')} node (mined by ${facName(x.factory)})`
         : `${itemName(x.item)}${x.kind === 'storage' ? ' to storage' : ` from ${facName(x.factory)}`} ${fmt(x.asked)} → ${fmt(x.rate)}`).join('; ')}.</p>`);
   }
+  if (MOVED.length) {
+    c.insertAdjacentHTML('beforeend', `<p class="n-hint">Moved out of storage: ${MOVED.map(m => `${fmt(m.rate)} ${itemName(m.item)} from ${facName(m.factory)}`).join('; ')} — saved there too.</p>`);
+  }
   if (OUTPUTS && !madeItems().length && !FROM.length)
     c.insertAdjacentHTML('beforeend', '<p class="n-hint">Nothing yet — solve and save another factory first.</p>');
   FROM.forEach((f, i) => {
@@ -579,18 +584,21 @@ function renderFrom(focus = -1, what = '.f-rate') {
       note.title = [`${facName(f.factory)} makes ${fmt(o.made)}/min`
         + (o.stale ? ' (its last plan — it changed since)' : !o.solved ? ' (its declared rate — not solved)' : ''),
         ...Object.entries(o.by).map(([k, v]) => `${k === ownKey() ? 'Your other rows take' : `${facName(k)} ${k === STORAGE ? 'gets' : 'takes'}`} ${fmt(v)}`)].join('\n');
-      const over = (parseFloat(f.rate) || 0) - o.left;
+      const want = parseFloat(f.rate) || 0, over = want - o.room;
       if (over > 1e-3) {
         note.classList.add('n-warn');
-        note.textContent = `${fmt(over)} over — ${note.textContent}`;
+        note.textContent = `${fmt(over)} over — ${note.textContent}${o.stored ? ` + ${fmt(o.stored)} stored` : ''}`;
         use.style.display = '';
-        use.textContent = `use ${fmt(down(o.left))}`;
+        use.textContent = `use ${fmt(down(o.room))}`;
+      } else if (want - o.left > 1e-3) {
+        note.textContent = `${fmt(want - o.left)} out of its storage — saving moves it`;
+        note.title += `\n${facName(f.factory)} stores ${fmt(o.stored)}: saving takes ${fmt(want - o.left)} of it out of its storage and sends it here.`;
       }
     };
     use.addEventListener('click', () => {
       const o = offer(f.factory, f.item, f);
       if (!o) return;
-      f.rate = down(o.left); rin.value = f.rate;
+      f.rate = down(o.room); rin.value = f.rate;
       syncSupply(); PAINTS.forEach(p => p());
     });
     const setItem = key => {
@@ -625,7 +633,7 @@ function renderFrom(focus = -1, what = '.f-rate') {
       let v = evalExpr(rin.value);
       if (v === null) return;
       const of = f.factory && offer(f.factory, f.item, f);
-      if (of) v = Math.min(v, of.left);            // no more than that factory has left
+      if (of) v = Math.min(v, of.room);            // no more than that factory has left, its storage too
       rin.value = f.rate = parseFloat(Math.max(0, v).toPrecision(6));
       syncSupply(); PAINTS.forEach(p => p());
     });
@@ -741,7 +749,7 @@ export function setStorage(item, rate) {
 }
 /** Where to get an item: saved factories with some of it left, most first. */
 export function sourcesOf(item) {
-  return makersOf(item).map(f => ({ factory: f.key, name: f.name, left: offer(f.key, item)?.left || 0, stale: f.stale }))
+  return makersOf(item).map(f => { const o = offer(f.key, item); return { factory: f.key, name: f.name, free: o?.left || 0, stored: o?.stored || 0, left: o?.room || 0, stale: f.stale }; })
     .filter(x => x.left >= 0.01).sort((a, b) => b.left - a.left);
 }
 /** Bring this much of an item in: an import from a factory, or (none given) a fixed supply. */
@@ -800,8 +808,9 @@ export function applyCut(res) {
   STO = (res.to_storage || []).map(f => ({ ...f }));
   if (res.resource_nodes) NODES = res.resource_nodes.map(n => ({ ...n }));
   CUT = res.cut || [];
+  MOVED = res.moved || [];
   syncSupply();
-  refreshOutputs().then(() => { CUT = []; });
+  refreshOutputs().then(() => { CUT = []; MOVED = []; });
 }
 
 // After a solve: storage offers and sent-out shortfalls follow the new plan

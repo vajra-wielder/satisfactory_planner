@@ -34,7 +34,7 @@ import {
 import { startChain, watchChain, onChain, chainHTML } from './chain.js';
 import { uploadSave, changesHTML, wireChanges } from './save-import.js';
 import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards, minerOf,
-         refreshOutputs, applyCut, onResult } from './supply-panel.js';
+         refreshOutputs, applyCut, onResult, setStorage } from './supply-panel.js';
 
 import {
   openWarn, closeWarn,
@@ -416,7 +416,7 @@ function handleSave() {
     .then(res => {
       LOADED_KEY = key; LOADED_NAME = SC.name; setBuildSelf(key, SC.name);
       baseline();
-      if (res?.cut?.length) applyCut(res);   // over what the sources have left
+      if (res?.cut?.length || res?.moved?.length) applyCut(res);   // over what the sources have left; out of their storage
       const b = document.getElementById('bsave');
       b.textContent = 'Saved!';
       setTimeout(() => { b.textContent = '💾 Save'; }, 2200);
@@ -547,6 +547,19 @@ document.addEventListener('miner-changing', e => { if (LOADED_KEY && !SC.miner) 
 
 // the goal tree sets goals, storage and supply: the left panel and summaries follow
 ['goals-changed', 'supply-changed'].forEach(ev => document.addEventListener(ev, () => { TOUCHED = true; soonSummaries(); }));
+
+// A factory's storage changed from elsewhere (the Blackboard): already saved there;
+// the open one follows (still unsaved only if it was before), and what's free follows everywhere
+document.addEventListener('factory-edited', e => {
+  const { key, item, storage } = e.detail;
+  if (key === LOADED_KEY) {
+    readUI();
+    const was = isDirty();
+    setStorage(item, storage);
+    if (!was) baseline();
+  }
+  refreshOutputs();
+});
 
 // ── Unsaved changes ──────────────────────────────────────
 // What's on screen against what was opened or last saved: a dot on the name

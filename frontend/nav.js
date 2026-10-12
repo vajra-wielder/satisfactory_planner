@@ -2,7 +2,7 @@
  * nav.js — getting around: the systems in a ring (the planner, then each
  * Blackboard tab), a Go-to-anything palette, and the shortcuts sheet.
  *
- *   Ctrl+K or /        go to anything: a system, a factory, an action, who makes an item
+ *   Ctrl+K or /        go to anything: a system, a factory, an action, an item across factories
  *   Alt+← / Alt+→      the previous / next system (also Ctrl+PgUp / PgDn,
  *                      or the mouse wheel over the top bar or the Blackboard's tabs)
  *   Alt+1 … Alt+9      a system by number
@@ -89,12 +89,12 @@ function entries(q) {
                                         run: () => { if (blackboardOpen()) closeBlackboard(); API.openFactory(f.key); } }));
   API.actions.forEach(a => out.push({ group: 'Do', label: a.label, keys: a.keys || '', run: a.run }));
   if (q.length >= 2)
-    ALL_ITEMS.forEach(it => out.push({ group: 'Who makes', label: itemName(it), keys: '', run: () => { goBlackboard('find', it); showRing(1 + BB_TABS.findIndex(([t]) => t === 'find')); } }));
+    ALL_ITEMS.forEach(it => out.push({ group: 'Across factories', label: itemName(it), keys: '', run: () => { goBlackboard('items', it); showRing(1 + BB_TABS.findIndex(([t]) => t === 'items')); } }));
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return out.filter(e => e.group !== 'Who makes');
+  if (!words.length) return out.filter(e => e.group !== 'Across factories');
   const hay = e => `${e.label} ${e.group}`.toLowerCase();
   return out.filter(e => words.every(w => hay(e).includes(w)))
-    .map(e => ({ e, s: (e.label.toLowerCase().startsWith(words[0]) ? 0 : 1) + (e.group === 'Who makes' ? 2 : 0) }))
+    .map(e => ({ e, s: (e.label.toLowerCase().startsWith(words[0]) ? 0 : 1) + (e.group === 'Across factories' ? 2 : 0) }))
     .sort((a, b) => a.s - b.s).map(x => x.e).slice(0, 60);
 }
 
@@ -116,7 +116,7 @@ export function openPalette() {
     m = document.createElement('div');
     m.id = 'nav-pal';
     m.innerHTML = `<div class="np-box"><input id="nav-pal-q" type="text" autocomplete="off"
-        placeholder="Go to a system, a factory, an action — or who makes an item"/><div id="nav-pal-list"></div>
+        placeholder="Go to a system, a factory, an action — or an item across factories"/><div id="nav-pal-list"></div>
       <div class="np-foot"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> go · <kbd>Esc</kbd> close · <kbd>?</kbd> every shortcut</div></div>`;
     document.body.appendChild(m);
     m.addEventListener('mousedown', e => { if (e.target === m) closePalette(); });
