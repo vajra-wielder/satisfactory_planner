@@ -5,7 +5,7 @@
  * After each solve the server works out the best plan with every alternate
  * you haven't unlocked (solver.suggest_alts) and lists the ones it uses, in
  * the order to unlock them: each with what it adds on top of those above —
- * output, resources for the same output, machine space. Tick the ones to use
+ * output, and the resources and space of the plan a solve then makes. Tick the ones to use
  * in this factory, untick the ones you don't want, then Solve — or unlock the
  * ticked ones (you found their hard drives): then every factory has them.
  */
@@ -17,13 +17,17 @@ const $ = id => document.getElementById(id);
 const name = k => (RECIPES[k]?.display || k).replace(/^Alternate:\s*/i, '');
 const pct = v => `${v >= 10 ? v.toFixed(0) : v.toFixed(1)}%`;
 
-// What a set of gains says, shortest first: "+41% output · −33% resources · −13 space"
+// What a set of gains says, shortest first: "+106% output · +4,239 space" —
+// each the plan a solve makes with them against today's; what gets worse
+// (more space for more output) in amber
 export function gainText(g, html = true) {
   if (!g) return '';
   const span = (t, c) => (html ? `<span style="color:${c}">${t}</span>` : t);
+  const up = 'var(--warn)';
+  const r = g.resources || 0, m = g.machines || 0;
   return [g.output > 0.1 ? span(`+${pct(g.output)} output`, 'var(--ok)') : '',
-          g.resources > 0.1 ? span(`−${pct(g.resources)} resources`, 'var(--ok)') : '',
-          g.machines > 0.5 ? span(`−${Math.round(g.machines)} space`, '#60a5fa') : '']
+          r > 0.1 ? span(`−${pct(r)} resources`, 'var(--ok)') : r < -0.1 ? span(`+${pct(-r)} resources`, up) : '',
+          m > 0.5 ? span(`−${Math.round(m).toLocaleString()} space`, '#60a5fa') : m < -0.5 ? span(`+${Math.round(-m).toLocaleString()} space`, up) : '']
     .filter(Boolean).join(html ? '<span class="na-dot"> · </span>' : ' · ');
 }
 
@@ -79,7 +83,7 @@ function draw(onChange) {
   el.innerHTML = `
     <div class="na-head"><b>New alternates</b><span class="n-hint">${ticked.length}/${d.steps.length} on here</span></div>
     ${d.steps.length ? `<p class="n-hint" style="margin:2px 0 6px">The best plan with alternates you haven't unlocked uses these — in the
-      order to unlock them, each with what it adds on top of the ones above. With all ${d.steps.length}:
+      order to unlock them, each with what solving with it changes on top of the ones above. With all ${d.steps.length}:
       <b>${gainText(d.all)}</b>.</p>` : ''}
     ${d.steps.map((s, i) => row(s.key, i + 1, gainText(s) || '<span class="n-hint">rounds out the set</span>')).join('')}
     ${extra.map(k => row(k, '·', '<span class="n-hint">on here — the best plan doesn\'t use it</span>')).join('')}

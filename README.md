@@ -19,8 +19,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   close the gap — each a one-click Apply that re-solves
 - New alternates (the right panel's Alternates tab, after every solve): the best plan
   with every alternate you haven't unlocked, and the ones it uses in the
-  order to unlock them — each with what it adds on top of those above:
-  output, resources for the same output, machine space. Tick the ones to use
+  order to unlock them — each with what solving with it changes on top of
+  those above: output, and the resources and machine space of the plan a
+  solve then makes (more output can take more space: shown as a cost). Tick the ones to use
   in this factory (untick the ones you don't want), then Solve with these —
   or Unlock ticked once you've found their hard drives: every factory has
   them, and it re-solves. Every alternate you've unlocked is in every solve

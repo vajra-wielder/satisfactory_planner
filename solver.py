@@ -1790,9 +1790,6 @@ class _AltLab:
             w = 1.0 / len(finite) / sc.available_resources[it]
             for key, c in lp.net.get(it, {}).items():
                 self.score[key] = self.score.get(key, 0.0) - c * w
-        self.caps = [lp.res_ct[it] for it in sc.available_resources if it in lp.res_ct]
-        if "power" in lp.budget_ct:
-            self.caps.append(lp.budget_ct["power"])
         self.on: Optional[frozenset] = None
 
     def only(self, on) -> None:
@@ -1822,14 +1819,14 @@ class _AltLab:
     def cost(self, on, target, within=None, space=True, price=None):
         """(least resource score, least space using no more resources than
         `within` — or than the least — or None if not asked, the candidates
-        that plan runs) for the target output, caps lifted.
+        that plan runs) for the target output, within the factory's supply —
+        the plans a solve could make, as a solve ranks them (resources, then
+        space). Lifting the caps instead would let the baseline overdraw a
+        resource to spread its load: a plan no solve makes, often far bigger.
         price: candidates to price on the measure's own solve (see priced) —
         then (…, the ones that could improve it) as a fourth item."""
         self.only(on)
         lp, T = self.lp, _STAGE_TIME_S[0]
-        ubs = [ct.ub() for ct in self.caps]
-        for ct in self.caps:
-            ct.SetUb(lp.inf)
         held = lp.ct(target - max(1e-9, abs(target) * 1e-7), lp.inf, lp.goal) if lp.goal and target is not None else None
         try:
             r, lock = 0.0, None
@@ -1851,8 +1848,6 @@ class _AltLab:
         finally:
             if held is not None:
                 held.SetBounds(-lp.inf, lp.inf)
-            for ct, ub in zip(self.caps, ubs):
-                ct.SetUb(ub)
 
 
 def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
@@ -1910,13 +1905,20 @@ def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
     res_of = lambda c: 100.0 * (c0[0] - c[0]) / c0[0] if c0[0] > 1e-12 else 0.0
 
     def full(on) -> Optional[dict]:
+        # What solving with these gives: the most output, then the plan a solve
+        # makes there (least resources, then least space) against today's —
+        # so more output shows what it costs in space, not what it would save
+        # at today's output. With no more output, that's today's output.
         m = {"output": 0.0}
+        g = g0
         if has_goal and g0:
             g = lab.goal(on)
             if g is None:
                 return None
             m["output"] = out_of(g)
-        c = lab.cost(on, g0, within=c0[0])
+            if m["output"] <= _GAIN["output"]:
+                g = g0
+        c = lab.cost(on, g)
         if c is None:
             return None
         m.update(resources=res_of(c), machines=c0[1] - c[1], runs=c[2])

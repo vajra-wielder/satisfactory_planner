@@ -116,6 +116,23 @@ class WorthUnlocking(unittest.TestCase):
             self.assertAlmostEqual(gained, total, delta=max(1.0, total * 0.05), msg=on)
         self.assertGreaterEqual(g["all"]["output"] + 1e-6, total)
 
+    def test_space_and_resources_are_what_a_solve_gives(self):
+        # Each step's space is the plan a solve makes with it against today's —
+        # more output costs space, shown as such; never a saving bigger than
+        # the plan, measured from a baseline no solve makes (caps lifted)
+        sc = self.scenario()
+        g = solver.suggest_alts(sc, RECIPES)
+        space = lambda r: solver.result_to_dict(r, sc, META)["total_space"]
+        r0 = solver.solve(sc, RECIPES, META)
+        s0, on, said = space(r0), [], 0.0
+        for step in g["steps"][:3]:
+            on.append(step["key"])
+            said += step["machines"]
+            r = solver.solve(dataclasses.replace(sc, alternate_recipes_enabled=list(on)), RECIPES, META)
+            # whole machines against the lab's fractional ones: within a few machines' room
+            self.assertAlmostEqual(s0 - space(r), said, delta=max(12.0, abs(said) * 0.05), msg=on)
+        self.assertLess(g["all"]["machines"], s0)
+
     def test_fast_and_the_same_every_time(self):
         # the deepest chain, every alternate new: warm copies in parallel, under a second
         import time
