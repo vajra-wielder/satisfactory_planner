@@ -67,7 +67,31 @@ class Extractors(unittest.TestCase):
 
     def test_progress_is_cleaned(self):
         p = supply._clean_progress({"miner": "Mk9", "belt": "Mk6", "machines": ["B", "A", "A"]})
-        self.assertEqual(p, {"miner": "Mk3", "machines": ["A", "B"], "belt": "Mk6", "pipe": "Mk2"})
+        self.assertEqual(p, {"miner": "Mk3", "machines": ["A", "B"], "belt": "Mk6", "pipe": "Mk2", "schematics": None})
+
+
+class Milestones(unittest.TestCase):
+    """Tier + sub-tier and MAM research: what each recipe waits on (data/unlocks.json)."""
+    def test_not_set_locks_nothing(self):
+        self.assertEqual(supply.locked_recipes({"schematics": None}), [])
+
+    def test_only_what_is_not_done(self):
+        u = supply.UNLOCKS
+        self.assertEqual(u["recipes"]["Computer"], "Schematic_5-2")          # Industrial Manufacturing
+        self.assertEqual(u["schematics"]["Schematic_5-2"]["tier"], 6)          # 1.0's numbering
+        self.assertIn("Computer", supply.locked_recipes({"schematics": ["Schematic_5-1"]}))
+        self.assertNotIn("Plastic", supply.locked_recipes({"schematics": ["Schematic_5-1"]}))
+        self.assertNotIn("Iron_Plate", supply.locked_recipes({"schematics": []}))   # from the start
+        self.assertEqual(supply.UNLOCKS["recipes"]["Quickwire"].split("_")[1], "Caterium")   # MAM
+
+    def test_unknown_ids_are_dropped(self):
+        self.assertEqual(supply._clean_progress({"schematics": ["Schematic_5-2", "nope", 3]})["schematics"], ["Schematic_5-2"])
+
+    def test_a_save_says_what_is_done(self):
+        import json, savefile
+        g = json.loads(open("data/game_classes.json").read())
+        done = savefile.schematics_done({g["recipes"]["Computer"], g["machines"]["Refinery"]})
+        self.assertEqual(done, ["Schematic_5-1", "Schematic_5-2"])
 
 
 if __name__ == "__main__":

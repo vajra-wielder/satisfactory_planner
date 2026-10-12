@@ -18,7 +18,7 @@ Scenarios saved before nodes existed keep their available_resources as they are.
 """
 import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -68,6 +68,18 @@ BUILD = {
 }
 
 
+# What unlocks each recipe and machine: milestones and MAM research (tools/gen_unlocks.py)
+UNLOCKS = json.loads((HERE / "data" / "unlocks.json").read_text(encoding="utf-8"))
+
+def locked_recipes(progress: dict) -> List[str]:
+    """The recipes a milestone or MAM research you haven't done unlocks — none
+    while the progress isn't set."""
+    done = progress.get("schematics")
+    if done is None:
+        return []
+    done = set(done)
+    return sorted(k for k, s in UNLOCKS["recipes"].items() if s not in done)
+
 BELTS = ["Mk1", "Mk2", "Mk3", "Mk4", "Mk5", "Mk6"]
 PIPES = ["Mk1", "Mk2"]
 
@@ -75,13 +87,18 @@ def _clean_progress(raw: dict) -> dict:
     """What you've unlocked and own, for every factory:
       miner     the miner tier — every miner runs at it
       machines  the machines unlocked (None: not set yet — every factory's own list)
-      belt/pipe the best belt and pipe unlocked (the Blackboard's checks)"""
+      belt/pipe the best belt and pipe unlocked (the Blackboard's checks)
+      schematics the milestones (tier + sub-tier) and MAM research done
+                (data/unlocks.json ids; None: not set — every recipe allowed)"""
     raw = raw if isinstance(raw, dict) else {}
+    sch = raw.get("schematics")
     return {
         "miner": raw.get("miner") if raw.get("miner") in MINER_TIERS else "Mk3",
         "machines": sorted(set(raw["machines"])) if isinstance(raw.get("machines"), list) else None,
         "belt": raw.get("belt") if raw.get("belt") in BELTS else "Mk5",
         "pipe": raw.get("pipe") if raw.get("pipe") in PIPES else "Mk2",
+        "schematics": sorted({s for s in sch if isinstance(s, str) and s in UNLOCKS["schematics"]})
+                      if isinstance(sch, list) else None,
     }
 
 def load_progress() -> dict:

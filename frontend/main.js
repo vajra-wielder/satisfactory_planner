@@ -43,6 +43,7 @@ import {
 } from './ui.js';
 
 import { initRecipeLookup, openRecipes } from './recipe-lookup.js';
+import { initTree, renderTree, showTree, treeShown } from './goal-tree.js';
 import { openUnlockedModal } from './machines-panel.js';
 import { KVS, renderKv, syncKv } from './kv-panel.js';
 import { openAnalysis, closeAnalysis, showAnalysis } from './analysis.js';
@@ -363,6 +364,7 @@ function handleSolve() {
       if (mySeq !== solveSeq) return;
       setResult(result);
       onResult();
+      if (result.flows?.length) showTree(false);     // solved: the plan
       updateIssuesBadge(result);
       refreshNewAlts(altsChanged);
       // fell short: the Issues tab says why; otherwise the badges do, and an
@@ -440,6 +442,7 @@ function handleReset() {
   refreshNewAlts(altsChanged);
   TOUCHED = false;
   updateSummaries();
+  showTree(true);
   initLayout();
 }
 
@@ -468,6 +471,7 @@ function openScenario(key) {
     fillUI({ skipMachines: true });
     TOUCHED = false;
     updateSummaries();
+    showTree(!RESULT?.flows?.length);       // no plan yet: what its resources can become
     updateIssuesBadge(RESULT);
     renderResultsBar();
     renderBuildCost();
@@ -518,6 +522,7 @@ function updateSummaries() {
   set('tb-fac-name', SC.name || 'New Factory');            // the factory on screen, in the top bar
   if (!TOUCHED) SNAP = snap();
   paintDirty();
+  renderTree();
   set('sum-res', [`${new Set(nodes.map(r => r.resource)).size} resources`, ex ? `${ex} extractors` : '', imp ? `${imp} imports` : ''].filter(Boolean).join(' · '));
   set('sum-goals', [n(SC.objective) && `${n(SC.objective)} max`, n(SC.must_produce) && `${n(SC.must_produce)} exact`,
     n(SC.min_produce) && `${n(SC.min_produce)} at least`, n(SC.max_produce) && `${n(SC.max_produce)} at most`,
@@ -531,9 +536,12 @@ const soonSummaries = () => { clearTimeout(_sumT); _sumT = setTimeout(updateSumm
 // alternates on the right — but not the shared windows or the Blackboard
 ['input', 'change', 'click'].forEach(t => document.addEventListener(t, e => {
   if (!e.isTrusted || e.target.closest?.('#fac-drawer, #unlocks-modal, #bb-modal, #log-modal, header, #nav-pal, #nav-help')) return;
-  if (t !== 'click' || e.target.closest('#map-modal, #dock button, #sidebar button')) TOUCHED = true;
+  if (t !== 'click' || e.target.closest('#map-modal, #dock button, #sidebar button, #gt-pop button')) TOUCHED = true;
   soonSummaries();
 }, true));
+
+// the goal tree sets goals, storage and supply: the left panel and summaries follow
+['goals-changed', 'supply-changed'].forEach(ev => document.addEventListener(ev, () => { TOUCHED = true; soonSummaries(); }));
 
 // ── Unsaved changes ──────────────────────────────────────
 // What's on screen against what was opened or last saved: a dot on the name
@@ -680,7 +688,9 @@ window.addEventListener('keydown', e => {
   // 1…4 the right panel's tabs, on the planner with nothing over it
   // (Ctrl+1…4 belong to the browser's tabs)
   const tab = !mod && !e.altKey && !inInput && ['analysis', 'alts', 'build', 'issues'][+e.key - 1];
-  if (tab && !document.querySelector('.show:is(.far, [id$="-modal"], #nav-help, #nav-pal)')) { toggleDock(tab); return; }
+  const clear = !document.querySelector('.show:is(.far, [id$="-modal"], #nav-help, #nav-pal)');
+  if (tab && clear) { toggleDock(tab); return; }
+  if ((e.key === 't' || e.key === 'T') && !mod && !e.altKey && !inInput && clear) { showTree(!treeShown()); return; }
   if (!mod) return;
 
   switch (e.key.toLowerCase()) {
@@ -716,6 +726,7 @@ Promise.all([fetchBoot()])
     ge.querySelector('p').textContent = 'Configure your factory and hit Solve';
 
     initRecipeLookup();
+    initTree();
     initNav({
       currentFactory: () => LOADED_KEY,
       openFactory: key => mayLeave('Open another') && openScenario(key),
@@ -730,6 +741,7 @@ Promise.all([fetchBoot()])
         { label: 'Build cost', keys: '3', run: () => openDock('build') },
         { label: 'Issues', keys: '4', run: () => openDock('issues') },
         { label: 'Recipe lookup', keys: 'Ctrl+Q', run: () => openRecipes() },
+        { label: 'Goal tree: what your resources can become', keys: 'T', run: () => showTree(true) },
         { label: 'Your factories', keys: 'Ctrl+O', run: openFactories },
         { label: 'Unlocks for every factory (machines, miner, hard drives, a save)', keys: 'Ctrl+U', run: openUnlocks },
         { label: 'Re-solve out of date', run: () => startChain() },
@@ -748,6 +760,7 @@ Promise.all([fetchBoot()])
     fillUI({ skipMachines: true });   // skip machines/alts — rendered lazily on first tab open
     updateSummaries();
     renderBuildCost(); renderIssues();
+    showTree(!RESULT?.flows?.length);
     resize();
     draw();
 

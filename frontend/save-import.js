@@ -4,7 +4,7 @@
  * (alternates, machines, miner, belt, pipe); one click makes them match.
  */
 
-import { PROGRESS, setUnlockedAlts, itemName, RECIPES } from './state.js';
+import { PROGRESS, setUnlockedAlts, itemName, RECIPES, unlockName } from './state.js';
 import { renderMachines, updMachBadge } from './machines-panel.js';
 
 const name = k => (RECIPES[k]?.display || k.replace(/_/g, ' ')).replace(/^Alternate:\s*/, '');
@@ -28,6 +28,11 @@ export function changesHTML(d) {
   if (c.machines?.drop.length) rows.push(`− ${c.machines.drop.map(m => m.replace(/_/g, ' ')).join(', ')} <span class="n-hint">(not unlocked in the save)</span>`);
   if (c.alts?.add.length) rows.push(`+ ${c.alts.add.length} alternate${c.alts.add.length > 1 ? 's' : ''}: ${c.alts.add.map(name).join(', ')}`);
   if (c.alts?.drop.length) rows.push(`− ${c.alts.drop.length} alternate${c.alts.drop.length > 1 ? 's' : ''} not in the save: ${c.alts.drop.map(name).join(', ')}`);
+  if (c.schematics) {
+    const n = l => l.map(unlockName).join(', ');
+    if (c.schematics.add.length) rows.push(`+ ${c.schematics.add.length} milestone${c.schematics.add.length > 1 ? 's and research' : ''}: ${n(c.schematics.add)}`);
+    if (c.schematics.drop.length) rows.push(`− ${n(c.schematics.drop)} <span class="n-hint">(not done in the save)</span>`);
+  }
   if (!rows.length) return `<div class="sv-unl">Your unlocks match ${d.file || 'the save'}.</div>`;
   return `<div class="sv-unl"><div class="n-sent-t">${d.file || 'Your save'} has unlocked differently</div>
     ${rows.map(r => `<div>${r}</div>`).join('')}

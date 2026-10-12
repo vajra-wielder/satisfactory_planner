@@ -116,6 +116,8 @@ class Scenario:
     # The solver treats these alts as always-available (no per-scenario enable needed)
     # and does NOT count them when minimize_new_alts is True.
     unlocked_alt_recipes: List[str] = field(default_factory=list)
+    # Recipes a milestone or MAM research not done yet unlocks: left out
+    locked_recipes: List[str] = field(default_factory=list)
     # When True, use the fewest alternates that are NOT in unlocked_alt_recipes
     # (each costs a hard drive), giving up at most _NEW_ALT_TOL of the goal.
     minimize_new_alts: bool = False
@@ -378,9 +380,12 @@ def prune_recipes(
     enabled_machines_set = set(scenario.enabled_machines)
     alt_enabled_set      = set(scenario.alternate_recipes_enabled)
     unlocked_set         = set(scenario.unlocked_alt_recipes)
+    locked_set           = set(scenario.locked_recipes)
 
     def is_allowed(key: str, r: Recipe) -> bool:
         if enabled_machines_set and r.machine not in enabled_machines_set:
+            return False
+        if key in locked_set:
             return False
         if r.alternate and key not in alt_enabled_set and key not in unlocked_set:
             return False

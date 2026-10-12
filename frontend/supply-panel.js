@@ -700,6 +700,36 @@ function renderStorage(focus = -1) {
   renderSentOut();
 }
 
+// ── For the goal tree ─────────────────────────────────────
+/** What's sent to storage of an item, per minute (0: none). */
+export function storageOf(item) {
+  return STO.filter(t => t.item === item).reduce((a, t) => a + (parseFloat(t.rate) || 0), 0);
+}
+/** Send this much of it to storage (0: none). */
+export function setStorage(item, rate) {
+  STO = STO.filter(t => t.item !== item);
+  if (rate > 0) STO.push({ item, rate: +(+rate).toFixed(4) });
+  syncSupply(); renderStorage();
+}
+/** Where to get an item: saved factories with some of it left, most first. */
+export function sourcesOf(item) {
+  return makersOf(item).map(f => ({ factory: f.key, name: f.name, left: offer(f.key, item)?.left || 0, stale: f.stale }))
+    .filter(x => x.left >= 0.01).sort((a, b) => b.left - a.left);
+}
+/** Bring this much of an item in: an import from a factory, or (none given) a fixed supply. */
+export function bringIn(item, rate, factory = null) {
+  rate = +(+rate).toFixed(4);
+  if (factory) {
+    const row = FROM.find(r => r.item === item && r.factory === factory);
+    if (row) row.rate = rate; else FROM.push({ item, factory, rate });
+    syncSupply(); renderFrom();
+  } else {
+    const row = NODES.find(n => n.resource === item && n.extractor === 'fixed');
+    if (row) row.rate = (parseFloat(row.rate) || 0) + rate; else NODES.push({ resource: item, extractor: 'fixed', rate });
+    syncSupply(); renderNodes();
+  }
+}
+
 export function addStorage() {
   STO.push({ item: '', rate: '' });
   renderStorage();

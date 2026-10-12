@@ -95,6 +95,18 @@ class WhyNot(unittest.TestCase):
         self.assertIsNone(r.diagnosis)
 
 
+class Milestones(unittest.TestCase):
+    """A recipe a milestone you haven't done unlocks is left out of the solve."""
+    def test_locked_recipe_is_not_used(self):
+        sc = solver.Scenario(name="steel", enabled_machines=["Smelter", "Foundry", "Constructor"],
+                             available_resources={"Iron_Ore": 240, "Coal": 240}, objective={"Steel_Beam": 1})
+        self.assertTrue(solver.solve(sc, RECIPES, META).status.startswith("Optimal"))
+        locked = solver.solve(dataclasses.replace(sc, locked_recipes=["Steel_Ingot"]), RECIPES, META)
+        self.assertFalse(any(f.recipe_key == "Steel_Ingot" for f in locked.flows))
+        usable, _ = solver.prune_recipes(dataclasses.replace(sc, locked_recipes=["Steel_Ingot"]), RECIPES)
+        self.assertNotIn("Steel_Ingot", usable)
+
+
 class WorthUnlocking(unittest.TestCase):
     """New alternates: the best plan with every one you haven't unlocked, in
     unlock order. What the first ones are said to add is what full solves get."""

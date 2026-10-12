@@ -1,0 +1,627 @@
+{
+ "about": "What unlocks each recipe and machine (1.0) \u2014 tools/gen_unlocks.py, from SatisfactoryTools' game data",
+ "schematics": {
+  "Schematic_Tutorial1": {
+   "tier": 0,
+   "name": "HUB Upgrade 1",
+   "kind": "hub"
+  },
+  "Schematic_Tutorial1_5": {
+   "tier": 0,
+   "name": "HUB Upgrade 2",
+   "kind": "hub"
+  },
+  "Schematic_Tutorial2": {
+   "tier": 0,
+   "name": "HUB Upgrade 3",
+   "kind": "hub"
+  },
+  "Schematic_Tutorial3": {
+   "tier": 0,
+   "name": "HUB Upgrade 4",
+   "kind": "hub"
+  },
+  "Schematic_Tutorial4": {
+   "tier": 0,
+   "name": "HUB Upgrade 5",
+   "kind": "hub"
+  },
+  "Schematic_Tutorial5": {
+   "tier": 0,
+   "name": "HUB Upgrade 6",
+   "kind": "hub"
+  },
+  "Schematic_1-1": {
+   "tier": 1,
+   "name": "Base Building",
+   "kind": "milestone"
+  },
+  "Schematic_1-2": {
+   "tier": 1,
+   "name": "Logistics",
+   "kind": "milestone"
+  },
+  "Schematic_1-3": {
+   "tier": 1,
+   "name": "Field Research",
+   "kind": "milestone"
+  },
+  "Schematic_2-1": {
+   "tier": 2,
+   "name": "Part Assembly",
+   "kind": "milestone"
+  },
+  "Schematic_2-2": {
+   "tier": 2,
+   "name": "Obstacle Clearing",
+   "kind": "milestone"
+  },
+  "Schematic_2-3": {
+   "tier": 2,
+   "name": "Jump Pads",
+   "kind": "milestone"
+  },
+  "Schematic_2-5": {
+   "tier": 2,
+   "name": "Resource Sink Bonus Program",
+   "kind": "milestone"
+  },
+  "Schematic_3-2": {
+   "tier": 2,
+   "name": "Logistics Mk.2",
+   "kind": "milestone"
+  },
+  "Schematic_3-1": {
+   "tier": 3,
+   "name": "Coal Power",
+   "kind": "milestone"
+  },
+  "Schematic_3-3": {
+   "tier": 3,
+   "name": "Vehicular Transport",
+   "kind": "milestone"
+  },
+  "Schematic_3-4": {
+   "tier": 3,
+   "name": "Basic Steel Production",
+   "kind": "milestone"
+  },
+  "Schematic_4-2": {
+   "tier": 3,
+   "name": "Enhanced Asset Security",
+   "kind": "milestone"
+  },
+  "Schematic_4-1": {
+   "tier": 4,
+   "name": "Advanced Steel Production",
+   "kind": "milestone"
+  },
+  "Schematic_4-3": {
+   "tier": 4,
+   "name": "Expanded Power Infrastructure",
+   "kind": "milestone"
+  },
+  "Schematic_4-4": {
+   "tier": 4,
+   "name": "Hypertubes",
+   "kind": "milestone"
+  },
+  "Schematic_4-5": {
+   "tier": 4,
+   "name": "FICSIT Blueprints",
+   "kind": "milestone"
+  },
+  "Schematic_5-3": {
+   "tier": 4,
+   "name": "Logistics Mk.3",
+   "kind": "milestone"
+  },
+  "Schematic_5-1": {
+   "tier": 5,
+   "name": "Oil Processing",
+   "kind": "milestone"
+  },
+  "Schematic_5-4": {
+   "tier": 5,
+   "name": "Fluid Packaging",
+   "kind": "milestone"
+  },
+  "Schematic_5-5": {
+   "tier": 5,
+   "name": "Petroleum Power",
+   "kind": "milestone"
+  },
+  "Schematic_6-1": {
+   "tier": 5,
+   "name": "Logistics Mk.4",
+   "kind": "milestone"
+  },
+  "Schematic_6-2": {
+   "tier": 5,
+   "name": "Jetpack",
+   "kind": "milestone"
+  },
+  "Schematic_5-2": {
+   "tier": 6,
+   "name": "Industrial Manufacturing",
+   "kind": "milestone"
+  },
+  "Schematic_6-3": {
+   "tier": 6,
+   "name": "Monorail Train Technology",
+   "kind": "milestone"
+  },
+  "Schematic_6-5": {
+   "tier": 6,
+   "name": "Pipeline Engineering Mk.2",
+   "kind": "milestone"
+  },
+  "Schematic_6-6": {
+   "tier": 6,
+   "name": "FICSIT Blueprints Mk.2",
+   "kind": "milestone"
+  },
+  "Schematic_6-7": {
+   "tier": 6,
+   "name": "Railway Signalling",
+   "kind": "milestone"
+  },
+  "Schematic_7-1": {
+   "tier": 7,
+   "name": "Bauxite Refinement",
+   "kind": "milestone"
+  },
+  "Schematic_7-2": {
+   "tier": 7,
+   "name": "Logistics Mk.5",
+   "kind": "milestone"
+  },
+  "Schematic_7-3": {
+   "tier": 7,
+   "name": "Hazmat Suit",
+   "kind": "milestone"
+  },
+  "Schematic_7-5": {
+   "tier": 7,
+   "name": "Control System Development",
+   "kind": "milestone"
+  },
+  "Schematic_8-3": {
+   "tier": 7,
+   "name": "Hoverpack",
+   "kind": "milestone"
+  },
+  "Schematic_7-4": {
+   "tier": 8,
+   "name": "Aeronautical Engineering",
+   "kind": "milestone"
+  },
+  "Schematic_8-1": {
+   "tier": 8,
+   "name": "Nuclear Power",
+   "kind": "milestone"
+  },
+  "Schematic_8-2": {
+   "tier": 8,
+   "name": "Advanced Aluminum Production",
+   "kind": "milestone"
+  },
+  "Schematic_8-4": {
+   "tier": 8,
+   "name": "Leading-Edge Production",
+   "kind": "milestone"
+  },
+  "Schematic_8-5": {
+   "tier": 8,
+   "name": "Particle Enrichment",
+   "kind": "milestone"
+  },
+  "Schematic_9-1": {
+   "tier": 9,
+   "name": "Matter Conversion",
+   "kind": "milestone"
+  },
+  "Schematic_9-2": {
+   "tier": 9,
+   "name": "Quantum Encoding",
+   "kind": "milestone"
+  },
+  "Schematic_9-3": {
+   "tier": 9,
+   "name": "FICSIT Blueprints Mk.3",
+   "kind": "milestone"
+  },
+  "Schematic_9-4": {
+   "tier": 9,
+   "name": "Spatial Energy Regulation",
+   "kind": "milestone"
+  },
+  "Schematic_9-5": {
+   "tier": 9,
+   "name": "Peak Efficiency",
+   "kind": "milestone"
+  },
+  "Research_Alien_ActiveSAM": {
+   "tier": 0,
+   "name": "SAM Reanimation",
+   "kind": "mam",
+   "tree": "SAM"
+  },
+  "Research_Alien_BoosterFuel": {
+   "tier": 0,
+   "name": "Alien Power Matrix",
+   "kind": "mam",
+   "tree": "SAM"
+  },
+  "Research_Alien_SAMFluctuator": {
+   "tier": 0,
+   "name": "SAM Fluctuator",
+   "kind": "mam",
+   "tree": "SAM"
+  },
+  "Research_ACarapace_0": {
+   "tier": 3,
+   "name": "Hog Research",
+   "kind": "mam",
+   "tree": "Alien Organisms"
+  },
+  "Research_ACarapace_2": {
+   "tier": 3,
+   "name": "The Rebar Gun",
+   "kind": "mam",
+   "tree": "Alien Organisms"
+  },
+  "Research_AO_DNACapsule": {
+   "tier": 3,
+   "name": "Bio-Organic Properties",
+   "kind": "mam",
+   "tree": "Alien Organisms"
+  },
+  "Research_AO_Hatcher": {
+   "tier": 3,
+   "name": "Hatcher Research",
+   "kind": "mam",
+   "tree": "Alien Organisms"
+  },
+  "Research_AO_Stinger": {
+   "tier": 3,
+   "name": "Stinger Research",
+   "kind": "mam",
+   "tree": "Alien Organisms"
+  },
+  "Research_AOrgans_0": {
+   "tier": 3,
+   "name": "Spitter Research",
+   "kind": "mam",
+   "tree": "Alien Organisms"
+  },
+  "Research_Caterium_1": {
+   "tier": 3,
+   "name": "Caterium Ingots",
+   "kind": "mam",
+   "tree": "Caterium"
+  },
+  "Research_Caterium_2": {
+   "tier": 3,
+   "name": "Quickwire",
+   "kind": "mam",
+   "tree": "Caterium"
+  },
+  "Research_Caterium_3_2": {
+   "tier": 3,
+   "name": "Stun Rebar",
+   "kind": "mam",
+   "tree": "Caterium"
+  },
+  "Research_Caterium_4_1": {
+   "tier": 3,
+   "name": "AI Limiter",
+   "kind": "mam",
+   "tree": "Caterium"
+  },
+  "Research_Caterium_5": {
+   "tier": 3,
+   "name": "High-Speed Connector",
+   "kind": "mam",
+   "tree": "Caterium"
+  },
+  "Research_Caterium_6_3": {
+   "tier": 3,
+   "name": "Bullet Guidance System",
+   "kind": "mam",
+   "tree": "Caterium"
+  },
+  "Research_Mycelia_1": {
+   "tier": 3,
+   "name": "Mycelia",
+   "kind": "mam",
+   "tree": "Mycelia"
+  },
+  "Research_Mycelia_2": {
+   "tier": 3,
+   "name": "Fabric",
+   "kind": "mam",
+   "tree": "Mycelia"
+  },
+  "Research_Mycelia_8": {
+   "tier": 3,
+   "name": "Toxic Cellular Modification",
+   "kind": "mam",
+   "tree": "Mycelia"
+  },
+  "Research_Mycelia_GasMask": {
+   "tier": 3,
+   "name": "Gas Mask",
+   "kind": "mam",
+   "tree": "Mycelia"
+  },
+  "Research_PowerSlugs_1": {
+   "tier": 3,
+   "name": "Blue Power Slugs",
+   "kind": "mam",
+   "tree": "Power Slugs"
+  },
+  "Research_PowerSlugs_4": {
+   "tier": 3,
+   "name": "Yellow Power Slugs",
+   "kind": "mam",
+   "tree": "Power Slugs"
+  },
+  "Research_PowerSlugs_5": {
+   "tier": 3,
+   "name": "Purple Power Slugs",
+   "kind": "mam",
+   "tree": "Power Slugs"
+  },
+  "Research_PowerSlugs_6": {
+   "tier": 3,
+   "name": "Synthetic Power Shards",
+   "kind": "mam",
+   "tree": "Power Slugs"
+  },
+  "Research_Quartz_1_1": {
+   "tier": 3,
+   "name": "Quartz Crystals",
+   "kind": "mam",
+   "tree": "Quartz"
+  },
+  "Research_Quartz_1_2": {
+   "tier": 3,
+   "name": "Silica",
+   "kind": "mam",
+   "tree": "Quartz"
+  },
+  "Research_Quartz_2": {
+   "tier": 3,
+   "name": "Crystal Oscillator",
+   "kind": "mam",
+   "tree": "Quartz"
+  },
+  "Research_Quartz_2_1": {
+   "tier": 3,
+   "name": "Shatter Rebar",
+   "kind": "mam",
+   "tree": "Quartz"
+  },
+  "Research_Quartz_3_4": {
+   "tier": 3,
+   "name": "Explosive Resonance Application",
+   "kind": "mam",
+   "tree": "Quartz"
+  },
+  "Research_Sulfur_1": {
+   "tier": 3,
+   "name": "Black Powder",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_3": {
+   "tier": 3,
+   "name": "Smokeless Powder",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_3_1": {
+   "tier": 3,
+   "name": "The Nobelisk Detonator",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_4": {
+   "tier": 3,
+   "name": "Cluster Nobelisk",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_4_1": {
+   "tier": 3,
+   "name": "The Rifle",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_4_2": {
+   "tier": 3,
+   "name": "Explosive Rebar",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_5_1": {
+   "tier": 3,
+   "name": "Nuclear Deterrent Development",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_5_2": {
+   "tier": 3,
+   "name": "Turbo Rifle Ammo",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_IonizedFuel": {
+   "tier": 3,
+   "name": "Ionized Fuel",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_RocketFuel": {
+   "tier": 3,
+   "name": "Rocket Fuel",
+   "kind": "mam",
+   "tree": "Sulfur"
+  },
+  "Research_Sulfur_TurboFuel": {
+   "tier": 3,
+   "name": "Turbofuel",
+   "kind": "mam",
+   "tree": "Sulfur"
+  }
+ },
+ "recipes": {
+  "AI_Expansion_Server": "Schematic_9-2",
+  "AI_Limiter": "Research_Caterium_4_1",
+  "Adaptive_Control_Unit": "Schematic_5-2",
+  "Alclad_Aluminum_Sheet": "Schematic_7-1",
+  "Alien_DNA_Capsule": "Research_AO_DNACapsule",
+  "Alien_Power_Matrix": "Research_Alien_BoosterFuel",
+  "Alumina_Solution": "Schematic_7-1",
+  "Aluminum_Casing": "Schematic_7-1",
+  "Aluminum_Ingot": "Schematic_7-1",
+  "Aluminum_Scrap": "Schematic_7-1",
+  "Assembly_Director_System": "Schematic_7-5",
+  "Automated_Wiring": "Schematic_4-1",
+  "Ballistic_Warp_Drive": "Schematic_9-4",
+  "Battery": "Schematic_7-5",
+  "Biochemical_Sculptor": "Schematic_9-1",
+  "Biomass_Alien_Protein": "Research_AO_DNACapsule",
+  "Biomass_Leaves": "Schematic_Tutorial5",
+  "Biomass_Mycelia": "Research_Mycelia_1",
+  "Biomass_Wood": "Schematic_Tutorial5",
+  "Black_Powder": "Research_Sulfur_1",
+  "Cable": "Schematic_Tutorial1_5",
+  "Caterium_Ingot": "Research_Caterium_1",
+  "Circuit_Board": "Schematic_5-1",
+  "Cluster_Nobelisk": "Research_Sulfur_4",
+  "Computer": "Schematic_5-2",
+  "Concrete": "Schematic_Tutorial2",
+  "Cooling_System": "Schematic_8-2",
+  "Copper_Ingot": "Schematic_Tutorial1_5",
+  "Copper_Powder": "Schematic_8-5",
+  "Copper_Sheet": "Schematic_2-1",
+  "Crystal_Oscillator": "Research_Quartz_2",
+  "Dark_Matter_Crystal": "Schematic_9-2",
+  "Dark_Matter_Residue": "Schematic_9-2",
+  "Diamonds": "Schematic_9-1",
+  "Electromagnetic_Control_Rod": "Schematic_8-1",
+  "Empty_Canister": "Schematic_5-4",
+  "Empty_Fluid_Tank": "Schematic_8-2",
+  "Encased_Industrial_Beam": "Schematic_4-1",
+  "Encased_Plutonium_Cell": "Schematic_8-5",
+  "Encased_Uranium_Cell": "Schematic_8-1",
+  "Excited_Photonic_Matter": "Schematic_9-2",
+  "Explosive_Rebar": "Research_Sulfur_4_2",
+  "Fabric": "Research_Mycelia_2",
+  "Ficsite_Ingot_Iron": "Schematic_9-1",
+  "Ficsite_Trigon": "Schematic_9-1",
+  "Ficsonium": "Schematic_9-5",
+  "Ficsonium_Fuel_Rod": "Schematic_9-5",
+  "Fuel": "Schematic_5-1",
+  "Fused_Modular_Frame": "Schematic_8-2",
+  "Gas_Filter": "Research_Mycelia_GasMask",
+  "Gas_Nobelisk": "Research_Mycelia_8",
+  "Hatcher_Protein": "Research_AO_Hatcher",
+  "Heat_Sink": "Schematic_8-2",
+  "Heavy_Modular_Frame": "Schematic_5-2",
+  "High_Speed_Connector": "Research_Caterium_5",
+  "Hog_Protein": "Research_ACarapace_0",
+  "Homing_Rifle_Ammo": "Research_Caterium_6_3",
+  "Iodine_Infused_Filter": "Schematic_7-3",
+  "Ionized_Fuel": "Research_Sulfur_IonizedFuel",
+  "Iron_Rebar": "Research_ACarapace_2",
+  "Liquid_Biofuel": "Schematic_5-4",
+  "Magnetic_Field_Generator": "Schematic_8-1",
+  "Modular_Engine": "Schematic_5-2",
+  "Modular_Frame": "Schematic_2-1",
+  "Motor": "Schematic_4-1",
+  "Neural_Quantum_Processor": "Schematic_9-2",
+  "Nitric_Acid": "Schematic_8-5",
+  "Nobelisk": "Research_Sulfur_3_1",
+  "Non_Fissile_Uranium": "Schematic_8-5",
+  "Nuclear_Pasta": "Schematic_8-5",
+  "Nuke_Nobelisk": "Research_Sulfur_5_1",
+  "Packaged_Alumina_Solution": "Schematic_7-1",
+  "Packaged_Fuel": "Schematic_5-4",
+  "Packaged_Heavy_Oil_Residue": "Schematic_5-4",
+  "Packaged_Ionized_Fuel": "Research_Sulfur_IonizedFuel",
+  "Packaged_Liquid_Biofuel": "Schematic_5-4",
+  "Packaged_Nitric_Acid": "Schematic_8-5",
+  "Packaged_Nitrogen_Gas": "Schematic_8-2",
+  "Packaged_Oil": "Schematic_5-4",
+  "Packaged_Rocket_Fuel": "Research_Sulfur_RocketFuel",
+  "Packaged_Sulfuric_Acid": "Schematic_7-5",
+  "Packaged_Turbofuel": "Research_Sulfur_TurboFuel",
+  "Packaged_Water": "Schematic_5-4",
+  "Petroleum_Coke": "Schematic_5-1",
+  "Plastic": "Schematic_5-1",
+  "Plutonium_Fuel_Rod": "Schematic_8-5",
+  "Plutonium_Pellet": "Schematic_8-5",
+  "Power_Shard_1": "Research_PowerSlugs_1",
+  "Power_Shard_2": "Research_PowerSlugs_4",
+  "Power_Shard_5": "Research_PowerSlugs_5",
+  "Pressure_Conversion_Cube": "Schematic_8-5",
+  "Pulse_Nobelisk": "Research_Quartz_3_4",
+  "Quartz_Crystal": "Research_Quartz_1_1",
+  "Quickwire": "Research_Caterium_2",
+  "Radio_Control_Unit": "Schematic_7-5",
+  "Reanimated_SAM": "Research_Alien_ActiveSAM",
+  "Reinforced_Iron_Plate": "Schematic_Tutorial2",
+  "Rifle_Ammo": "Research_Sulfur_4_1",
+  "Rocket_Fuel": "Research_Sulfur_RocketFuel",
+  "Rotor": "Schematic_2-1",
+  "Rubber": "Schematic_5-1",
+  "SAM_Fluctuator": "Research_Alien_SAMFluctuator",
+  "Screws": "Schematic_Tutorial2",
+  "Shatter_Rebar": "Research_Quartz_2_1",
+  "Silica": "Research_Quartz_1_2",
+  "Singularity_Cell": "Schematic_9-4",
+  "Smart_Plating": "Schematic_2-1",
+  "Smokeless_Powder": "Research_Sulfur_3",
+  "Solid_Biofuel": "Schematic_2-2",
+  "Spitter_Protein": "Research_AOrgans_0",
+  "Stator": "Schematic_4-1",
+  "Steel_Beam": "Schematic_3-4",
+  "Steel_Ingot": "Schematic_3-4",
+  "Steel_Pipe": "Schematic_3-4",
+  "Stinger_Protein": "Research_AO_Stinger",
+  "Stun_Rebar": "Research_Caterium_3_2",
+  "Sulfuric_Acid": "Schematic_7-5",
+  "Supercomputer": "Schematic_7-5",
+  "Superposition_Oscillator": "Schematic_9-2",
+  "Synthetic_Power_Shard": "Research_PowerSlugs_6",
+  "Thermal_Propulsion_Rocket": "Schematic_8-4",
+  "Time_Crystal": "Schematic_9-1",
+  "Turbo_Motor": "Schematic_8-4",
+  "Turbo_Rifle_Ammo": "Research_Sulfur_5_2",
+  "Turbofuel": "Research_Sulfur_TurboFuel",
+  "Unpackage_Ionized_Fuel": "Research_Sulfur_IonizedFuel",
+  "Unpackage_Rocket_Fuel": "Research_Sulfur_RocketFuel",
+  "Uranium_Fuel_Rod": "Schematic_8-1",
+  "Versatile_Framework": "Schematic_3-4",
+  "Wire": "Schematic_Tutorial1_5"
+ },
+ "machines": {
+  "Assembler": "Schematic_2-1",
+  "Blender": "Schematic_7-5",
+  "Coal_Generator": "Schematic_3-1",
+  "Constructor": "Schematic_Tutorial2",
+  "Converter": "Schematic_9-1",
+  "Foundry": "Schematic_3-4",
+  "Fuel_Generator": "Schematic_5-5",
+  "Manufacturer": "Schematic_5-2",
+  "Nuclear_Power_Plant": "Schematic_8-1",
+  "Packager": "Schematic_5-4",
+  "Particle_Accelerator": "Schematic_8-5",
+  "Quantum_Encoder": "Schematic_9-2",
+  "Refinery": "Schematic_5-1",
+  "Smelter": "Schematic_Tutorial1_5"
+ }
+}

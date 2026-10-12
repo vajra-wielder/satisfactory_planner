@@ -11,7 +11,7 @@
 import {
   SC, RECIPES,
   mCol, MABBR, itemName, MTIERS, ALL_MACHINES, MINER_TIERS, PROGRESS,
-  UNLOCKED_ALTS, isUnlocked, toggleUnlocked, setUnlockedAlts as setStateAlts,
+  UNLOCKED_ALTS, isUnlocked, toggleUnlocked, setUnlockedAlts as setStateAlts, UNLOCKS,
 } from './state.js';
 import { saveProgress } from './api.js';
 
@@ -30,6 +30,7 @@ const _isUnlocked = isUnlocked, _toggleUnlocked = toggleUnlocked;
 export function renderMachines() {
   const p  = document.getElementById('machpanel');
   p.innerHTML = '';
+  renderProgress(p);
   const en = new Set(PROGRESS.machines || ALL_MACHINES);
 
   MTIERS.forEach(tier => {
@@ -73,6 +74,58 @@ export function renderMachines() {
     p.appendChild(wrap);
   });
   renderMinerUnlock(p);
+}
+
+// ── Progress: the tier you've reached and its sub-tiers, and MAM research ──
+// Only milestones and research that unlock a recipe or machine are listed
+// (the rest don't change a plan). Picking a tier counts every sub-tier below
+// it done and shows its own to tick; the machines follow. Not set: everything
+// is allowed, as before.
+function renderProgress(p) {
+  const S = UNLOCKS.schematics, used = new Set([...Object.values(UNLOCKS.recipes), ...Object.values(UNLOCKS.machines)]);
+  const ids = Object.keys(S).filter(id => used.has(id));
+  if (!ids.length) return;
+  const done = PROGRESS.schematics ? new Set(PROGRESS.schematics) : null;
+  const ms = ids.filter(id => S[id].kind !== 'mam'), mam = ids.filter(id => S[id].kind === 'mam');
+  const tiers = [...new Set(ms.map(id => S[id].tier))].sort((a, b) => a - b);
+  const reached = done ? Math.max(0, ...ms.filter(id => done.has(id)).map(id => S[id].tier)) : null;
+  const wrap = document.createElement('div');
+  wrap.className = 'pg';
+  const chip = (id, label) => `<button class="mchip pg-c ${done?.has(id) ? 'on' : ''}" data-s="${id}" title="${S[id].name}">${label || S[id].name}</button>`;
+  const trees = {};
+  mam.forEach(id => (trees[S[id].tree] = trees[S[id].tree] || []).push(id));
+  wrap.innerHTML = `
+    <div class="pg-h">Progress <span class="n-hint">${done ? `Tier ${reached} · ${ms.filter(id => done.has(id)).length} milestones, ${mam.filter(id => done.has(id)).length} research` : 'not set — every recipe allowed'}</span></div>
+    <div class="pg-tiers">${tiers.map(t => `<button class="bsm pg-t ${reached === t ? 'act' : ''}" data-t="${t}" title="Tier ${t}: every sub-tier below it done">${t}</button>`).join('')}
+      <button class="bsm pg-t ${done ? '' : 'act'}" data-t="none" title="Everything unlocked: every recipe and machine">All</button></div>
+    ${done ? `<div class="pg-sub"><span class="n-hint">Tier ${reached}:</span>${ms.filter(id => S[id].tier === reached).map(id => chip(id)).join('')}</div>
+    <div class="pg-mam"><span class="n-hint">MAM</span>${Object.entries(trees).map(([t, l]) =>
+      `<div class="pg-tree"><b>${t}</b><span>${l.map(id => chip(id)).join('')}</span></div>`).join('')}</div>` : ''}`;
+  const save = sch => {
+    // the machines follow: unlocked where their milestone is done (those no milestone unlocks stay)
+    const on = new Set(sch || []), mm = UNLOCKS.machines;
+    const machines = sch ? [...new Set([...(PROGRESS.machines || ALL_MACHINES).filter(m => !mm[m]), ...Object.keys(mm).filter(m => on.has(mm[m]))])].sort()
+      : [...new Set([...(PROGRESS.machines || []), ...ALL_MACHINES])].sort();    // All: everything, machines too
+    Object.assign(PROGRESS, { schematics: sch ? [...on].sort() : null, machines });
+    SC.enabled_machines = [...(machines || [])];
+    saveProgress({ schematics: PROGRESS.schematics, machines }).catch(() => {});
+    renderMachines(); updMachBadge();
+    document.dispatchEvent(new CustomEvent('progress-changed'));
+  };
+  wrap.querySelectorAll('.pg-t').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.t === 'none') return save(null);
+    const t = +b.dataset.t;
+    // below: all done; this tier: as ticked (all, the first time you reach it); above: none; MAM as it was
+    const keep = done || new Set();
+    const first = !ms.some(id => S[id].tier === t && keep.has(id));
+    save([...ms.filter(id => S[id].tier < t || (S[id].tier === t && (first || keep.has(id)))), ...mam.filter(id => !done || keep.has(id))]);
+  }));
+  wrap.querySelectorAll('.pg-c').forEach(b => b.addEventListener('click', () => {
+    const on = new Set(done || []);
+    on.has(b.dataset.s) ? on.delete(b.dataset.s) : on.add(b.dataset.s);
+    save([...on]);
+  }));
+  p.appendChild(wrap);
 }
 
 // Miner tier unlocked — for every factory; miners always run at the highest

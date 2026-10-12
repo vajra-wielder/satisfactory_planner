@@ -84,7 +84,18 @@ def unlocks(recipes: List[str]) -> dict:
         "alts": sorted(k for k, c in g["recipes"].items() if c in have and c.startswith("Recipe_Alternate")),
         "machines": sorted(m for m, c in g["machines"].items() if c in have),
         "miner": best(g["miners"]), "belt": best(g["belts"]), "pipe": best(g["pipes"]),
+        "schematics": schematics_done(have, g),
     }
+
+
+def schematics_done(have: set, g: dict = None) -> List[str]:
+    """The milestones and MAM research a save has done: those that unlock a
+    recipe or machine it has (data/unlocks.json)."""
+    g = g or json.loads(_CLASSES.read_text(encoding="utf-8"))
+    u = json.loads((Path(__file__).parent / "data" / "unlocks.json").read_text(encoding="utf-8"))
+    done = {s for k, s in u["recipes"].items() if g["recipes"].get(k) in have}
+    done |= {s for m, s in u["machines"].items() if g["machines"].get(m) in have}
+    return sorted(done)
 
 
 def read(raw: bytes) -> dict:

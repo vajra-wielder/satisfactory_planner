@@ -215,6 +215,28 @@ export function renderKv(name, focusRowIndex = -1, focusTarget = 'key') {
 }
 
 // ── Add row ───────────────────────────────────────────────
+// ── One item's goal, for the goal tree ────────────────────
+const GOAL_KV = { obj: 'objective', must: 'must_produce', min: 'min_produce', max: 'max_produce' };
+/** What's set for an item: {obj: weight, must, min, max} (only those set). */
+export function goalOf(item) {
+  const g = {};
+  Object.keys(GOAL_KV).forEach(n => {
+    const row = KVS[n].rows.find(r => r.key === item);
+    if (row) g[n] = evalExpr(String(row.val)) ?? (parseFloat(row.val) || 0);
+  });
+  return g;
+}
+/** Set an item's goal — {obj?, must?, min?, max?}; what's left out is cleared. */
+export function setGoal(item, g) {
+  Object.keys(GOAL_KV).forEach(n => {
+    const st = KVS[n];
+    st.rows = st.rows.filter(r => r.key !== item);
+    if (g[n] != null && g[n] !== '' && !Number.isNaN(+g[n])) st.rows.push({ key: item, val: String(+g[n]) });
+    syncKv(n);
+    renderKv(n);
+  });
+}
+
 export function addKv(name) {
   KVS[name].rows.push({ key: '', val: '' });
   renderKv(name, KVS[name].rows.length - 1, 'key');

@@ -59,11 +59,24 @@ export function setRecipes(obj) { RECIPES = obj; }
 // Extractors (rate per node at 100%, normal purity) and what's unlocked — from /api/boot
 export let EXTRACTORS = {}, PURITY = {}, MINER_TIERS = {}, MAX_SHARDS = 3;
 // Shared unlocks, for every factory: miner tier, machines, belt/pipe tier
-export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2' };
+export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2', schematics: null };
+// What unlocks each recipe and machine (data/unlocks.json): milestones (tier + sub-tier), MAM research
+export let UNLOCKS = { schematics: {}, recipes: {}, machines: {} };
 export function setExtractors(b) {
   EXTRACTORS = b.extractors || {}; PURITY = b.purity || {};
   MINER_TIERS = b.miner_tiers || {}; MAX_SHARDS = b.max_shards ?? 3;
   Object.assign(PROGRESS, b.progress || {});
+  if (b.unlocks) UNLOCKS = b.unlocks;
+}
+/** The milestone or research that unlocks a recipe, if it's one you haven't done (null: you can use it). */
+export function lockedBy(key) {
+  const s = UNLOCKS.recipes[key];
+  return s && PROGRESS.schematics && !PROGRESS.schematics.includes(s) ? s : null;
+}
+/** "Tier 6 · Industrial Manufacturing", "MAM · Quartz · Quartz Crystals" */
+export function unlockName(id) {
+  const s = UNLOCKS.schematics[id];
+  return !s ? id : s.kind === 'mam' ? `MAM · ${s.tree} · ${s.name}` : `Tier ${s.tier} · ${s.name}`;
 }
 
 // Machine colour map — populated after recipes are loaded

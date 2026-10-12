@@ -125,6 +125,7 @@ def _build_boot_bytes():
         "miner_tiers":  supply.MINER_TIERS,
         "max_shards":   supply.MAX_SHARDS,
         "progress":     _progress(),
+        "unlocks":      supply.UNLOCKS,
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
@@ -1220,6 +1221,9 @@ def _unlock_changes(u) -> dict:
     for k in ("miner", "belt", "pipe"):
         if u.get(k) and u[k] != prog[k]:
             out[k] = [prog[k], u[k]]
+    if u.get("schematics") is not None and set(u["schematics"]) != set(prog.get("schematics") or []):
+        have = set(prog.get("schematics") or [])
+        out["schematics"] = {"add": sorted(set(u["schematics"]) - have), "drop": sorted(have - set(u["schematics"]))}
     return out
 
 # The game's own map, drawn under the nodes unless you add your own picture:
@@ -1385,6 +1389,7 @@ def _build_scenario(b: dict) -> Scenario:
         max_power_mw=cap,
         notes=b.get("notes", "") or "",
         unlocked_alt_recipes=unlocked,
+        locked_recipes=supply.locked_recipes(prog),
         minimize_new_alts=bool(b.get("minimize_new_alts", False)),
         sloop_search="exact" if b.get("sloop_search") == "exact" else "dive",
         machines_first=bool(b.get("machines_first", False)),
@@ -1905,7 +1910,7 @@ class Handler(BaseHTTPRequestHandler):
             if not u:
                 self._json(400, {"error": "No save with unlocks read yet"})
                 return
-            supply.save_progress({"machines": u["machines"], **{k: u[k] for k in ("miner", "belt", "pipe") if u.get(k)}})
+            supply.save_progress({"machines": u["machines"], **{k: u[k] for k in ("miner", "belt", "pipe", "schematics") if u.get(k)}})
             _save_unlocked_alts(u["alts"])
             self._json(200, {"progress": _progress(), "unlocked": _load_unlocked_alts()})
             return

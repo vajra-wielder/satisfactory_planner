@@ -62,7 +62,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   the map on them. Zoom with the wheel, + / −,
   double-click or the buttons; 0 shows the whole map; arrows pan
 - Shared unlocks, for every factory: the machines, the miner tier (miners always
-  run at it), the best belt and pipe
+  run at it), the best belt and pipe, the tier and milestones reached
 - From factories: take items another saved factory makes — an import adds to
   what the factory makes of it, it doesn't cap it. Pick the item (from
   everything your other factories' last plans make) and the factory; the rate
@@ -108,6 +108,34 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   yields Uranium/Plutonium waste, so full Plutonium and Ficsonium chains can be
   planned
 - Last solve of each scenario cached and restored when the scenario is reopened
+
+### Goal tree — what your resources can become
+- Pick resources (on the map or typed in) and the Tree view in the middle
+  (T, or Plan | Tree at its top left) grows from them: each resource a root
+  on the left, each step of processing a column to the right — branches meet
+  where a recipe takes two of them and split where one part feeds many. A
+  factory with no plan yet opens on it; solving switches to the plan
+- Click a tile to set its goal — maximize (with a weight), exactly, at least,
+  at most, or a range — and how much of it to store; the goals and storage
+  on the left fill in, and the tile wears a badge (max ×2, ≥10, 5–20, 📦2)
+- What's next adds, faded, what you can't make yet — from resources you
+  don't have, or a milestone not done. Hover one to see it; it stays out of
+  the fit. Click it for what it needs at a rate you pick: the parts you can't
+  make (with how much), where to get each — a saved factory with some left
+  (Import), nodes on the map, or a fixed supply — and the milestone or
+  machine it waits on ("I've done it"). Accept one and it's in your
+  resources; the tree grows, and once the part is in reach its goal editor
+  opens. Hovering a tile lights up what it's made from and what it makes
+
+### Progress — tier, sub-tiers and MAM research
+- In Unlocks: the tier you've reached (0–9), its sub-tiers (milestones) to
+  tick, and MAM research by tree — or All, everything. Picking a tier counts
+  every sub-tier below it done; the machines follow. Read a save and it says
+  which it has done; one click makes them match
+- Solves use only the recipes they unlock (alternates still come from hard
+  drives); the goal tree grows to match. Which milestone or research unlocks
+  each recipe and machine is in data/unlocks.json, built by
+  tools/gen_unlocks.py from SatisfactoryTools' open 1.0 game data
 
 ### Layout — by how often you go there
 - Left: what goes in — resources, goals, solve settings, notes; Solve and
@@ -262,6 +290,7 @@ satisfactory-planner/
 │   ├── sidebar.js        sidebar shell, autocomplete
 │   ├── dock.js           the right panel: Alternates, Analysis, Build cost, Issues
 │   ├── new-alts.js       the Alternates tab: worth unlocking, solver pruning
+│   ├── goal-tree.js      the Tree view: what your resources can become, goals on it
 │   ├── supply-panel.js   resources, imports, storage, sent out
 │   ├── kv-panel.js       goals
 │   ├── machines-panel.js Unlocks: machines, miner tier, unlocked alternates
@@ -279,11 +308,13 @@ satisfactory-planner/
 │   ├── recipes_complete.yaml   recipes and machines (1.0)
 │   ├── map_nodes.json          every resource node, well satellite and geyser
 │   ├── game_classes.json       game class names, for reading saves
+│   ├── unlocks.json            what milestone or MAM research unlocks each recipe and machine
 │   └── unlocked_alts.yaml      your unlocked alternates
 │   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*,
 │    and map_game.avif, the game's map, fetched once)
 ├── scenarios/            your factories (.results: cached plans; .history: earlier versions)
 ├── backups/              your backups (git-ignored)
+├── tools/gen_unlocks.py   builds data/unlocks.json from the game data
 └── tests/
 ```
 
@@ -325,6 +356,7 @@ node tests/spare.e2e.mjs                    # unused node supply, brought to a f
 node tests/typing.e2e.mjs                   # typed items stay, commit and save; misspelt ones are marked (browser)
 node tests/infeasible.e2e.mjs               # goals that can't be met: why, and a fix that works (browser)
 node tests/newalts.e2e.mjs                  # new alternates: listed after a solve, tick and solve (browser)
+node tests/tree.e2e.mjs                     # the goal tree: goals on tiles, what's next, tiers (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```

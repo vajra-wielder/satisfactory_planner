@@ -280,7 +280,9 @@ class Save(unittest.TestCase):
         u = savefile.unlocks(got["recipes"])
         # the game calls the Foundry's recipe Recipe_SmelterMk1
         self.assertEqual(u, {"alts": ["Alt_Compacted_Coal"], "machines": ["Constructor", "Foundry"],
-                             "miner": "Mk2", "belt": "Mk4", "pipe": None})
+                             "miner": "Mk2", "belt": "Mk4", "pipe": None,
+                             # the milestones those come from: the Foundry's Tier 3, the Constructor's HUB upgrade
+                             "schematics": ["Schematic_3-4", "Schematic_Tutorial2"]})
 
 
 if __name__ == "__main__":
