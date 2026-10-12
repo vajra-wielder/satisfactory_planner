@@ -91,16 +91,29 @@ function renderProgress(p) {
   const reached = done ? Math.max(0, ...ms.filter(id => done.has(id)).map(id => S[id].tier)) : null;
   const wrap = document.createElement('div');
   wrap.className = 'pg';
-  const chip = (id, label) => `<button class="mchip pg-c ${done?.has(id) ? 'on' : ''}" data-s="${id}" title="${S[id].name}">${label || S[id].name}</button>`;
+  // what each lets you make: its recipes' products
+  // (packing left out; where two make the same thing, what each makes it from)
+  const made = {}, count = {};
+  Object.entries(UNLOCKS.recipes).forEach(([k, id]) => {
+    const r = RECIPES[k], out = r && Object.keys(r.outputs)[0];
+    if (!r || r.machine === 'Packager') return;
+    (made[id] = made[id] || []).push([out, Object.keys(r.inputs)[0]]);
+    count[out] = (count[out] || 0) + 1;
+  });
+  const makes = Object.fromEntries(Object.entries(made).map(([id, l]) => [id, new Set(l.map(([o, i]) =>
+    itemName(o) + (count[o] > 1 && i ? ` from ${itemName(i)}` : '')))]));
+  const what = id => [...(makes[id] || [])].join(' · ');
+  const chip = (id, label) => `<button class="mchip pg-c ${done?.has(id) ? 'on' : ''}" data-s="${id}"
+    title="${S[id].name}${what(id) ? ` — makes ${what(id)}` : ''}">${label || S[id].name}</button>`;
   const trees = {};
-  mam.forEach(id => (trees[S[id].tree] = trees[S[id].tree] || []).push(id));
+  mam.filter(id => makes[id]).forEach(id => (trees[S[id].tree] = trees[S[id].tree] || []).push(id));
   wrap.innerHTML = `
     <div class="pg-h">Progress <span class="n-hint">${done ? `Tier ${reached} · ${ms.filter(id => done.has(id)).length} milestones, ${mam.filter(id => done.has(id)).length} research` : 'not set — every recipe allowed'}</span></div>
     <div class="pg-tiers">${tiers.map(t => `<button class="bsm pg-t ${reached === t ? 'act' : ''}" data-t="${t}" title="Tier ${t}: every sub-tier below it done">${t}</button>`).join('')}
       <button class="bsm pg-t ${done ? '' : 'act'}" data-t="none" title="Everything unlocked: every recipe and machine">All</button></div>
     ${done ? `<div class="pg-sub"><span class="n-hint">Tier ${reached}:</span>${ms.filter(id => S[id].tier === reached).map(id => chip(id)).join('')}</div>
     <div class="pg-mam"><span class="n-hint">MAM</span>${Object.entries(trees).map(([t, l]) =>
-      `<div class="pg-tree"><b>${t}</b><span>${l.map(id => chip(id)).join('')}</span></div>`).join('')}</div>` : ''}`;
+      `<div class="pg-tree"><b>${t}</b><span>${l.map(id => chip(id, what(id))).join('')}</span></div>`).join('')}</div>` : ''}`;
   const save = sch => {
     // the machines follow: unlocked where their milestone is done (those no milestone unlocks stay)
     const on = new Set(sch || []), mm = UNLOCKS.machines;

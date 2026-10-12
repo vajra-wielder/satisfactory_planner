@@ -113,7 +113,10 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Pick resources (on the map or typed in) and the Tree view in the middle
   (T, or Plan | Tree at its top left) grows from them: each resource a root
   on the left, each step of processing a column to the right — branches meet
-  where a recipe takes two of them and split where one part feeds many. A
+  where a recipe takes two of them and split where one part feeds many.
+  Packing fluids is for moving them, so unpacking never shows and a packaged
+  item only where a recipe takes it (Packaged Water for Diluted Packaged
+  Fuel), a step after its fluid. A
   factory with no plan yet opens on it; solving switches to the plan
 - Click a tile to set its goal — maximize (with a weight), exactly, at least,
   at most, or a range — and how much of it to store; the goals and storage
@@ -129,7 +132,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 
 ### Progress — tier, sub-tiers and MAM research
 - In Unlocks: the tier you've reached (0–9), its sub-tiers (milestones) to
-  tick, and MAM research by tree — or All, everything. Picking a tier counts
+  tick, and MAM research by tree, each chip saying what it lets you make
+  (Quickwire, Silica, Power Shard from Blue Power Slug…) — or All, everything. Picking a tier counts
   every sub-tier below it done; the machines follow. Read a save and it says
   which it has done; one click makes them match
 - Solves use only the recipes they unlock (alternates still come from hard

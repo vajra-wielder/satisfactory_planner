@@ -29,21 +29,33 @@ const TW = 150, TH = 34, CW = 210, RH = 42;          // tile, column and row siz
 let T = null;                 // the built tree: { tiles: {item: tile}, edges, raw, bounds }
 let VIEW = null, NEXT = false, OPEN = null;
 
-// Items nothing makes (other than the converter's swaps and unpacking): mined, pumped, found
+// Packing is for moving fluids about, not a step of making: unpacking never
+// shows, and packing only where a recipe takes the packaged item
+let USED = null;
+function transport(k, r) {
+  if (r.machine !== 'Packager') return false;
+  if (!USED) {
+    USED = new Set();
+    Object.values(RECIPES).forEach(x => { if (x.machine !== 'Packager') Object.keys(x.inputs).forEach(i => USED.add(i)); });
+  }
+  return k.startsWith('Unpackage_') || !Object.keys(r.outputs).some(o => USED.has(o));
+}
+
+// Items nothing makes (other than the converter's swaps): mined, pumped, found
 let RAW = null;
 function raw() {
   if (RAW) return RAW;
   const made = new Set();
-  Object.values(RECIPES).forEach(r => { if (r.machine !== 'Converter' && r.machine !== 'Packager') Object.keys(r.outputs).forEach(i => made.add(i)); });
-  RAW = new Set(ALL_ITEMS.filter(i => !made.has(i) && Object.values(RECIPES).some(r => r.inputs[i])));
+  Object.entries(RECIPES).forEach(([k, r]) => { if (r.machine !== 'Converter' && !transport(k, r)) Object.keys(r.outputs).forEach(i => made.add(i)); });
+  RAW = new Set(ALL_ITEMS.filter(i => !made.has(i) && Object.entries(RECIPES).some(([k, r]) => r.inputs[i] && !transport(k, r))));
   return RAW;
 }
 
 const machineOn = m => !PROGRESS.machines || PROGRESS.machines.includes(m);
 const altOn = k => UNLOCKED_ALTS.has(k) || (SC.alternate_recipes_enabled || []).includes(k);
 // The recipes a solve here may use; and those you could later (any machine or milestone, unlocked alternates)
-const nowOk = (k, r) => !EVENT.test(k) && machineOn(r.machine) && !lockedBy(k) && (!r.alternate || altOn(k));
-const laterOk = (k, r) => !EVENT.test(k) && (!r.alternate || altOn(k));
+const nowOk = (k, r) => !EVENT.test(k) && !transport(k, r) && machineOn(r.machine) && !lockedBy(k) && (!r.alternate || altOn(k));
+const laterOk = (k, r) => !EVENT.test(k) && !transport(k, r) && (!r.alternate || altOn(k));
 
 // Fewest steps to each item from `have`, with the recipes `ok` allows
 function levels(have, ok) {
