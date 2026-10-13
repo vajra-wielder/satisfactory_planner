@@ -30,6 +30,7 @@ import { storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './supply-p
 import { saveProgress, fetchNeeds } from './api.js';
 import { gainText } from './new-alts.js';
 import { parseSplit, design, splitSVG } from './splits.js';
+import { openSplit } from './build-sheet.js';
 
 const $ = id => document.getElementById(id);
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -261,7 +262,14 @@ function draw() {
       <span class="gt-n">${esc(itemName(t.item))}</span><span class="gt-m">${made ? `<span class="gt-s pl">${num(made)}/min</span>` : sup ? `<span class="gt-s">${num(sup)}/min</span>` : ''}${badge(t.item)}</span>
       ${s ? `<b class="gs" data-sug="${s.key}" data-for="${t.item}" title="Worth unlocking: ${esc(rname(RECIPES[s.key]))} — ${esc(gainText(s, false))}. Click to pick it">✨</b>` : ''}${t.ghost ? '' : cycleBadge(t.item)}</div>`;
   }).join('');
-  box.querySelector('.gt-count').textContent = `${tiles.filter(t => !t.ghost).length} you can make${NEXT ? ` · ${tiles.filter(t => t.ghost).length} next` : ''}${P ? ' · lit: the plan' : ''}`;
+  // and what alternates would bring in reach (not unlocked ones too: hard drives)
+  const real = tiles.filter(t => !t.ghost);
+  T.withAlts ??= [...levels(T.have, altsOk).keys()].filter(i => (!T.tiles[i] || T.tiles[i].ghost) && !EVENT.test(i) && ways(i).length).length;
+  const withAlts = T.withAlts;
+  const cnt = box.querySelector('.gt-count');
+  cnt.innerHTML = `${real.length} you can make${withAlts ? ` · <a class="gt-more" title="Show them, faded — click one for the alternates that get there">${withAlts} more with alternates</a>` : ''}${
+    NEXT ? ` · ${tiles.filter(t => t.ghost).length} next` : ''}${P ? ' · lit: the plan' : ''}`;
+  cnt.querySelector('.gt-more')?.addEventListener('click', () => { NEXT = true; $('gt-next').checked = true; renderTree(); });
 }
 
 function fit() {
@@ -606,7 +614,9 @@ export function initTree() {
       HIT = (HIT + (e.key === 'ArrowDown' ? 1 : -1) + hits.length) % hits.length; drawSearch();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (hits[HIT]) goHit(hits[HIT].dataset.hit);
+      const sp = $('gt-split');
+      if (sp.style.display === 'block' && sp.querySelector('svg')) openSplit(sp.querySelector('.sp-h')?.firstChild?.textContent?.trim() || 'Splitters and mergers', sp.innerHTML);
+      else if (hits[HIT]) goHit(hits[HIT].dataset.hit);
     } else if (e.key === 'Escape') { e.preventDefault(); q.value = ''; drawSearch(); q.blur(); }
   });
   $('gt-hits').addEventListener('mousedown', e => { const h = e.target.closest('[data-hit]'); if (h) { e.preventDefault(); goHit(h.dataset.hit); } });

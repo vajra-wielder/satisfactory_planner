@@ -815,3 +815,45 @@ export function applyCut(res) {
 
 // After a solve: storage offers and sent-out shortfalls follow the new plan
 export function onResult() { PAINTS.forEach(p => p()); renderSentOut(); }
+
+// ── For Analysis: where more of a resource is ─────────────
+/** Free nodes of a resource (no other factory mines them), nearest this
+ *  factory's own nodes first: [{id, p, dist (m) | null, rate}]. */
+export function freeNodes(resource, k = 3) {
+  return loadMap().then(all => {
+    const mine = new Set(NODES.flatMap(n => n.nodes || []));
+    const taken = nodesTaken();
+    const pts = [...mine].map(mapNode).filter(Boolean);
+    const at = pts.length ? [pts.reduce((s, n) => s + n.x, 0) / pts.length, pts.reduce((s, n) => s + n.y, 0) / pts.length] : null;
+    const base = resource === 'Crude_Oil' ? EXTRACTORS.Oil_Extractor?.rate : MINER_TIERS[minerOf()];
+    return all.filter(n => n.r === resource && !n.w && !mine.has(n.id) && !taken[n.id])
+      .map(n => ({ id: n.id, p: n.p, dist: at ? Math.hypot(n.x - at[0], n.y - at[1]) : null, rate: (base || 0) * (PURITY[n.p] ?? 1) }))
+      .sort((a, b) => (a.dist ?? 0) - (b.dist ?? 0) || b.rate - a.rate).slice(0, k);
+  });
+}
+/** Mine one more map node here. */
+export function takeNode(id) {
+  const m = mapNode(id);
+  if (!m || m.w) return;
+  const ex = m.r === 'Crude_Oil' ? 'Oil_Extractor' : 'Miner';
+  const row = NODES.find(n => n.resource === m.r && n.extractor === ex && n.nodes);
+  if (row) { if (!row.nodes.includes(id)) row.nodes.push(id); row.node_shards = { ...(row.node_shards || {}), [id]: 0 }; }
+  else NODES.push({ resource: m.r, extractor: ex, nodes: [id], node_shards: { [id]: 0 } });
+  syncSupply(); renderNodes();
+}
+
+/** What saving this plan would leave short: other factories taking more of an
+ *  item than it now makes (its own storage counted too).
+ *  [{item, short, takers: [names]}] — from the last solve. */
+export function shortfalls() {
+  if (!RESULT || !String(RESULT.status || '').startsWith('Optimal')) return [];
+  const made = ownMade(), out = [];
+  Object.entries(OUTPUTS?.claims[ownKey()] || {}).forEach(([item, by]) => {
+    const takers = Object.entries(by).filter(([k, v]) => k !== STORAGE && k !== ownKey() && v > 1e-6);
+    if (!takers.length) return;
+    const total = takers.reduce((s, [, v]) => s + v, 0) + storageOf(item);
+    const short = total - (made[item] || 0);
+    if (short > 1e-3) out.push({ item, short, takers: takers.map(([k]) => facName(k)) });
+  });
+  return out;
+}

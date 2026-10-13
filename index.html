@@ -99,6 +99,10 @@ html, body {
 .far { display: none; position: fixed; inset: 0; z-index: 1500; background: rgba(0,0,0,.55); }
 .far.show { display: flex; }
 #fac-drawer .far-box { width: min(380px, 92vw); height: 100%; border-right: 1px solid var(--b2); }
+#sp-full { align-items: center; justify-content: center; }
+#sp-full .far-box { max-width: 96vw; max-height: 90vh; border: 1px solid var(--b2); border-radius: var(--rlg); }
+#sp-full .far-body { overflow: auto; }
+.sp-d svg { cursor: zoom-in; }
 #unlocks-modal { align-items: flex-start; justify-content: center; padding-top: 56px; }
 #unlocks-modal .far-box { width: min(560px, 94vw); max-height: 84vh; border: 1px solid var(--b2); border-radius: var(--rlg); }
 .far-box { background: var(--p2); display: flex; flex-direction: column; box-shadow: 0 24px 64px rgba(0,0,0,.7); padding: 14px 16px; gap: 10px; }
@@ -629,6 +633,27 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .sp-h b { color: var(--acc); }
 .sp-d { overflow: auto; }
 .sp-svg { display: block; }
+#save-impact { margin-top: 6px; font-size: 11px; line-height: 1.4; }
+#save-impact .bsm { width: 100%; margin-top: 4px; }
+#undo-note { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 3000; background: var(--p3); border: 1px solid var(--b2);
+  border-radius: var(--rsm); padding: 6px 12px; font-size: 12px; color: var(--t2); opacity: 0; transition: opacity .15s; pointer-events: none; }
+#undo-note.on { opacity: 1; }
+.an-node { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--t2); margin-top: 3px; }
+.an-node > span:nth-child(3) { flex: 1; text-align: right; }
+.an-p { font: 700 9px var(--mono); width: 15px; height: 15px; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; color: #0c0e13; background: #9aa6b8; }
+.an-p.pure { background: #7bc96f; } .an-p.normal { background: #e6a23c; } .an-p.impure { background: #d9616f; }
+.bs-l { border-top: 1px solid var(--b); padding: 6px 0 4px; }
+.bs-h { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.bs-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t); }
+.bs-k { font-family: var(--mono); font-size: 11px; color: var(--acc); white-space: nowrap; }
+.bs-alt { text-align: right; margin: 0; font-size: 10px; }
+.bs-io { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--t2); padding-left: 8px; }
+.bs-io > span:first-child { flex: 1; }
+.bs-io b { font-family: var(--mono); font-weight: 600; color: var(--t); }
+.bs-io.out { color: var(--t3); }
+.bs-sp { padding: 0 6px !important; }
+.bs-sp.on { border-color: var(--acc); color: var(--acc); }
+.bs-d:not(:empty) { margin: 4px 0 6px 8px; padding: 6px; border: 1px solid var(--b2); border-radius: var(--rsm); background: var(--p2); overflow: auto; }
 .sp-e { fill: none; stroke: #5aa0e8; stroke-width: 2; opacity: .8; }
 .sp-e.back { stroke-dasharray: 5 4; stroke: #8f7cf0; }
 .sp-e.over { stroke: var(--red, #e5484d); }
@@ -640,6 +665,8 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .sp-n.split { fill: #e6a23c33; stroke: #e6a23c; } .sp-n.merge { fill: #4fb3a933; stroke: #4fb3a9; }
 .sp-nt { font: 700 10px var(--mono); fill: var(--t1); pointer-events: none; }
 .gt-bar { position: absolute; top: 10px; right: 12px; background: var(--bg); padding: 2px 4px; border-radius: 6px; display: flex; align-items: center; gap: 10px; z-index: 2; cursor: default; }
+.gt-more { color: var(--acc); cursor: pointer; }
+.gt-more:hover { text-decoration: underline; }
 .gt-nx { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--t2); cursor: pointer; }
 .gt-nx input { width: auto; margin: 0; }
 #gt-empty { position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%); max-width: 360px; text-align: center; font-size: 12.5px; line-height: 1.6; }
@@ -1066,6 +1093,7 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
 
     <div id="sbb">
       <button class="bsolve" id="bsolve">&#9654; Solve</button>
+      <div id="save-impact" style="display:none"></div>
       <div style="display:flex;gap:5px;margin-top:5px">
         <button class="bsm" style="flex:1" id="bsave">&#x1F4BE; Save</button>
         <button class="bsm" id="breset" title="Reset all fields">&#8635;</button>
@@ -1126,7 +1154,7 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
     <div class="dk-pane ts" id="dk-analysis" data-title="Analysis" data-sub="what limits this plan" style="display:none">
       <div id="analysis-body"></div>
     </div>
-    <div class="dk-pane ts" id="dk-build" data-title="Build cost" data-sub="no belts, pipes or foundations" style="display:none">
+    <div class="dk-pane ts" id="dk-build" data-title="Build cost" data-sub="machines, materials and each line to place" style="display:none">
       <div id="bcb" class="bcb"></div>
     </div>
     <div class="dk-pane ts" id="dk-issues" data-title="Issues" data-sub="from the last solve" style="display:none">
@@ -1194,6 +1222,12 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       <div style="display:flex;gap:6px;align-items:center"><button class="bsm" id="fac-new" title="Start a new factory (clears the planner)">+ New factory</button>
       <button class="wmc" data-far-close>&times;</button></div></div>
     <div class="far-body ts"><div id="savedlist"></div></div>
+  </div>
+</div>
+<div id="sp-full" class="far">
+  <div class="far-box">
+    <div class="wmh"><h3 id="sp-full-t">Splitters and mergers</h3><button class="wmc" data-far-close>&times;</button></div>
+    <div class="far-body" id="sp-full-b"></div>
   </div>
 </div>
 <div id="unlocks-modal" class="far">

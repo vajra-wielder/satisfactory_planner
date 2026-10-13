@@ -137,6 +137,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   to nothing) or at most some; or exactly so much, on its own — and how much
   of it to store; the goals and storage
   on the left fill in, and the tile wears a badge (max ×2, ≥10, 5–20, 📦2)
+- The tree's bar counts what you can make and how many more alternates would
+  bring in reach (click it: they show, faded)
 - What's next adds, faded, what you can't make yet — from resources you
   don't have, or a milestone not done. Hover one to see it; it stays out of
   the fit. Click it: the alternates that get it from what you have ("Use
@@ -169,7 +171,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Right panel, for reviewing and improving the plan: Analysis (what limits
   the plan), Alternates (new ones worth unlocking, and the solver's pruning),
   Build cost (one list of machines and extractors, then the materials — add any
-  other saved factories or the grid's geothermal to one list) and Issues. Its rail shows a
+  other saved factories or the grid's geothermal to one list — then the build
+  sheet) and Issues. Its rail shows a
   count on each; a click or 1 / 2 / 3 / 4 opens one, again closes it; the
   wheel over the rail steps through them; `]` opens or closes the panel.
   Issues opens by itself when a solve falls short
@@ -178,6 +181,27 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   machines, miner, the alternates you've unlocked in the game, read a save),
   which are the same for every factory
 - The Blackboard for planning factories together
+
+### From plan to building
+- Build sheet (Build cost, under the materials): every line the plan runs,
+  in the order you'd build it — its machines and clock (the even clock the
+  plan uses, the least power, or all but one at 100%, the easiest to set),
+  what goes in and out and the belt or pipe each needs at your tier (or how
+  many). ⑂ on an input draws the splitters and mergers that give every
+  machine exactly its share; click a drawing to see it large. The lines go
+  into Copy as a list too
+- Limits point at fixes: in Analysis, a resource that limits the plan lists
+  the nearest free nodes of it (no other factory mines them) — how far from
+  this factory's nodes, what each gives at your miner, and about how much
+  more of your goal that is (its shadow price, up to where it stops helping).
+  Add & solve takes one and solves again
+- Before saving: if this plan leaves a factory that takes from it short, it
+  says so by Save — who, of what, how much — with Save and re-solve them (this
+  one, then every factory that takes from it, in order); and if it puts the
+  grid short (your saved factories' power with this plan in its place)
+- Undo: Ctrl+Z steps back through this factory's edits (goals, resources,
+  imports, storage, picks on the tree or the map, settings), Ctrl+Shift+Z or
+  Ctrl+Y forward; opening another factory starts afresh. Solving isn't undone
 
 ### Getting around
 - Go to anything (Ctrl+K or /): a system, a saved factory, an action (solve,
@@ -206,7 +230,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   inside factories) — and plan the network: which recipe runs where, what
   crosses each route (items, stacks, and the freight cars, trucks, tractors or
   drones it keeps busy: a freight car holds 32 stacks or 1,600 m³ in a fluid
-  car, a truck 48, a tractor 25, a drone 9; fluids by road or air go packaged),
+  car, a truck 48, a tractor 25, a drone 9; fluids by road or air go packaged —
+  one round trip carries a load each way, so a route keeps busy what its
+  heavier way needs, and what comes back rides along): a train of so many
+  freight and fluid cars with a platform per car at each end, so many trucks
+  or tractors with a station at each end, or drones — a port pair each, and
+  about how many batteries a minute (24,000 MJ a trip plus 12 MJ a metre
+  between the factories, an estimate; the port's own readout is exact),
   what each factory draws, and how much more each goal the leftovers could make.
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
@@ -246,7 +276,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   feeds a few outputs (the ways of sharing them out are searched, and merging
   them all first), the fewest structures win; spare streams loop back
   (dashed), what's left over leaves on its own belt, and a belt over your tier
-  shows red. `into`, `to`, `->` or `>`; `n x rate` for n belts; sums work
+  shows red. `into`, `to`, `->` or `>`; `n x rate` for n belts; sums work;
+  Enter (or a click on the drawing) shows it large
 - Scenario-based planning
 
 ### Interactive Graph
@@ -326,8 +357,9 @@ satisfactory-planner/
 │   ├── map-picker.js     the world map: picking nodes, the Blackboard map
 │   ├── save-import.js    reading a save
 │   ├── graph.js          the production graph
-│   ├── analysis.js       factory analysis
-│   ├── blackboard.js     logistics between and inside factories
+│   ├── analysis.js       factory analysis, and where to lift its limits
+│   ├── build-sheet.js    the build sheet: each line, its clocks, belts and splits
+│   ├── blackboard.js     logistics between factories
 │   ├── bundles.js        bands between factories (geometry)
 │   ├── splits.js         belt splits (geometry)
 │   ├── chain.js          re-solving factories in order
@@ -386,6 +418,7 @@ node tests/typing.e2e.mjs                   # typed items stay, commit and save;
 node tests/infeasible.e2e.mjs               # goals that can't be met: why, and a fix that works (browser)
 node tests/newalts.e2e.mjs                  # new alternates: listed after a solve, tick and solve (browser)
 node tests/tree.e2e.mjs                     # the goal tree: goals on tiles, what's next, tiers (browser)
+node tests/build.e2e.mjs                    # build sheet, splits per line, limits with free nodes (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```

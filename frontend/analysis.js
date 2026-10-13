@@ -7,6 +7,7 @@ import { SC, RESULT, RECIPES, mCol, MABBR, itemName } from './state.js';
 import { fetchDuals } from './api.js';
 import { openDock, closeDock, dockTab } from './dock.js';
 import { _fmtSpace } from './ui.js';
+import { freeNodes, takeNode } from './supply-panel.js';
 
 // ── DOM helpers ───────────────────────────────────────────
 function section(parent, title, extraHTML = '') {
@@ -180,6 +181,7 @@ function renderAnalysis() {
             <span>${pct.toFixed(1)}%</span>
           </div>
           <div style="font-size:11px">${shadowLine}</div>
+          ${pct >= 99 && dual > 1e-4 ? `<div class="an-fix" data-res="${item}" data-dual="${dual}" data-room="${satAt !== null ? Math.max(0, satAt - available) : ''}"></div>` : ''}
         </div>
       `;
     });
@@ -193,6 +195,8 @@ function renderAnalysis() {
         </p>`;
     }
   }
+
+  fillFixes(el);
 
   // ── Power breakdown ───────────────────────────────────────────────────────
   section(el, 'Power Breakdown');
@@ -249,3 +253,32 @@ function renderAnalysis() {
 
 }
 
+
+// A limit, with where to lift it: the nearest free nodes of it, what each
+// gives and about what that's worth (its shadow price, up to where it stops
+// helping) — add one, and the plan is solved again
+const num = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(v < 10 ? 2 : 1)).toLocaleString();
+function worth(dual, extra) {
+  const obj = Object.entries(SC.objective || {});
+  const v = dual * extra;
+  return obj.length === 1 ? `≈ +${num(v / (+obj[0][1] || 1))}/min ${itemName(obj[0][0])}` : `≈ +${num(v)} score`;
+}
+function fillFixes(el) {
+  el.querySelectorAll('.an-fix').forEach(box => {
+    const res = box.dataset.res, dual = +box.dataset.dual, room = box.dataset.room === '' ? Infinity : +box.dataset.room;
+    freeNodes(res).then(list => {
+      if (!box.isConnected) return;
+      if (!list.length) { box.innerHTML = '<span class="n-hint">No free nodes of it left on the map — import it, or an alternate that needs less.</span>'; return; }
+      box.innerHTML = `<div class="n-hint" style="margin:4px 0 2px">Nearest free nodes:</div>` + list.map(n => `
+        <div class="an-node"><span class="an-p ${n.p}">${n.p[0].toUpperCase()}</span>
+          <span>${n.dist == null ? '' : `${n.dist < 1000 ? `${Math.round(n.dist / 10) * 10} m` : `${(n.dist / 1000).toFixed(1)} km`} · `}+${num(n.rate)}/min</span>
+          <span class="n-hint">${worth(dual, Math.min(n.rate, room))}</span>
+          <button class="bsm act" data-take="${n.id}" title="Mine it here, and solve again">Add &amp; solve</button></div>`).join('');
+      box.querySelectorAll('[data-take]').forEach(b => b.addEventListener('click', () => {
+        takeNode(b.dataset.take);
+        document.dispatchEvent(new Event('supply-changed'));
+        document.getElementById('bsolve')?.click();
+      }));
+    });
+  });
+}

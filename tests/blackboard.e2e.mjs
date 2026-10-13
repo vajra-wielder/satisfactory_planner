@@ -147,7 +147,18 @@ try {
     await page.waitForFunction(() => /Network plan|can't/.test(document.getElementById('bb-net')?.innerText || ''), null, { timeout: 60000 });
     assert.match(await page.locator('#bb-net').innerText(), /Network plan/);
     assert.ok(await page.locator('.bb-band .bb-stripe').count() >= 1);
-    assert.match(await page.locator('.bb-route-load').innerText(), /freight cars|trucks|tractors|drones/);   // the route's load
+    assert.match(await page.locator('.bb-route-load').innerText(), /train|truck|tractor|drone/);   // what the route takes
+  });
+  check('before saving: a plan that leaves another factory short says so by Save', async () => {
+    await page.keyboard.press('Escape'); await sleep(200);
+    page.once('dialog', d => d.accept());
+    await page.keyboard.press('Control+k'); await page.keyboard.type('iron'); await sleep(200); await page.keyboard.press('Enter'); await sleep(1200);
+    assert.equal(await page.inputValue('#sc-name'), 'iron');
+    const v = page.locator('#kv-must .kvr input').nth(1);
+    await v.fill('1'); await v.press('Enter'); await sleep(300);
+    await page.click('#bsolve');
+    await page.waitForFunction(() => document.getElementById('save-impact')?.style.display === '', null, { timeout: 30000 });
+    assert.match(await page.locator('#save-impact').innerText(), /frames[\s\S]*Iron Rod[\s\S]*Save and re-solve/);
   });
 
   let failed = 0;

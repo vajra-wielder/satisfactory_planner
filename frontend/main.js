@@ -12,8 +12,9 @@
 import {
   SC, RESULT, RECIPES, PROGRESS, keyOf,
   setResult, resetSC, setAllItems, setRecipes, buildItemDisplay, setExtractors,
-  nextSolveSeq, solveSeq,
+  nextSolveSeq, solveSeq, itemName,
 } from './state.js';
+const fmtN = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(2)).toLocaleString();
 
 import {
   fetchBoot,
@@ -34,7 +35,7 @@ import {
 import { startChain, watchChain, onChain, chainHTML } from './chain.js';
 import { uploadSave, changesHTML, wireChanges } from './save-import.js';
 import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards, minerOf,
-         refreshOutputs, applyCut, onResult, setStorage } from './supply-panel.js';
+         refreshOutputs, applyCut, onResult, setStorage, shortfalls } from './supply-panel.js';
 
 import {
   openWarn, closeWarn,
@@ -362,7 +363,7 @@ function handleSolve() {
     .then(result => {
       if (mySeq !== solveSeq) return;
       setResult(result);
-      onResult();
+      onResult(); paintImpact();
       if (result.flows?.length) showTree(false);     // solved: the plan
       updateIssuesBadge(result);
       refreshNewAlts(altsChanged);
@@ -403,7 +404,7 @@ function handleSolve() {
 // The saved factory open now (to tell a rename from a new factory)
 let LOADED_KEY = null, LOADED_NAME = null;
 
-function handleSave() {
+function handleSave(chain = false) {
   readUI();
   SC.miner = minerOf();          // saved with the miners it's built with
   const key = keyOf(SC.name);
@@ -421,7 +422,9 @@ function handleSave() {
       b.textContent = 'Saved!';
       setTimeout(() => { b.textContent = '💾 Save'; }, 2200);
       loadSaved();
-      refreshOutputs();
+      GRID_FOR = undefined;
+      refreshOutputs().then(paintImpact);
+      if (chain === true) document.dispatchEvent(new CustomEvent('resolve-chain', { detail: { keys: [key] } }));   // not a click event
     })
     .catch(err => alert('Save failed: ' + err.message));
 }
@@ -441,6 +444,7 @@ function handleReset() {
   renderIssues();
   refreshNewAlts(altsChanged);
   TOUCHED = false;
+  forget();
   updateSummaries();
   showTree(true);
   initLayout();
@@ -472,6 +476,7 @@ function openScenario(key) {
     _machinesDirty = true;
     fillUI({ skipMachines: true });
     TOUCHED = false;
+    forget();
     updateSummaries();
     showTree(!RESULT?.flows?.length);       // no plan yet: what its resources can become
     updateIssuesBadge(RESULT);
@@ -527,7 +532,9 @@ function updateSummaries() {
   const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
   set('tb-fac-name', SC.name || 'New Factory');            // the factory on screen, in the top bar
   if (!TOUCHED) SNAP = snap();
+  remember();
   paintDirty();
+  paintImpact();
   renderTree();
   set('sum-res', [`${new Set(nodes.map(r => r.resource)).size} resources`, ex ? `${ex} extractors` : '', imp ? `${imp} imports` : ''].filter(Boolean).join(' · '));
   set('sum-goals', [n(SC.objective) && `${n(SC.objective)} max`, n(SC.must_produce) && `${n(SC.must_produce)} exact`,
@@ -580,6 +587,85 @@ function paintDirty() {
   document.getElementById('bsave').title = d ? 'Unsaved changes  (Ctrl+S)' : 'Save  (Ctrl+S)';
 }
 function baseline() { TOUCHED = false; SNAP = snap(); paintDirty(); }
+
+// ── Before saving: who it leaves short ───────────────────
+// The plan on screen against what other factories take from this one: if
+// saving it leaves some short, say so by Save — and save and re-solve them in one
+// The grid as saved (fetched again after each save); this plan's own power in place of its saved one
+let GRID = null, GRID_FOR = undefined;
+function gridAfter() {
+  if (GRID_FOR !== LOADED_KEY) {
+    GRID_FOR = LOADED_KEY; GRID = null;
+    fetch('/api/grid-status').then(r => r.json()).then(g => { GRID = g; paintImpact(); }).catch(() => {});
+  }
+  if (!GRID || !RESULT?.flows?.length || !(GRID.made > 0)) return null;     // no grid planned yet: nothing to say
+  const used = RESULT.flows.reduce((a, f) => a + Math.max(0, f.power_mw || 0), 0) + (RESULT.extractor_power_mw || 0);
+  const made = RESULT.flows.reduce((a, f) => a + (f.outputs?.Power || 0), 0) + (RESULT.geothermal_mw || 0);
+  const delta = made - used - (GRID.net?.[LOADED_KEY] ?? 0);
+  return { spare: GRID.spare + delta, low: GRID.spare_low + delta, delta };
+}
+function paintImpact() {
+  const el = document.getElementById('save-impact');
+  if (!el) return;
+  const sh = LOADED_KEY ? shortfalls() : [];
+  const g = gridAfter();
+  const grid = g && g.delta < -0.5 && g.low < 0 ? (g.spare < 0
+    ? `The grid goes ${fmtN(Math.round(-g.spare))} MW short with this plan.`
+    : `The grid goes ${fmtN(Math.round(-g.low))} MW short when the geysers are low.`) : '';
+  el.style.display = sh.length || grid ? '' : 'none';
+  if (!sh.length && !grid) return;
+  const who = [...new Set(sh.flatMap(s => s.takers))];
+  el.innerHTML = (sh.length ? `<div class="n-warn">Saving leaves ${who.join(', ')} short: ${sh.map(s => `${fmtN(s.short)} ${itemName(s.item)}`).join(', ')}/min</div>
+    <button class="bsm act" id="save-resolve" title="Save, then re-solve this and every factory that takes from it, in order">💾 Save and re-solve ${who.length === 1 ? who[0] : `the ${who.length}`}</button>` : '')
+    + (grid ? `<div class="n-warn" title="All your saved factories' power, with this plan in place of its saved one (the Blackboard's Power tab)">⚡ ${grid}</div>` : '');
+  document.getElementById('save-resolve')?.addEventListener('click', () => handleSave(true));
+}
+
+// ── Undo ─────────────────────────────────────────────────
+// Every settled change to this factory (a pause in typing, a click, a pick on
+// the map or the tree) is a step: Ctrl+Z goes back one, Ctrl+Shift+Z (or
+// Ctrl+Y) forward. Opening another factory starts afresh. Solving isn't undone.
+let UNDO = [], REDO = [], UNDO_KEY = null, RESTORING = false;
+function remember() {
+  const k = snap();
+  if (RESTORING && UNDO.length) { UNDO[UNDO.length - 1].k = k; return; }   // the panels settling what was put back
+  if (UNDO.length && UNDO[UNDO.length - 1].k === k) return;
+  if (UNDO_KEY !== LOADED_KEY) { UNDO = []; UNDO_KEY = LOADED_KEY; }
+  UNDO.push({ k, sc: JSON.parse(JSON.stringify(SC)) });
+  if (UNDO.length > 200) UNDO.shift();
+  REDO = [];
+}
+function forget() { UNDO = []; REDO = []; UNDO_KEY = LOADED_KEY; }
+function restore(st) {
+  const machines = SC.enabled_machines;
+  Object.keys(SC).forEach(k => { if (!(k in st.sc)) delete SC[k]; });
+  Object.assign(SC, JSON.parse(JSON.stringify(st.sc)), { enabled_machines: machines });
+  RESTORING = true;
+  try {
+    fillUI({ skipMachines: true });
+    TOUCHED = true;
+    updateSummaries();
+  } finally { RESTORING = false; }
+}
+function undo(back = true) {
+  readUI();
+  remember();                      // what's on screen, if it hadn't settled yet
+  if (back) {
+    if (UNDO.length < 2) return flash('Nothing to undo');
+    REDO.push(UNDO.pop());
+    restore(UNDO[UNDO.length - 1]);
+  } else {
+    if (!REDO.length) return flash('Nothing to redo');
+    const st = REDO.pop();
+    UNDO.push(st);
+    restore(st);
+  }
+}
+function flash(t) {
+  const el = document.getElementById('undo-note') || Object.assign(document.createElement('div'), { id: 'undo-note' });
+  el.textContent = t; document.body.appendChild(el);
+  el.classList.add('on'); clearTimeout(flash.t); flash.t = setTimeout(() => el.classList.remove('on'), 1200);
+}
 /** Before something replaces what's on screen: fine if nothing's unsaved, else ask. */
 function mayLeave(what) {
   readUI();
@@ -714,6 +800,14 @@ window.addEventListener('keydown', e => {
   if (tab && clear) { toggleDock(tab); return; }
   if ((e.key === 't' || e.key === 'T') && !mod && !e.altKey && !inInput && clear) { showTree(!treeShown()); return; }
   if (!mod) return;
+  // Undo / redo this factory's edits (the notes box keeps its own)
+  const z = e.key.toLowerCase();
+  if ((z === 'z' || z === 'y') && tag !== 'TEXTAREA' && !e.altKey) {
+    e.preventDefault();
+    document.activeElement?.blur?.();
+    undo(z === 'z' && !e.shiftKey);
+    return;
+  }
 
   switch (e.key.toLowerCase()) {
     case 'r': e.preventDefault(); handleSolve(); break;

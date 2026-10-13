@@ -66,12 +66,15 @@ export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2'
 export let UNLOCKS = { schematics: {}, recipes: {}, machines: {} };
 // Belt and pipe tiers: /min each
 export let TRANSPORT = { belts: {}, pipes: {} };
+// Fluids (pipes, not belts)
+export let FLUIDS = new Set();
 export function setExtractors(b) {
   EXTRACTORS = b.extractors || {}; PURITY = b.purity || {};
   MINER_TIERS = b.miner_tiers || {}; MAX_SHARDS = b.max_shards ?? 3;
   Object.assign(PROGRESS, b.progress || {});
   if (b.unlocks) UNLOCKS = b.unlocks;
   if (b.transport) TRANSPORT = b.transport;
+  if (b.fluids) FLUIDS = new Set(b.fluids);
 }
 /** The milestone or research that unlocks a recipe, if it's one you haven't done (null: you can use it). */
 export function lockedBy(key) {

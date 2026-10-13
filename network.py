@@ -157,7 +157,25 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
         return {"ok": False, "error": "The network can't make every factory's current outputs."}
     score = m.value(res_obj)
     m.lock(res_obj, score * (1 + _RES_SLACK))
-    move_obj = {v: c for (_, _, _, _, v, c) in m.arcs}
+    # A vehicle carries a load each way on one round trip: a route keeps busy
+    # what its heavier way needs — freight and fluid cars counted apart — so
+    # what goes back the other way rides along. A sliver on every arc keeps
+    # nothing moving that needn't.
+    inf = m.s.infinity()
+    ways: Dict[tuple, Dict[object, float]] = {}
+    for (ri, a, _b, it, v, c) in m.arcs:
+        ways.setdefault((ri, "fluid" if it in FLUIDS else "solid", a), {})[v] = c
+    busy: Dict[tuple, object] = {}
+    for (ri, kind, _a), terms in ways.items():
+        L = busy.get((ri, kind)) or m.s.NumVar(0, inf, "")
+        busy[(ri, kind)] = L
+        ct = m.s.Constraint(0, inf)                  # L ≥ this way's loads
+        ct.SetCoefficient(L, 1.0)
+        for v, c in terms.items():
+            ct.SetCoefficient(v, -c)
+    move_obj = {L: 1.0 for L in busy.values()}
+    for (_, _, _, _, v, c) in m.arcs:
+        move_obj[v] = move_obj.get(v, 0.0) + 1e-3 * c
     m.run(move_obj)
     m.lock(move_obj, m.value(move_obj))
     # Least change from each solved factory's own plan: |q − own| per recipe
@@ -200,15 +218,20 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
                for (kk, it), u in m.draw.items() if kk == k}
         out["factories"].append({"key": k, "name": m.by[k]["name"], "recipes": moved, "resources": res})
     for ri, rt in enumerate(routes):
-        items, load = [], 0.0
+        items, each = [], {}
         for (r2, a, b, it, v, c) in m.arcs:
             x = v.solution_value()
             if r2 == ri and x > _SHOW:
+                kind = "fluid" if it in FLUIDS else "solid"
                 items.append({"item": it, "from": a, "to": b, "rate": round(x, 3),
                               "stacks": None if it in FLUIDS else round(x / STACK.get(it, 100), 3),
                               "load": round(x * c, 4)})
-                load += x * c
-        out["routes"].append({**rt, "items": items, "load": round(load, 4),
+                each[(kind, a)] = each.get((kind, a), 0.0) + x * c
+        # vehicles busy: the heavier way, per kind of car
+        cars = {kind: round(max([v for (k2, _a), v in each.items() if k2 == kind] or [0.0]), 4) for kind in ("solid", "fluid")}
+        load = cars["solid"] + cars["fluid"]
+        out["routes"].append({**rt, "items": items, "load": round(load, 4), "cars": cars,
+                              "ways": {a: round(sum(v for (k2, a2), v in each.items() if a2 == a), 4) for a in (rt["a"], rt["b"])},
                               "throughput": round(sum(i["rate"] for i in items), 3),
                               "stacks": round(sum(i["stacks"] or 0 for i in items), 3)})
     out["throughput"] = round(sum(r["throughput"] for r in out["routes"]), 3)

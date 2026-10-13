@@ -118,6 +118,9 @@ class Cards(_Temp):
         self.assertTrue(out["ok"], out)
         rt = out["routes"][0]
         self.assertIn("Iron_Plate", {i["item"] for i in rt["items"] if i["from"] == "iron"})
+        # vehicles busy: the heavier way (what comes back rides along)
+        self.assertAlmostEqual(rt["load"], max(rt["ways"].values()), places=3)
+        self.assertAlmostEqual(rt["cars"]["solid"] + rt["cars"]["fluid"], rt["load"], places=3)
         # a factory's own goals are never shipped to it
         goals = {"iron": {"Iron_Plate", "Iron_Rod"}, "wires": {"Reinforced_Iron_Plate"}}
         for i in rt["items"]:

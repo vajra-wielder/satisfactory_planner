@@ -120,6 +120,7 @@ def _build_boot_bytes():
         "progress":     _progress(),
         "unlocks":      supply.UNLOCKS,
         "transport":    logistics.META["transport"],
+        "fluids":       sorted(network.FLUIDS),
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.
@@ -631,11 +632,12 @@ def _grid_status() -> dict:
     saved, _ = _saved_factories()
     grid = _grid()
     used = made = geo = 0.0
-    rose = []
+    rose, net = [], {}
     for key, data, result in saved:
         p = _power(data, result)
         used += p["machines"] + p["extractors"]
         made += p["generators"] + p["geothermal"]
+        net[key] = round(p["generators"] + p["geothermal"] - p["machines"] - p["extractors"], 1)
         geo += p["geothermal"]
         entry = _cache_read(_result_key(data.get("name", key))) if result else None
         was = (entry or {}).get("prev_draw_mw")
@@ -648,6 +650,7 @@ def _grid_status() -> dict:
     short = spare < -1e-6 or low < -1e-6
     return {"made": round(made, 1), "used": round(used, 1), "spare": round(spare, 1),
             "spare_low": round(low, 1), "spare_high": round(spare + geo / 2, 1), "geothermal": round(geo, 1),
+            "net": net,   # each factory's own: made less drawn
             "rose": sorted(rose, key=lambda r: r["was"] - r["now"]) if short else []}
 
 def _power(data: dict, result) -> dict:

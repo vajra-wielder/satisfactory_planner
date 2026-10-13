@@ -3,6 +3,7 @@
  * Extracted from sidebar.js so sidebar.js only handles sidebar concerns.
  */
 
+import { linesHTML, linesText, wireLines } from './build-sheet.js';
 import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS } from './state.js';
 const TIERS = ['Mk1', 'Mk2', 'Mk3'];
 import { openDock, setBadge } from './dock.js';
@@ -167,7 +168,8 @@ export function renderBuildCost(fresh = false) {
   const shards = pick.reduce((t, f) => t + (f.shards || 0), 0), sloops = pick.reduce((t, f) => t + (f.sloops || 0), 0);
   setBadge('bcc', self.solved ? String(machines.length + extractors.length) : '');
 
-  const key = JSON.stringify([pick.map(f => f.key), machines, extractors, mats, shards, sloops, others.map(f => [f.key, f.solved])]);
+  const key = JSON.stringify([pick.map(f => f.key), machines, extractors, mats, shards, sloops, others.map(f => [f.key, f.solved]),
+    (RESULT?.flows || []).map(f => [f.recipe_key, f.machines_final, f.clock_pct, f.inputs])]);
   if (key === _bcLastKey) return;
   _bcLastKey = key;
 
@@ -184,7 +186,9 @@ export function renderBuildCost(fresh = false) {
     ${rows(machines, machName)}${rows(extractors, machName, '⛏ ')}
     ${many && shards ? `<div class="bcr"><span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span></div>` : ''}
     ${many && sloops ? `<div class="bcr"><span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span></div>` : ''}
-    <div class="bc-h">Materials to build them</div>${rows(mats, itemName)}`}`;
+    <div class="bc-h">Materials to build them</div>${rows(mats, itemName)}
+    ${self.solved ? `<div id="bc-lines">${linesHTML()}</div>` : ''}`}`;
+  if (self.solved) wireLines(body);
   body.querySelectorAll('.bc-add input').forEach(c => c.addEventListener('change', () => {
     c.checked ? BL_PICK.add(c.dataset.key) : BL_PICK.delete(c.dataset.key);
     renderBuildCost();
@@ -193,7 +197,8 @@ export function renderBuildCost(fresh = false) {
     const lines = [`Build list: ${pick.map(f => f.name).join(', ')}`, '', 'Machines',
       ...[...machines, ...extractors].map(([k, x]) => `  ${machName(k)} ×${fmtN(x.total)}`),
       ...(shards ? [`  Power Shards ×${shards}`] : []), ...(sloops ? [`  Somersloops ×${sloops}`] : []),
-      '', 'Materials', ...mats.map(([k, x]) => `  ${itemName(k)} ×${fmtN(x.total)}`)];
+      '', 'Materials', ...mats.map(([k, x]) => `  ${itemName(k)} ×${fmtN(x.total)}`),
+      ...(self.solved ? ['', 'Lines', ...linesText()] : [])];
     const text = lines.join('\n'), b = e.target;
     const done = ok => { b.textContent = ok ? 'Copied ✓' : 'Couldn\'t copy'; setTimeout(() => { b.textContent = 'Copy as a list'; }, 1800); };
     // the clipboard API needs a secure page or permission; else the old way

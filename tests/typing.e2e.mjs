@@ -170,6 +170,24 @@ try {
     await page.fill('#sc-desc', ''); await page.dispatchEvent('#sc-desc', 'change'); await page.keyboard.press('Control+s'); await sleep(900);
   });
 
+  await step('Ctrl+Z undoes this factory\'s edits, step by step; Ctrl+Shift+Z redoes', async () => {
+    const rows = () => page.evaluate(() => [...document.querySelectorAll('#kv-obj .kvr input')].filter(i => /Screw/.test(i.value)).length);
+    const n0 = 0;
+    await page.click('#add-obj'); await sleep(200);
+    await page.keyboard.type('Screw', { delay: 10 }); await sleep(250); await page.keyboard.press('Enter'); await sleep(600);
+    assert.equal(await rows(), n0 + 1);
+    await page.fill('#sc-desc', 'undo me'); await page.dispatchEvent('#sc-desc', 'change'); await sleep(400);
+    await page.mouse.click(700, 500);
+    await page.keyboard.press('Control+z'); await sleep(300);
+    assert.equal(await page.inputValue('#sc-desc'), '', 'the description back');
+    assert.equal(await rows(), n0 + 1, 'one step at a time');
+    await page.keyboard.press('Control+z'); await sleep(300);
+    assert.equal(await rows(), n0, 'the goal gone');
+    await page.keyboard.press('Control+Shift+z'); await sleep(300);
+    assert.equal(await rows(), n0 + 1, 'redone');
+    assert.equal(await page.locator('#bsave.dirty').count(), 1, 'an undo is a change');
+  });
+
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }
   await browser.close();
   console.log(failed ? `\n${failed} failed` : '\nall passed');

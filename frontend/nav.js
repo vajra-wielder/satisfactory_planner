@@ -162,7 +162,7 @@ const HELP = [
     [['Ctrl+O'], 'Your factories (open, history, new, backups)'], [['Ctrl+U'], 'Unlocks for every factory'],
     [['Ctrl+P', '~or', 'Ctrl+B'], 'Blackboard'], [['Ctrl+Q'], 'Find a part on the tree: its recipes, uses and goals; sums work'], [['?'], 'This sheet'],
     [['Esc'], 'Close what\'s on top']]],
-  ['This factory', [[['Ctrl+R'], 'Solve'], [['Ctrl+S'], 'Save'], [['Ctrl+M'], 'Pick nodes on the map'],
+  ['This factory', [[['Ctrl+R'], 'Solve'], [['Ctrl+S'], 'Save'], [['Ctrl+Z', 'Ctrl+Shift+Z'], 'Undo, redo'], [['Ctrl+M'], 'Pick nodes on the map'],
     [['1', '~or', 'Ctrl+I'], 'Analysis'], [['2'], 'Alternates: new ones to unlock, the solver\'s pruning'],
     [['3'], 'Build cost'], [['4'], 'Issues'],
     [['T'], 'Plan ⇄ Tree: what your resources can become — click a part to set its goal'], [['['], 'Hide / show the left panel (what goes in)'], [[']'], 'Hide / show the right panel (review and improve)'],

@@ -37,6 +37,37 @@ const recipeName = k => (RECIPES[k]?.display || k.replace(/_/g, ' ')).replace(/^
 // time is one vehicle's round trip
 const MODES = { train: 'Train', truck: 'Truck', tractor: 'Tractor', drone: 'Drone' };
 const LOAD_UNIT = { train: 'freight cars', truck: 'trucks', tractor: 'tractors', drone: 'drones' };
+// What a planned route takes: the vehicles (or cars) its heavier way keeps
+// busy, the stations at each end, and for drones the batteries — an estimate
+// (24,000 MJ a trip plus 12 MJ a metre between the ports, 6,000 MJ a battery);
+// the port's own readout is exact
+const ceil = v => Math.ceil(v - 1e-6);
+function distance(rt) {
+  const a = factory(rt.a)?.at, b = factory(rt.b)?.at;
+  return a && b ? Math.hypot(a[0] - b[0], a[1] - b[1]) : null;
+}
+function vehicles(rt) {
+  const cars = rt.cars || { solid: rt.load || 0, fluid: 0 }, d = distance(rt);
+  const away = d == null ? '' : `${d < 1000 ? `${Math.round(d / 10) * 10} m` : `${(d / 1000).toFixed(1)} km`} apart`;
+  if (rt.mode === 'train') {
+    const f = ceil(cars.solid), l = ceil(cars.fluid), n = f + l;
+    if (!n) return { short: '—', long: 'Nothing to carry.' };
+    return { short: `1 train · ${n} car${n > 1 ? 's' : ''}`,
+      long: `${[f && `${f} freight car${f > 1 ? 's' : ''}`, l && `${l} fluid car${l > 1 ? 's' : ''}`].filter(Boolean).join(' + ')} (${fmt(cars.solid + cars.fluid)} busy):
+        one train of ${n}, or more trains of fewer cars; at each end a ${[f && `freight platform per freight car`, l && `fluid platform per fluid car`].filter(Boolean).join(' and a ')}.${away ? ` ${away}.` : ''}` };
+  }
+  const n = ceil(cars.solid), unit = LOAD_UNIT[rt.mode];
+  if (!n) return { short: '—', long: 'Nothing to carry.' };
+  const one = unit.replace(/s$/, '');
+  if (rt.mode === 'drone') {
+    const perTrip = d == null ? null : 4 + d / 500, perMin = perTrip == null ? null : (cars.solid / rt.trip_min) * perTrip;
+    return { short: `${n} drone${n > 1 ? 's' : ''}${perMin == null ? '' : ` · ${fmt(perMin)} batteries/min`}`,
+      long: `${n} drone${n > 1 ? 's' : ''} (${fmt(cars.solid)} busy) — one drone port pair each.${perMin == null
+        ? ' Batteries: open both factories\' nodes on the map so the distance is known.'
+        : ` About ${fmt(perTrip)} batteries a trip, ${fmt(perMin)}/min (${away}; an estimate — the port shows the exact figure).`}` };
+  }
+  return { short: `${n} ${n > 1 ? unit : one}`, long: `${n} ${n > 1 ? unit : one} (${fmt(cars.solid)} busy), a ${one} station at each end.${away ? ` ${away}.` : ''}` };
+}
 const HOLDS = { train: '32 stacks a freight car, 1,600 m³ a fluid car', truck: '48 stacks', tractor: '25 stacks', drone: '9 stacks; fluids packaged' };
 
 export function initBlackboard({ onOpenFactory: open }) {
@@ -292,7 +323,7 @@ function drawRoutes() {
         title="One ${MODES[rt.mode].toLowerCase()}'s round trip, minutes — it holds ${HOLDS[rt.mode]}"/> min trip
       <span class="bb-x" title="Remove this route">✕</span>
       ${items.length ? `<div class="bb-route-sum" title="${items.map(flowTitle).join('\n')}">${items.length} item${items.length > 1 ? 's' : ''} · ${fmt(total)}/min</div>` : ''}
-      ${plan ? `<div class="bb-route-load">${fmt(plan.load)} ${LOAD_UNIT[rt.mode]}</div>` : ''}`;
+      ${plan ? `<div class="bb-route-load" title="${vehicles(plan).long.replace(/\s+/g, ' ').replace(/"/g, '&quot;')}">${vehicles(plan).short}</div>` : ''}`;
     lab.querySelector('.bb-mode').addEventListener('change', e => { rt.mode = e.target.value; NET = null; save(); drawRoutes(); });
     lab.querySelector('.bb-trip')?.addEventListener('change', e => {
       const v = Math.max(0.1, parseFloat(e.target.value) || 4);
@@ -334,8 +365,10 @@ function renderNet() {
     <button class="bsm act" id="bb-apply" style="margin-top:6px" title="Write this plan into the factories, then re-solve them in order">Apply to the factories…</button>
     <div id="bb-chain"></div>`;
   NET.routes.forEach(rt => {
+    const vh = vehicles(rt);
     h += `<div class="bb-net-s">${name(rt.a)} ⇄ ${name(rt.b)} · ${MODES[rt.mode]}, ${rt.trip_min} min round trip
-      — <b>${fmt(rt.load)} ${LOAD_UNIT[rt.mode]}</b></div>`;
+      — <b>${vh.short}</b></div><div class="bb-hint">${vh.long}${rt.ways && Object.values(rt.ways).every(v => v > 1e-6)
+        ? ` Loaded both ways (${name(rt.a)} → ${fmt(rt.ways[rt.a])}, ${name(rt.b)} → ${fmt(rt.ways[rt.b])}): the lighter way rides along.` : ''}</div>`;
     h += rt.items.length ? '<table class="bb-tab"><tr><th></th><th>/min</th><th>stacks/min</th><th>' + LOAD_UNIT[rt.mode] + '</th></tr>' +
       rt.items.map(i => `<tr><td>${name(i.from)} → ${name(i.to)}: ${itemName(i.item)}</td><td>${fmt(i.rate)}</td>
         <td>${i.stacks == null ? '—' : fmt(i.stacks)}</td><td>${fmt(i.load)}</td></tr>`).join('') + '</table>'
