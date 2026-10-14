@@ -84,7 +84,7 @@ class Miners(unittest.TestCase):
 
 
 class Milestones(unittest.TestCase):
-    """Tier + sub-tier and MAM research: what each recipe waits on (data/unlocks.json)."""
+    """Tier + sub-tier and MAM research: what each recipe waits on (game_classes.json unlocks)."""
     def test_not_set_locks_nothing(self):
         self.assertEqual(supply.locked_recipes({"schematics": None}), [])
 

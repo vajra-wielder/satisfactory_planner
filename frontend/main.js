@@ -8,57 +8,26 @@
  * addEventListener calls and the startup Promise.all. Nothing else touches
  * the DOM directly at the top level.
  */
+import { SC, RESULT, RECIPES, PROGRESS, keyOf, setResult, resetSC, setAllItems, setRecipes, buildItemDisplay, setExtractors, nextSolveSeq, solveSeq, itemName, fetchBoot, fetchScenarios, fetchScenario, saveScenario, deleteScenario, solveScenario } from './state.js';
+import { toggleSec, addKv, fillUI, readUI, setUnlockedSaver, setUnlockedAlts, renderMachines, updMachBadge, addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards, minerOf, refreshOutputs, applyCut, onResult, setStorage, shortfalls, KVS, renderKv, syncKv } from './sidebar.js';
+import { startChain, watchChain, onChain, chainHTML, pinned, pinPlan, unpin, openCompare, openWarn, closeWarn, renderResultsBar, renderBuildCost, toggleBC, setBuildSelf, renderSaved, renderIssues } from './ui.js';
+import { uploadSave, changesHTML, wireChanges, openUnlockedModal, refreshNewAlts } from './unlocks.js';
+import { initTree, renderTree, showTree, treeShown, openSearch as openFind } from './goal-tree.js';
+import { openAnalysis, closeAnalysis, showAnalysis } from './analysis.js';
+import { initDock, onDockTab, openDock, toggleDock, dockTab, setBadge, initNav, openPalette, openHelp, initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './nav.js';
+import { resize, initLayout, draw, fitAll, zoomBy, openSearch, initGraphEvents, toggleHubs, toggleMinor, COLOR_MODES, colorBy, setColorBy } from './graph.js';
 
-import {
-  SC, RESULT, RECIPES, PROGRESS, keyOf,
-  setResult, resetSC, setAllItems, setRecipes, buildItemDisplay, setExtractors,
-  nextSolveSeq, solveSeq, itemName,
-} from './state.js';
 const fmtN = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(2)).toLocaleString();
 
-import {
-  fetchBoot,
-  fetchScenarios, fetchScenario, saveScenario, deleteScenario, solveScenario,
-} from './api.js';
 
-import {
-  toggleSec,
-  addKv,
-  fillUI, readUI,
-  setUnlockedSaver, setUnlockedAlts,
-  renderMachines, updMachBadge,
-} from './sidebar.js';
 
 // Panels are imported here only so their modules are loaded eagerly;
 // all interaction goes through sidebar.js re-exports above.
 
-import { startChain, watchChain, onChain, chainHTML } from './chain.js';
-import { pinned, pinPlan, unpin, openCompare } from './compare.js';
-import { uploadSave, changesHTML, wireChanges } from './save-import.js';
-import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards, minerOf,
-         refreshOutputs, applyCut, onResult, setStorage, shortfalls } from './supply-panel.js';
 
-import {
-  openWarn, closeWarn,
-  renderResultsBar, renderBuildCost, toggleBC, setBuildSelf,
-  renderSaved, renderIssues,
-} from './ui.js';
 
-import { initTree, renderTree, showTree, treeShown, openSearch as openFind } from './goal-tree.js';
-import { openUnlockedModal } from './machines-panel.js';
-import { KVS, renderKv, syncKv } from './kv-panel.js';
-import { openAnalysis, closeAnalysis, showAnalysis } from './analysis.js';
-import { initDock, onDockTab, openDock, toggleDock, dockTab, setBadge } from './dock.js';
 
-import { initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './blackboard.js';
-import { initNav, openPalette, openHelp } from './nav.js';
-import { refreshNewAlts } from './new-alts.js';
 
-import {
-  resize, initLayout, draw,
-  fitAll, zoomBy, openSearch, initGraphEvents,
-  toggleHubs, toggleMinor, COLOR_MODES, colorBy, setColorBy,
-} from './graph.js';
 
 
 // ── Solve styles ──────────────────────────────────────────────────────────────
@@ -263,7 +232,6 @@ function toggleSidebar() {
   resize(); draw();          // at once: the panel doesn't slide
 }
 
-function showPlan() { if (!sidebarOpen) toggleSidebar(); }
 
 // Far off, for what's rarely changed or for leaving this factory:
 // your factories (a drawer) and the unlocks every factory shares (a window)

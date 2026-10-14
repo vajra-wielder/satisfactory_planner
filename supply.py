@@ -69,7 +69,7 @@ BUILD = {
 
 
 # What unlocks each recipe and machine: milestones and MAM research (tools/gen_unlocks.py)
-UNLOCKS = json.loads((HERE / "data" / "unlocks.json").read_text(encoding="utf-8"))
+UNLOCKS = json.loads((HERE / "data" / "game_classes.json").read_text(encoding="utf-8"))["unlocks"]
 
 def locked_recipes(progress: dict) -> List[str]:
     """The recipes a milestone or MAM research you haven't done unlocks — none
@@ -89,7 +89,7 @@ def _clean_progress(raw: dict) -> dict:
       machines  the machines unlocked (None: not set yet — every factory's own list)
       belt/pipe the best belt and pipe unlocked (the Blackboard's checks)
       schematics the milestones (tier + sub-tier) and MAM research done
-                (data/unlocks.json ids; None: not set — every recipe allowed)"""
+                (game_classes.json unlocks ids; None: not set — every recipe allowed)"""
     raw = raw if isinstance(raw, dict) else {}
     sch = raw.get("schematics")
     return {

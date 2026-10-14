@@ -1,14 +1,13 @@
 /**
- * ui.js — transient UI panels: results bar, build cost, warnings modal, saved scenarios.
- * Extracted from sidebar.js so sidebar.js only handles sidebar concerns.
+ * ui.js — the results bar, build cost, warnings, saved factories; comparing
+ * two plans; and re-solving factories in order (the chain).
  */
-
 import { linesHTML, linesText, wireLines, openSplit } from './build-sheet.js';
-import { itemColor } from './bundles.js';
-import { pinned, delta, pinPlan, unpin, openCompare } from './compare.js';
-import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS, FLUIDS, BUILT } from './state.js';
+import { itemColor } from './geometry.js';
+import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS, FLUIDS, BUILT, SC } from './state.js';
+import { openDock, setBadge } from './nav.js';
+
 const TIERS = ['Mk1', 'Mk2', 'Mk3'];
-import { openDock, setBadge } from './dock.js';
 
 // ══════════════════════════════════════════════════════════
 // WARNINGS MODAL
@@ -454,3 +453,136 @@ function openSpread() {
   run().then(draw);
 }
 document.addEventListener('click', e => { if (e.target.closest('#sv-spread')) openSpread(); });
+
+
+// ══════════════════════════════════════════════════════════
+// COMPARE TWO PLANS
+// ══════════════════════════════════════════════════════════
+/**
+ * Compare — pin a plan, change something, see the difference.
+ *
+ * 📌 on the results bar keeps the plan on screen (and the factory's inputs
+ * behind it). Every solve after shows, under each number, how it moved from
+ * the pinned one — green better, amber worse — and Compare lays the two side
+ * by side: goals, power, machines, space, each resource drawn, the machines
+ * by kind and the recipes only one of them runs. "Back to the pinned" puts
+ * the pinned inputs back (an undoable edit) and solves them.
+ */
+let PIN = null;
+export const pinned = () => PIN;
+
+/** What's worth comparing in a plan. */
+export function summary(r) {
+  if (!r?.flows) return null;
+  const used = r.flows.reduce((a, f) => a + Math.max(0, f.power_mw || 0), 0) + (r.extractor_power_mw || 0);
+  const made = r.flows.reduce((a, f) => a + (f.outputs?.Power || 0), 0) + (r.geothermal_mw || 0);
+  const drawn = {}, machines = {};
+  r.flows.forEach(f => {
+    machines[f.machine] = (machines[f.machine] || 0) + (f.machines_final || 0);
+    Object.entries(f.inputs || {}).forEach(([i, v]) => { if (i in (r.source_nodes || {})) drawn[i] = (drawn[i] || 0) + v; });
+  });
+  return { goals: { ...(r.objective_items || {}) }, used, made, machines: r.total_machines || 0, space: r.total_space || 0,
+           shards: r.shards_used || 0, sloops: r.sloops_used || 0, drawn, byMachine: machines,
+           recipes: new Set(r.flows.filter(f => f.machines_final > 0).map(f => f.recipe_key)) };
+}
+
+export function pinPlan() {
+  const s = summary(RESULT);
+  if (!s) return;
+  PIN = { s, sc: JSON.parse(JSON.stringify(SC)), name: SC.name || 'this factory', at: new Date() };
+  document.dispatchEvent(new Event('pin-changed'));
+}
+export function unpin() { PIN = null; document.dispatchEvent(new Event('pin-changed')); }
+
+const fmt = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(Math.abs(v) < 10 ? 2 : 1)).toLocaleString();
+/** How a number moved from the pinned plan: { text, cls } (cls: up / down — better / worse), or null. */
+export function delta(now, was, more = 'better') {
+  if (was == null || now == null) return null;
+  const d = now - was;
+  if (Math.abs(d) < Math.max(1e-3, Math.abs(was) * 1e-4)) return { text: '=', cls: 'eq' };
+  const good = more === 'better' ? d > 0 : d < 0;
+  return { text: `${d > 0 ? '+' : '−'}${fmt(Math.abs(d))}`, cls: good ? 'up' : 'down' };
+}
+
+// The two side by side
+function row(label, a, b, more, unit = '') {
+  const dd = delta(b, a, more);
+  return `<tr><td>${label}</td><td class="num">${a == null ? '—' : fmt(a) + unit}</td><td class="num">${b == null ? '—' : fmt(b) + unit}</td>
+    <td class="num cmp-${dd?.cls || 'eq'}">${dd && dd.text !== '=' ? dd.text + unit : ''}</td></tr>`;
+}
+export function openCompare() {
+  const A = PIN?.s, B = summary(RESULT);
+  if (!A || !B) return;
+  const keys = (x, y) => [...new Set([...Object.keys(x), ...Object.keys(y)])];
+  const rname = k => (RECIPES[k]?.display || k).replace(/^Alternate:\s*/i, 'Alt: ');
+  const onlyA = [...A.recipes].filter(k => !B.recipes.has(k)), onlyB = [...B.recipes].filter(k => !A.recipes.has(k));
+  const sec = t => `<tr class="cmp-h"><td colspan="4">${t}</td></tr>`;
+  const html = `<table class="st-tab cmp"><tr><th></th><th style="text-align:right">📌 Pinned</th><th style="text-align:right">Now</th><th style="text-align:right">Change</th></tr>
+    ${sec('Goals')}${keys(A.goals, B.goals).map(k => row(itemName(k), A.goals[k] ?? 0, B.goals[k] ?? 0, 'better', k === 'Power' ? ' MW' : '/min')).join('')}
+    ${sec('What it takes')}${row('Power use', A.used, B.used, 'worse', ' MW')}${A.made || B.made ? row('Power made', A.made, B.made, 'better', ' MW') : ''}
+    ${row('Machines', A.machines, B.machines, 'worse')}${row('Space · smelters', A.space, B.space, 'worse', ' u')}
+    ${A.shards || B.shards ? row('Shards', A.shards, B.shards, 'worse') : ''}${A.sloops || B.sloops ? row('Sloops', A.sloops, B.sloops, 'worse') : ''}
+    ${sec('Resources drawn')}${keys(A.drawn, B.drawn).map(k => row(itemName(k), A.drawn[k] ?? 0, B.drawn[k] ?? 0, 'worse', '/min')).join('')}
+    ${sec('Machines')}${keys(A.byMachine, B.byMachine).map(k => row(k.replace(/_/g, ' '), A.byMachine[k] ?? 0, B.byMachine[k] ?? 0, 'worse')).join('')}
+    </table>
+    ${onlyA.length || onlyB.length ? `<div class="cmp-rec">${onlyA.length ? `<div><b>Only pinned:</b> ${onlyA.map(rname).join(', ')}</div>` : ''}
+      ${onlyB.length ? `<div><b>Only now:</b> ${onlyB.map(rname).join(', ')}</div>` : ''}</div>` : '<p class="n-hint">The same recipes.</p>'}
+    <div class="cmp-b"><button class="bsm" id="cmp-back" title="Put the pinned plan's inputs back and solve them — Ctrl+Z undoes it">⟲ Back to the pinned</button>
+      <button class="bsm" id="cmp-repin" title="Pin the plan on screen instead">📌 Pin this one instead</button>
+      <button class="bsm" id="cmp-unpin">Unpin</button></div>`;
+  openSplit(`Pinned ${PIN.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} against now — ${PIN.name}`, html);
+  document.getElementById('cmp-back').onclick = () => document.dispatchEvent(new CustomEvent('restore-sc', { detail: PIN.sc }));
+  document.getElementById('cmp-repin').onclick = () => { pinPlan(); openCompare(); };
+  document.getElementById('cmp-unpin').onclick = () => { unpin(); document.querySelector('#sp-full [data-far-close]')?.click(); };
+}
+
+
+// ══════════════════════════════════════════════════════════
+// THE CHAIN
+// ══════════════════════════════════════════════════════════
+/**
+ * The chain — re-solve factories in order: sources first, each importer held to
+ * what its sources make now, then solved (server: /api/resolve-chain).
+ * One run at a time; anything showing progress listens with onChain.
+ */
+const fmtC = v => (v == null ? '—' : (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(2)).toLocaleString());
+const listeners = new Set();
+let timer = null, last = null;
+
+export function onChain(fn) { listeners.add(fn); if (last) fn(last); return () => listeners.delete(fn); }
+
+function poll() {
+  fetch('/api/resolve-chain').then(r => r.json()).then(st => {
+    last = st;
+    listeners.forEach(fn => fn(st));
+    if (st.running) timer = setTimeout(poll, 800);
+    else timer = null;
+  }).catch(() => { timer = null; });
+}
+
+/** keys: the factories to start from (null: everything out of date). */
+export function startChain(keys = null) {
+  return fetch('/api/resolve-chain', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(keys ? { keys } : {}) }).then(r => r.json()).then(d => {
+    if (!timer) poll();
+    return d;
+  });
+}
+export function watchChain() { if (!timer) poll(); }
+
+// What a run did, as HTML: one line per factory
+export function chainHTML(st) {
+  if (!st || (!st.running && !st.steps.length)) return '';
+  const done = st.steps.filter(s => s.status !== 'solving').length;
+  const rows = st.steps.map(s => {
+    const ok = String(s.status).startsWith('Optimal');
+    const cut = (s.cut || []).filter(c => c.kind === 'import').map(c => `${c.item.replace(/_/g, ' ')} from ${c.factory} ${fmtC(c.asked)} → ${fmtC(c.rate)}`);
+    const unmet = Object.entries(s.owed_unmet || {}).map(([k, v]) => `${k.replace(/_/g, ' ')} ${fmtC(v)} short`);
+    return `<div class="ch-row ${s.status === 'solving' ? '' : ok ? '' : 'n-warn'}">
+      <b>${s.name || s.key}</b> ${s.status === 'solving' ? '<span class="n-hint">solving…</span>'
+        : ok ? `<span class="n-hint">goal ${fmtC(s.before)} → <b>${fmtC(s.after)}</b></span>` : `<span>${s.error || s.status}</span>`}
+      ${cut.length ? `<div class="n-hint n-warn">imports held to what's left: ${cut.join('; ')}</div>` : ''}
+      ${unmet.length ? `<div class="n-hint n-warn">can't make all it owes: ${unmet.join('; ')}</div>` : ''}</div>`;
+  }).join('');
+  return `<div class="ch-box"><div class="n-sent-t">${st.running ? `Re-solving ${done + 1} of ${st.todo.length}…` : `Re-solved ${st.steps.length}`}</div>${rows}</div>`;
+}

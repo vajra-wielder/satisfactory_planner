@@ -19,10 +19,9 @@
  * your own map picture to draw them on (it's lined up with the in-game map's
  * edges; nudge it if it's off).
  */
+import { itemName, PURITY, MAX_SHARDS, MAPD, loadMap } from './state.js';
+import { uploadSave, changesHTML, wireChanges } from './unlocks.js';
 
-import { itemName, PURITY, MAX_SHARDS } from './state.js';
-import { fetchMapNodes } from './api.js';
-import { uploadSave, changesHTML, wireChanges } from './save-import.js';
 
 const $ = id => document.getElementById(id);
 const fmt = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(1)).toLocaleString();
@@ -44,28 +43,14 @@ const nameOf = r => (r === 'Geyser' ? 'Geyser' : itemName(r));
 // What a factory mines; geysers' generators go on the grid (the Blackboard's map)
 const PICKABLE = Object.keys(COLORS).filter(r => r !== 'Geyser');
 
-let MAP = null, BY = {}, BOUNDS = null, SAVE = new Set(), SAVE_INFO = null, IMG = null;
-export const mapNode = id => BY[id];
-export function loadMap() {
-  if (MAP) return Promise.resolve(MAP);
-  return Promise.all([fetchMapNodes(), fetch('/api/save-nodes').then(r => r.json()).catch(() => ({ nodes: [] })),
-                      fetch('/api/map-settings').then(r => r.json()).catch(() => ({}))]).then(([d, sv, ms]) => {
-    MAP = d.nodes; BOUNDS = d.bounds;
-    BY = Object.fromEntries(MAP.map(n => [n.id, n]));
-    SAVE = new Set(sv.nodes || []); SAVE_INFO = sv.file ? sv : null;
-    IMG = ms;
-    waitForPicture();
-    return MAP;
-  });
-}
 
 // The game's map is fetched once, in the background: draw it when it's here
 let _waiting = false;
 function waitForPicture(tries = 0) {
-  if (IMG?.ext || IMG?.game !== 'downloading' || (_waiting && !tries)) return;
+  if (MAPD.img?.ext || MAPD.img?.game !== 'downloading' || (_waiting && !tries)) return;
   _waiting = true;
   setTimeout(() => fetch('/api/map-settings').then(r => r.json()).then(ms => {
-    IMG = ms;
+    MAPD.img = ms;
     if (ms.ext) { _waiting = false; document.dispatchEvent(new Event('map-picture')); document.querySelectorAll('.mp-tools').forEach(t => t._redo?.()); }
     else if (ms.game === 'downloading' && tries < 90) waitForPicture(tries + 1);
     else { _waiting = false; document.querySelectorAll('.mp-tools').forEach(t => t._redo?.()); }
@@ -89,10 +74,10 @@ function makeMap(el, M) {
   const svg = el.querySelector('svg'), tip = el.querySelector('.mp-tip'), bg = el.querySelector('.mp-bg');
   const fit = () => {
     const w = el.clientWidth, h = el.clientHeight;
-    const bw = BOUNDS.x[1] - BOUNDS.x[0], bh = BOUNDS.y[1] - BOUNDS.y[0];
+    const bw = MAPD.bounds.x[1] - MAPD.bounds.x[0], bh = MAPD.bounds.y[1] - MAPD.bounds.y[0];
     const scale = Math.min(w / bw, h / bh) * 0.96;
     M.fitScale = scale;
-    M.view = { scale, ox: (w - bw * scale) / 2 - BOUNDS.x[0] * scale, oy: (h - bh * scale) / 2 - BOUNDS.y[0] * scale };
+    M.view = { scale, ox: (w - bw * scale) / 2 - MAPD.bounds.x[0] * scale, oy: (h - bh * scale) / 2 - MAPD.bounds.y[0] * scale };
   };
   const sx = x => x * M.view.scale + M.view.ox, sy = y => y * M.view.scale + M.view.oy;
   const wx = px => (px - M.view.ox) / M.view.scale, wy = py => (py - M.view.oy) / M.view.scale;
@@ -109,18 +94,18 @@ function makeMap(el, M) {
   // every node some factory leaves unused, or every node your save mines that
   // no factory has yet (to rebuild those factories on)
   const spareIds = () => new Set((M.spare || []).filter(sp => sp.left > 0.05).flatMap(sp => sp.ids));
-  const inSave = n => SAVE.has(n.id) && !M.taken?.[n.id] && !M.owner?.[n.id];
+  const inSave = n => MAPD.save.has(n.id) && !M.taken?.[n.id] && !M.owner?.[n.id];
   M.shows = (n, spare = spareIds()) => M.only === 'spare' ? spare.has(n.id) : M.only === 'save' ? inSave(n) : M.filter.has(n.r);
 
   function drawPicture() {
-    if (!IMG?.ext) { bg.style.display = 'none'; return; }
+    if (!MAPD.img?.ext) { bg.style.display = 'none'; return; }
     // yours nudged by dx, dy, scale; the game's exactly on the map's edges
-    const bw = (BOUNDS.x[1] - BOUNDS.x[0]) * IMG.scale, bh = (BOUNDS.y[1] - BOUNDS.y[0]) * IMG.scale;
-    const cx = (BOUNDS.x[0] + BOUNDS.x[1]) / 2 + IMG.dx, cy = (BOUNDS.y[0] + BOUNDS.y[1]) / 2 + IMG.dy;
-    const src = `/api/map-image?v=${IMG.v || 0}&s=${IMG.source || ''}`;
+    const bw = (MAPD.bounds.x[1] - MAPD.bounds.x[0]) * MAPD.img.scale, bh = (MAPD.bounds.y[1] - MAPD.bounds.y[0]) * MAPD.img.scale;
+    const cx = (MAPD.bounds.x[0] + MAPD.bounds.x[1]) / 2 + MAPD.img.dx, cy = (MAPD.bounds.y[0] + MAPD.bounds.y[1]) / 2 + MAPD.img.dy;
+    const src = `/api/map-image?v=${MAPD.img.v || 0}&s=${MAPD.img.source || ''}`;
     if (bg.getAttribute('src') !== src) bg.setAttribute('src', src);
     Object.assign(bg.style, { display: 'block', left: `${sx(cx - bw / 2)}px`, top: `${sy(cy - bh / 2)}px`,
-      width: `${bw * M.view.scale}px`, height: `${bh * M.view.scale}px`, opacity: IMG.opacity });
+      width: `${bw * M.view.scale}px`, height: `${bh * M.view.scale}px`, opacity: MAPD.img.opacity });
   }
 
   // What a factory's nodes give that its plan doesn't use: a tag on its nodes
@@ -130,7 +115,7 @@ function makeMap(el, M) {
     if (M.only === 'save' || !(lv === 2 || (M.only === 'spare' && lv >= 1))) return out;   // from afar, the rings say it
     (M.spare || []).forEach((sp, i) => {
       if ((M.only !== 'spare' && !M.filter.has(sp.item)) || !(sp.left > 0.05)) return;
-      const ns = sp.ids.map(id => BY[id]).filter(Boolean);
+      const ns = sp.ids.map(id => MAPD.by[id]).filter(Boolean);
       if (!ns.length) return;
       const x = sx(ns.reduce((a, n) => a + n.x, 0) / ns.length), y = sy(Math.min(...ns.map(n => n.y))) - 16;
       if (x < -80 || y < -30 || x > el.clientWidth + 80 || y > el.clientHeight + 30) return;
@@ -149,12 +134,12 @@ function makeMap(el, M) {
     drawPicture();
     const lv = level();
     let g = '';
-    if (!IMG?.ext) {
+    if (!MAPD.img?.ext) {
       const step = M.view.scale > 0.4 ? 100 : 500;
-      for (let x = Math.ceil(BOUNDS.x[0] / step) * step; x <= BOUNDS.x[1]; x += step)
-        g += `<line class="mp-grid" x1="${sx(x)}" y1="${sy(BOUNDS.y[0])}" x2="${sx(x)}" y2="${sy(BOUNDS.y[1])}"/>`;
-      for (let y = Math.ceil(BOUNDS.y[0] / step) * step; y <= BOUNDS.y[1]; y += step)
-        g += `<line class="mp-grid" x1="${sx(BOUNDS.x[0])}" y1="${sy(y)}" x2="${sx(BOUNDS.x[1])}" y2="${sy(y)}"/>`;
+      for (let x = Math.ceil(MAPD.bounds.x[0] / step) * step; x <= MAPD.bounds.x[1]; x += step)
+        g += `<line class="mp-grid" x1="${sx(x)}" y1="${sy(MAPD.bounds.y[0])}" x2="${sx(x)}" y2="${sy(MAPD.bounds.y[1])}"/>`;
+      for (let y = Math.ceil(MAPD.bounds.y[0] / step) * step; y <= MAPD.bounds.y[1]; y += step)
+        g += `<line class="mp-grid" x1="${sx(MAPD.bounds.x[0])}" y1="${sy(y)}" x2="${sx(MAPD.bounds.x[1])}" y2="${sy(y)}"/>`;
     }
     let labels = '';
     // the network: factories where they are, joined by their routes — styled by
@@ -181,7 +166,7 @@ function makeMap(el, M) {
       });
     }
     const wells = {}, spare = spareIds(), vis = [];
-    MAP.forEach(n => { if (n.w && M.shows(n, spare)) (wells[n.w] = wells[n.w] || []).push(n); });
+    MAPD.all.forEach(n => { if (n.w && M.shows(n, spare)) (wells[n.w] = wells[n.w] || []).push(n); });
     Object.values(wells).forEach(list => {
       const cx = list.reduce((s, n) => s + n.x, 0) / list.length, cy = list.reduce((s, n) => s + n.y, 0) / list.length;
       const rad = Math.max(...list.map(n => Math.hypot(n.x - cx, n.y - cy))) * M.view.scale + 10;
@@ -190,7 +175,7 @@ function makeMap(el, M) {
     });
     const order = { impure: 0, normal: 1, pure: 2 };
     const placed = [];
-    [...MAP].filter(n => M.shows(n, spare)).sort((a, b) => order[a.p] - order[b.p]).forEach(n => {
+    [...MAPD.all].filter(n => M.shows(n, spare)).sort((a, b) => order[a.p] - order[b.p]).forEach(n => {
       const x = sx(n.x), y = sy(n.y);
       if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
       if (x >= 0 && y >= 0 && x <= w && y <= h) vis.push(n.id);
@@ -199,7 +184,7 @@ function makeMap(el, M) {
       // the leftover ring outside the node, so a taken (faded) node's still shows
       if (spare.has(n.id)) g += `<circle cx="${x}" cy="${y}" r="${r + 5.5}" class="mp-spare-r"/>`;
       g += `<g data-id="${n.id}" class="mp-n ${taken ? 'taken' : ''} ${picked ? 'on' : ''}">
-        ${SAVE.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 3.5}" class="mp-save"/>` : ''}
+        ${MAPD.save.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 3.5}" class="mp-save"/>` : ''}
         ${own ? `<circle cx="${x}" cy="${y}" r="${r + 2}" fill="none" stroke="${M.ownerColor(own)}" stroke-width="2.5"/>` : ''}
         ${M.grid?.has(n.id) ? `<circle cx="${x}" cy="${y}" r="${r + 6}" class="mp-grid-g"/>` : ''}
         <circle cx="${x}" cy="${y}" r="${r}" fill="${COLORS[n.r]}" fill-opacity="${lv ? 1 : { impure: 0.55, normal: 0.8, pure: 1 }[n.p]}"/>
@@ -207,7 +192,7 @@ function makeMap(el, M) {
         ${M.grid?.has(n.id) ? `<text x="${x}" y="${y + 3.5}" class="mp-bolt">⚡</text>` : ''}
         ${taken ? `<path d="M${x - r} ${y - r}L${x + r} ${y + r}M${x + r} ${y - r}L${x - r} ${y + r}" class="mp-x"/>` : ''}</g>`;
       if (lv === 2 && !n.w) {
-        let who = taken || (own ? M.ownerName(own) : M.grid?.has(n.id) ? '⚡ grid' : SAVE.has(n.id) ? 'in save' : '');
+        let who = taken || (own ? M.ownerName(own) : M.grid?.has(n.id) ? '⚡ grid' : MAPD.save.has(n.id) ? 'in save' : '');
         // whose it is, once per cluster: not again for a node of the same one close by
         if (who && placed.some(q => q.who === who && Math.hypot(q.x - x, q.y - y) < 70)) who = '';
         else if (who) placed.push({ who, x, y });
@@ -308,7 +293,7 @@ function makeMap(el, M) {
       const x = ev.clientX - r.left, y = ev.clientY - r.top;
       if (box && moved) {
         const [ax, bx, ay, by] = [Math.min(x0, x), Math.max(x0, x), Math.min(y0, y), Math.max(y0, y)];
-        M.onBox(MAP.filter(n => M.shows(n) && !M.taken?.[n.id]
+        M.onBox(MAPD.all.filter(n => M.shows(n) && !M.taken?.[n.id]
           && sx(n.x) >= ax && sx(n.x) <= bx && sy(n.y) >= ay && sy(n.y) <= by).map(n => n.id), e.shiftKey);
         rect?.remove();
         M.boxed = true;            // the click that follows isn't a pick
@@ -342,9 +327,9 @@ function makeMap(el, M) {
       const p = M.pins[+pin.dataset.pin];
       tip.innerHTML = `<b>${p.count} water extractor${p.count > 1 ? 's' : ''}</b>${p.label ? `<br><span>${p.label}</span>` : ''}`;
     } else {
-      const n = BY[hit.dataset.id];
+      const n = MAPD.by[hit.dataset.id];
       tip.innerHTML = `<b>${nameOf(n.r)}</b> · ${n.p}${n.w ? ' · well satellite' : ''}${n.r === 'Geyser' ? ` · ~${GEO_MW[n.p]} MW` : ''}<br>
-        <span>${fmt(n.x)}, ${fmt(n.y)} m</span>${SAVE.has(n.id) ? '<br><span class="mp-save-t">mined in your save</span>' : ''}
+        <span>${fmt(n.x)}, ${fmt(n.y)} m</span>${MAPD.save.has(n.id) ? '<br><span class="mp-save-t">mined in your save</span>' : ''}
         ${M.taken?.[n.id] ? `<br><span class="n-warn">mined by ${M.taken[n.id]}</span>` : ''}
         ${(M.spare || []).filter(sp => sp.item === n.r && sp.ids.includes(n.id) && sp.left > 0.05)
           .map(sp => `<br><span class="mp-spare-t">${fmt(sp.left)}/min of it unused there</span>`).join('')}
@@ -383,7 +368,7 @@ function makeMap(el, M) {
 function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
   const draw = () => {
     const nSpare = new Set((M.spare || []).filter(sp => sp.left > 0.05).flatMap(sp => sp.ids)).size;
-    const nSave = MAP.filter(n => SAVE.has(n.id) && !M.taken?.[n.id] && !M.owner?.[n.id]).length;
+    const nSave = MAPD.all.filter(n => MAPD.save.has(n.id) && !M.taken?.[n.id] && !M.owner?.[n.id]).length;
     el.innerHTML = kinds.map(r =>
       `<button class="mp-f ${!M.only && M.filter.has(r) ? 'on' : ''}" data-r="${r}"><i style="background:${COLORS[r]}"></i>${nameOf(r)}</button>`).join('')
       + '<button class="mp-f" data-r="*" title="Shift- or Ctrl-click a resource to add it">All</button>'
@@ -391,7 +376,7 @@ function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
       <button class="mp-f ${M.only === 'spare' ? 'on' : ''}" data-only="spare" ${nSpare ? '' : 'disabled'}
         title="${nSpare ? 'Every node a factory has that its plan leaves some of unused' : 'No factory leaves any of its nodes unused'}"><i class="ring sp"></i>Leftover${nSpare ? ` ${nSpare}` : ''}</button>
       <button class="mp-f ${M.only === 'save' ? 'on' : ''}" data-only="save" ${nSave ? '' : 'disabled'}
-        title="${nSave ? 'Every node your save mines that no factory here has yet' : SAVE.size ? 'Every node your save mines is in a factory' : 'Load a save to see what you already mine'}"><i class="ring sv"></i>In your save${nSave ? ` ${nSave}` : ''}</button>
+        title="${nSave ? 'Every node your save mines that no factory here has yet' : MAPD.save.size ? 'Every node your save mines is in a factory' : 'Load a save to see what you already mine'}"><i class="ring sv"></i>In your save${nSave ? ` ${nSave}` : ''}</button>
       ${M.only === 'save' && M.onBox ? '<button class="bsm act mp-addview" title="Add the save\'s nodes on screen to this factory — zoom or pan to choose; drag a box for fewer"></button>' : ''}`;
     el.querySelectorAll('.mp-f').forEach(b => b.addEventListener('click', e => {
       const r = b.dataset.r, only = b.dataset.only;
@@ -404,7 +389,7 @@ function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
       }
       draw(); redraw();
       // a view of its own: the map fits what's in it
-      if (only && M.only && M.map) M.map.fitTo(MAP.filter(n => M.shows(n)).map(n => [n.x, n.y]), 400);
+      if (only && M.only && M.map) M.map.fitTo(MAPD.all.filter(n => M.shows(n)).map(n => [n.x, n.y]), 400);
     }));
     el.querySelector('.mp-addview')?.addEventListener('click', () => {
       const ids = (M.visible || []).filter(id => !M.picked?.has(id));
@@ -426,34 +411,34 @@ function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
 // Save and map-picture tools, shared by both maps
 function tools(el, redraw) {
   el._redo = () => { tools(el, redraw); redraw(); };
-  const own = IMG?.source === 'own';
-  const pic = own ? '' : IMG?.source === 'game' ? '<span class="mp-hint">The game\'s map</span>'
-    : IMG?.game === 'downloading' ? '<span class="mp-hint">Fetching the game\'s map…</span>'
-    : IMG?.game === 'failed' ? `<span class="mp-hint n-warn" title="${(IMG.game_error || '').replace(/"/g, '&quot;')}">Couldn't fetch the game's map</span> <button class="bsm" id="mp-game-retry">Try again</button>` : '';
+  const own = MAPD.img?.source === 'own';
+  const pic = own ? '' : MAPD.img?.source === 'game' ? '<span class="mp-hint">The game\'s map</span>'
+    : MAPD.img?.game === 'downloading' ? '<span class="mp-hint">Fetching the game\'s map…</span>'
+    : MAPD.img?.game === 'failed' ? `<span class="mp-hint n-warn" title="${(MAPD.img.game_error || '').replace(/"/g, '&quot;')}">Couldn't fetch the game's map</span> <button class="bsm" id="mp-game-retry">Try again</button>` : '';
   el.innerHTML = `
     <label class="bsm" title="Read a .sav to mark the nodes your game already mines">📂 Load save<input type="file" accept=".sav" hidden></label>
-    <span class="mp-hint mp-save-info">${SAVE_INFO ? `${SAVE.size} nodes mined in ${SAVE_INFO.file || 'your save'}` : ''}</span>
+    <span class="mp-hint mp-save-info">${MAPD.saveInfo ? `${MAPD.save.size} nodes mined in ${MAPD.saveInfo.file || 'your save'}` : ''}</span>
     <span class="mp-unl"></span>
     ${pic}
     <label class="bsm" title="Your own picture of the whole in-game map, instead of the game's">🖼 ${own ? 'Another picture' : 'My own picture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden></label>
     ${own ? '<button class="bsm" id="mp-game-use" title="Drop your picture and draw the game\'s map">Use the game map</button>' : ''}
-    ${IMG?.ext ? `<span class="mp-align">${own ? `nudge <button class="bsm" data-a="left">←</button><button class="bsm" data-a="right">→</button>
+    ${MAPD.img?.ext ? `<span class="mp-align">${own ? `nudge <button class="bsm" data-a="left">←</button><button class="bsm" data-a="right">→</button>
       <button class="bsm" data-a="up">↑</button><button class="bsm" data-a="down">↓</button>
       <button class="bsm" data-a="in">+</button><button class="bsm" data-a="out">−</button>
       <button class="bsm" data-a="reset" title="Back to the map's edges">reset</button>` : ''}<button class="bsm" data-a="fade" title="Fade the picture">Fade</button></span>` : ''}`;
   if (el._keep) el.prepend(el._keep);   // a button of the map's own (the Blackboard's ⚡ Geothermal)
   el.querySelector('#mp-game-retry')?.addEventListener('click', () =>
-    fetch('/api/map-game', { method: 'POST' }).then(r => r.json()).then(ms => { IMG = ms; waitForPicture(); el._redo(); }));
+    fetch('/api/map-game', { method: 'POST' }).then(r => r.json()).then(ms => { MAPD.img = ms; waitForPicture(); el._redo(); }));
   el.querySelector('#mp-game-use')?.addEventListener('click', () =>
-    fetch('/api/map-image', { method: 'DELETE' }).then(r => r.json()).then(ms => { IMG = { ...ms, v: Date.now() }; waitForPicture(); el._redo(); }));
+    fetch('/api/map-image', { method: 'DELETE' }).then(r => r.json()).then(ms => { MAPD.img = { ...ms, v: Date.now() }; waitForPicture(); el._redo(); }));
   const [saveIn, imgIn] = el.querySelectorAll('input[type=file]');
   saveIn.addEventListener('change', () => {
     const f = saveIn.files[0];
     if (!f) return;
     el.querySelector('.mp-save-info').textContent = 'Reading the save…';
     uploadSave(f).then(d => {
-      SAVE = new Set(d.nodes); SAVE_INFO = d;
-      el.querySelector('.mp-save-info').textContent = `${SAVE.size} nodes mined in ${d.file}`;
+      MAPD.save = new Set(d.nodes); MAPD.saveInfo = d;
+      el.querySelector('.mp-save-info').textContent = `${MAPD.save.size} nodes mined in ${d.file}`;
       document.querySelectorAll('.mp-filters').forEach(f => f._chips?.());
       const u = el.querySelector('.mp-unl');
       u.innerHTML = changesHTML(d);
@@ -465,14 +450,14 @@ function tools(el, redraw) {
     const f = imgIn.files[0];
     if (!f) return;
     fetch('/api/map-image', { method: 'POST', headers: { 'Content-Type': f.type }, body: f })
-      .then(r => r.json()).then(d => { if (!d.error) { IMG = { ...d, v: Date.now() }; tools(el, redraw); redraw(); } });
+      .then(r => r.json()).then(d => { if (!d.error) { MAPD.img = { ...d, v: Date.now() }; tools(el, redraw); redraw(); } });
   });
   el.querySelectorAll('[data-a]').forEach(b => b.addEventListener('click', () => {
-    const step = 20 / IMG.scale, a = b.dataset.a;
-    const ch = { left: { dx: IMG.dx - step }, right: { dx: IMG.dx + step }, up: { dy: IMG.dy - step }, down: { dy: IMG.dy + step },
-      in: { scale: IMG.scale * 1.005 }, out: { scale: IMG.scale / 1.005 }, fade: { opacity: IMG.opacity >= 0.95 ? 0.7 : IMG.opacity >= 0.65 ? 0.4 : 1 },
+    const step = 20 / MAPD.img.scale, a = b.dataset.a;
+    const ch = { left: { dx: MAPD.img.dx - step }, right: { dx: MAPD.img.dx + step }, up: { dy: MAPD.img.dy - step }, down: { dy: MAPD.img.dy + step },
+      in: { scale: MAPD.img.scale * 1.005 }, out: { scale: MAPD.img.scale / 1.005 }, fade: { opacity: MAPD.img.opacity >= 0.95 ? 0.7 : MAPD.img.opacity >= 0.65 ? 0.4 : 1 },
       reset: { dx: 0, dy: 0, scale: 1 } }[a];
-    Object.assign(IMG, ch);
+    Object.assign(MAPD.img, ch);
     redraw();
     fetch('/api/map-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ch) });
   }));
@@ -483,7 +468,6 @@ function tools(el, redraw) {
 // ══════════════════════════════════════════════════════════
 
 // A save read anywhere (Unlocks too) marks its nodes on the maps
-document.addEventListener('save-read', e => { SAVE = new Set(e.detail.nodes || []); SAVE_INFO = e.detail; });
 
 let S = null;   // the open picker
 
@@ -491,8 +475,9 @@ let S = null;   // the open picker
  *  taken: {id: factory name}, minerRate, onApply(picked, shards, pins) } */
 export function openMapPicker(opts) {
   loadMap().then(() => {
+    waitForPicture();
     S = { ...opts, picked: new Set(opts.picked), shards: { ...opts.shards }, pins: (opts.pins || []).map(p => ({ ...p })),
-          spare: (opts.spare || []).map(sp => ({ ...sp, bring: sp.mine || 0, ids: sp.ids.filter(id => BY[id]?.r === sp.item) })),
+          spare: (opts.spare || []).map(sp => ({ ...sp, bring: sp.mine || 0, ids: sp.ids.filter(id => MAPD.by[id]?.r === sp.item) })),
           filter: opts.resource && PICKABLE.includes(opts.resource) ? new Set([opts.resource]) : new Set(PICKABLE),
           pinMode: false };
     let m = $('map-modal');
@@ -549,7 +534,7 @@ export function openMapPicker(opts) {
     tools($('mp-tools'), redraw);
     // A factory with nodes already: open on them, not the whole map
     requestAnimationFrame(() => {
-      const pts = [...[...M.picked].map(id => BY[id]).filter(Boolean).map(n => [n.x, n.y]), ...M.pins.map(p => [p.x, p.y])];
+      const pts = [...[...M.picked].map(id => MAPD.by[id]).filter(Boolean).map(n => [n.x, n.y]), ...M.pins.map(p => [p.x, p.y])];
       M.map.fitTo(pts);
       renderList();
     });
@@ -561,7 +546,7 @@ function close() { $('map-modal')?.classList.remove('show'); S = null; }
 // The picked extractors: one per node, one per well, one generator per geyser, the water pins
 function units() {
   const out = [], wells = {};
-  [...S.picked].map(id => BY[id]).filter(Boolean).forEach(n => {
+  [...S.picked].map(id => MAPD.by[id]).filter(Boolean).forEach(n => {
     if (n.w) (wells[n.w] = wells[n.w] || { key: n.w, r: n.r, kind: 'well', nodes: [] }).nodes.push(n);
     else out.push({ key: n.id, r: n.r, kind: n.r === 'Geyser' ? 'geo' : 'node', nodes: [n] });
   });
@@ -600,7 +585,7 @@ function spread(budget) {
 
 // Where this factory is: the middle of the nodes and pins it has picked
 function here() {
-  const pts = [...[...S.picked].map(id => BY[id]).filter(Boolean).map(n => [n.x, n.y]), ...S.pins.map(p => [p.x, p.y])];
+  const pts = [...[...S.picked].map(id => MAPD.by[id]).filter(Boolean).map(n => [n.x, n.y]), ...S.pins.map(p => [p.x, p.y])];
   return pts.length ? [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length] : null;
 }
 
@@ -611,7 +596,7 @@ function renderSpare() {
   if (!list.length) { el.innerHTML = ''; return; }
   const at = here();
   const dist = sp => {
-    const ns = sp.ids.map(id => BY[id]).filter(Boolean);
+    const ns = sp.ids.map(id => MAPD.by[id]).filter(Boolean);
     if (!at || !ns.length) return null;
     return Math.hypot(ns.reduce((a, n) => a + n.x, 0) / ns.length - at[0], ns.reduce((a, n) => a + n.y, 0) / ns.length - at[1]);
   };
@@ -675,6 +660,7 @@ function renderList() {
  *  generators; onGrid(ids) when they change; onOpen(key). */
 export function mountMapView(el, { owners, factories, pins, grid = [], spare = [], network = null, onGrid = () => {}, onOpen }) {
   return loadMap().then(() => {
+    waitForPicture();
     const color = {};
     factories.forEach((f, i) => { color[f.key] = FACTORY_COLORS[i % FACTORY_COLORS.length]; });
     const name = k => factories.find(f => f.key === k)?.name || k;
@@ -683,13 +669,13 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
     const M = { filter: new Set(Object.keys(COLORS)), owner: owners, ownerColor: k => color[k] || '#fff', ownerName: name,
                 pins: pins.map(p => ({ ...p, color: color[p.factory], label: name(p.factory), mine: true })),
                 grid: new Set(grid), geoMode: false,
-                spare: spare.map(sp => ({ ...sp, ids: sp.ids.filter(id => BY[id]?.r === sp.item) })),
+                spare: spare.map(sp => ({ ...sp, ids: sp.ids.filter(id => MAPD.by[id]?.r === sp.item) })),
                 network: network && { hubs: network.hubs.map(h => ({ ...h, color: color[h.key] || '#fff' })), routes: network.routes },
                 onHub: onOpen };
     const setGrid = ids => { M.grid = new Set(ids); onGrid([...M.grid].sort()); redraw(); };
     // In geothermal mode a click on a geyser puts a generator on it (or takes it off)
     M.onClick = id => {
-      if (!M.geoMode || BY[id]?.r !== 'Geyser' || owners[id]) return;
+      if (!M.geoMode || MAPD.by[id]?.r !== 'Geyser' || owners[id]) return;
       const g = new Set(M.grid);
       g.has(id) ? g.delete(id) : g.add(id);
       setGrid(g);
@@ -699,15 +685,15 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
       const lg = el.querySelector('.mp-legend');
       if (!lg) return;                      // redrawn meanwhile (a newer render is under way)
       const count = {}, free = {}, inSave = {};
-      MAP.forEach(n => {
+      MAPD.all.forEach(n => {
         if (!M.shows(n)) return;
         if (owners[n.id]) count[owners[n.id]] = (count[owners[n.id]] || 0) + 1;
-        else if (SAVE.has(n.id)) inSave[n.r] = (inSave[n.r] || 0) + 1;
+        else if (MAPD.save.has(n.id)) inSave[n.r] = (inSave[n.r] || 0) + 1;
         else if (n.p === 'pure' && !M.grid.has(n.id)) free[n.r] = (free[n.r] || 0) + 1;
       });
-      const mw = [...M.grid].reduce((a, id) => a + (GEO_MW[BY[id]?.p] || 0), 0);
+      const mw = [...M.grid].reduce((a, id) => a + (GEO_MW[MAPD.by[id]?.p] || 0), 0);
       // geysers your save already has generators on, not yet on the grid
-      const saved = MAP.filter(n => n.r === 'Geyser' && SAVE.has(n.id) && !M.grid.has(n.id) && !owners[n.id]).map(n => n.id);
+      const saved = MAPD.all.filter(n => n.r === 'Geyser' && MAPD.save.has(n.id) && !M.grid.has(n.id) && !owners[n.id]).map(n => n.id);
       lg.innerHTML = `
         <div class="n-sent-t">Power grid</div>
         ${M.grid.size ? `<div class="mp-lg"><i class="geo"></i>Geothermal × ${M.grid.size}<b>${fmt(mw)} MW</b></div>
@@ -724,7 +710,7 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
           || '<p class="n-hint">No factory has nodes picked yet.</p>'}
         <div class="n-sent-t" style="margin-top:10px">In your save, not in a factory</div>
         ${Object.keys(inSave).length ? Object.entries(inSave).map(([r, c]) => `<div class="mp-lg"><i class="sv"></i>${nameOf(r)}<b>${c}</b></div>`).join('')
-          : `<p class="n-hint">${SAVE_INFO ? 'None' : 'Load a save to see what you already mine.'}</p>`}
+          : `<p class="n-hint">${MAPD.saveInfo ? 'None' : 'Load a save to see what you already mine.'}</p>`}
         <div class="n-sent-t" style="margin-top:10px">Pure nodes still free</div>
         ${Object.entries(free).map(([r, c]) => `<div class="mp-lg"><i style="background:${COLORS[r]};border:none"></i>${nameOf(r)}<b>${c}</b></div>`).join('')}`;
       el.querySelectorAll('.mp-legend .bb-name').forEach(t => t.addEventListener('click', () => onOpen(t.dataset.key)));

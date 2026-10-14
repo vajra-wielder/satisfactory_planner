@@ -24,9 +24,9 @@
  * Performance: spatial hash O(1) hit test, cached node heights,
  *   edge geometry rebuilt only on layout change
  */
-
 import { RESULT, mCol, MABBR, itemName, perMin, FLUIDS, TRANSPORT, PROGRESS, MACHINE_SIZE } from './state.js';
-import { itemColor } from './bundles.js';
+import { itemColor } from './geometry.js';
+
 
 // ── Looks ─────────────────────────────────────────────────
 // Links wear their item's colour (the same everywhere in the planner); a link
@@ -136,7 +136,6 @@ const PAD_BOT = 10;
 const SRC_W   = 168;
 const SRC_H   = 56;
 const XGAP    = 175;   // horizontal gap between recipe columns
-const YGAP_BASE = 36;  // base vertical gap; scaled by fan-out
 const TOP_PAD = 70;
 const HUB_W   = 130;   // splitter / merger node
 const HUB_H   = 40;

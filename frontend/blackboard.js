@@ -14,12 +14,12 @@
  * what's stored (change it here, for any factory) and what's still free.
  * (Splitting belts inside a factory is the find box's: "480 into 3 x 160".)
  */
+import { itemName, RECIPES, fetchFactoryOutputs, setStored, loadMap, mapNode } from './state.js';
+import { BB_TABS } from './nav.js';
+import { mountMapView } from './map-picker.js';
+import { onChain, chainHTML } from './ui.js';
+import { bundle, bandStripes, bandScale, sankeyLayout, itemColor as colorOf } from './geometry.js';
 
-import { itemName, RECIPES } from './state.js';
-import { fetchFactoryOutputs, setStored } from './api.js';
-import { mountMapView, loadMap, mapNode } from './map-picker.js';
-import { onChain, chainHTML } from './chain.js';
-import { bundle, bandStripes, bandScale, sankeyLayout, itemColor as colorOf } from './bundles.js';
 
 let DATA = null;          // { factories, fluids, transport }
 let LAYOUT = { positions: {}, routes: [] };
@@ -151,10 +151,6 @@ export function openBlackboard() {
 export function closeBlackboard() { $('bb-modal').classList.remove('show'); }
 
 let TAB = 'factories';
-// The Blackboard's tabs, in order — the systems you move between (nav.js)
-export const BB_TABS = [['factories', 'Between factories'], ['flows', 'Flows'], ['power', 'Power'], ['map', 'Map'], ['items', 'Items']];
-export const blackboardOpen = () => isOpen();
-export const blackboardTab = () => TAB;
 /** Open the Blackboard on a tab (and, for Items, an item). */
 export function goBlackboard(tab, item) {
   if (item !== undefined) $('bb-items-q').value = itemName(item);

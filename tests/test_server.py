@@ -1,21 +1,29 @@
-"""Factories together (server.py): claims, owed outputs,
-re-solve order, applying a network plan, history, reading a save.
-Runs against a temporary scenarios folder, never your own."""
+"""The server side, against a temporary scenarios folder — never your own:
+factories together (claims, owed outputs, re-solve order, a network plan,
+history, reading a save), the Blackboard's data, and the HTTP API with odd
+and bad input."""
 import json
 import shutil
 import struct
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 import zlib
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import yaml
 
+import network
 import savefile
 import server
+import solver
 import supply
 
 
+# ── Factories together: claims, owed outputs, re-solve order, a network plan, history, a save ──
 class _Temp(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -317,7 +325,6 @@ class Save(unittest.TestCase):
 class BuildProgress(_Temp):
     def test_machines_count_toward_the_nearest_factory(self):
         import json
-        from tests.test_blackboard import _solved
         iron = [k for k, v in supply.map_nodes().items() if v["r"] == "Iron_Ore" and not v.get("w")]
         a, b = supply.map_nodes()[iron[0]], None
         far = next(k for k in iron if abs(supply.map_nodes()[k]["x"] - a["x"]) > 1500)
@@ -327,8 +334,8 @@ class BuildProgress(_Temp):
                     objective={"Iron_Ingot": 1})
         need = server._factory_plan("west")[1]["flows"][0]["machines_final"]
         # all the smelters stand by the west factory's node, and its miner is placed; one more by the east
-        machines = [{"m": "Smelter", "r": "Iron_Ingot", "x": a["x"] + 20, "y": a["y"]} for _ in range(need + 1)]
-        machines.append({"m": "Smelter", "r": "Iron_Ingot", "x": b["x"], "y": b["y"] + 10})
+        machines = [["Smelter", "Iron_Ingot", a["x"] + 20, a["y"]] for _ in range(need + 1)]
+        machines.append({"m": "Smelter", "r": "Iron_Ingot", "x": b["x"], "y": b["y"] + 10})   # a row as saved before
         server.SAVE_NODES_PATH.write_text(json.dumps({"file": "x.sav", "nodes": [iron[0]], "machines": machines,
                                                       "stock": {"Iron_Rod": 5}}))
         p = server._build_progress()
@@ -345,6 +352,294 @@ class BuildProgress(_Temp):
         self.assertEqual(p["spare"], 0)
         server.SAVE_NODES_PATH.write_text(json.dumps({"nodes": []}))      # a save from before: nothing to say
         self.assertFalse(server._build_progress()["read"])
+
+
+# ── The Blackboard's data: cards, flows, power, the build list, planning a network ──
+def _solved(t, key, **data):
+    """Save a factory and cache a real plan for it, as solving it would."""
+    d = t.save(key, **data)
+    s = server._build_scenario(d)
+    r = solver.solve(s, server.ALL_RECIPES, server.MACHINE_META)
+    res = solver.result_to_dict(r, s, server.MACHINE_META)
+    sig = server._signature(s, [])
+    server._cache_store(server._result_key(d["name"]), sig, sig, [], res)
+    return d, res
+
+
+MACHINES = ["Smelter", "Constructor", "Assembler", "Coal_Generator"]
+
+
+class Cards(_Temp):
+    def setUp(self):
+        super().setUp()
+        import supply
+        supply.save_progress({"machines": MACHINES})
+        # iron makes plates and rods; frames (no iron ore) builds reinforced plates
+        # from iron's plates and rods; the depot stores rods
+        _solved(self, "iron", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 240}],
+                objective={"Iron_Plate": 1}, must_produce={"Iron_Rod": 15},
+                to_storage=[{"item": "Iron_Rod", "rate": 10}])
+        _solved(self, "wires", resource_nodes=[{"resource": "Copper_Ore", "extractor": "fixed", "rate": 120}],
+                from_factories=[{"item": "Iron_Plate", "factory": "iron", "rate": 30},
+                                {"item": "Iron_Rod", "factory": "iron", "rate": 5}],
+                objective={"Reinforced_Iron_Plate": 1})
+
+    def test_cards(self):
+        cards = {c["key"]: c for c in server._blackboard_factories()}
+        self.assertEqual(set(cards), {"iron", "wires"})
+        iron, wires = cards["iron"], cards["wires"]
+        self.assertTrue(iron["solved"] and wires["solved"])
+        self.assertGreater(iron["exports"]["Iron_Plate"], 30)
+        # who takes what from iron, storage included
+        self.assertEqual(iron["taken_by"]["Iron_Plate"], {"wires": 30.0})
+        self.assertEqual(iron["taken_by"]["Iron_Rod"], {"wires": 5.0, server.STORAGE: 10.0})
+        self.assertEqual(iron["storage"], {"Iron_Rod": 10.0})
+        # what wires imports, and from where (the flows the bands draw)
+        self.assertEqual(sorted((s["item"], s["factory"], s["rate"]) for s in wires["sources"]),
+                         [("Iron_Plate", "iron", 30), ("Iron_Rod", "iron", 5)])
+        # the card shows what its plan draws: all 5 rods (they cap its screws), so
+        # only the plates those screws can go with — at most the 30 it takes
+        self.assertAlmostEqual(wires["imports"]["Iron_Rod"], 5.0, places=3)
+        self.assertLessEqual(wires["imports"]["Iron_Plate"], 30.0 + 1e-6)
+        # power: machines draw, nothing generates
+        p = iron["power"]
+        self.assertGreater(p["machines"], 0)
+        self.assertEqual(p["generators"], 0)
+
+    def test_import_past_free_comes_out_of_storage(self):
+        # iron makes 15 rods: 5 to wires, 10 stored — none free. Importing 8 more
+        # takes them out of iron's storage, and iron is saved so
+        import yaml
+        data = {"name": "frames", "from_factories": [{"item": "Iron_Rod", "factory": "iron", "rate": 8}]}
+        moved = server._draw_storage("frames", data)
+        self.assertEqual([(m["item"], m["factory"], m["rate"]) for m in moved], [("Iron_Rod", "iron", 8)])
+        iron = yaml.safe_load((self.dir / "iron.yaml").read_text())
+        self.assertEqual(iron["to_storage"], [{"item": "Iron_Rod", "rate": 2}])
+        self.assertEqual(server._hold_claims("frames", data), [])        # it fits now: nothing cut
+        self.assertEqual(data["from_factories"][0]["rate"], 8)
+        # no more than is stored: the rest is cut as before
+        data = {"name": "more", "from_factories": [{"item": "Iron_Rod", "factory": "iron", "rate": 5}]}
+        self.save("frames", **{"from_factories": [{"item": "Iron_Rod", "factory": "iron", "rate": 8}]})
+        self.assertEqual(server._draw_storage("more", data)[0]["rate"], 2)
+        self.assertEqual(server._hold_claims("more", data)[0]["rate"], 2)
+
+    def test_owed_rod_is_made(self):
+        # iron must keep making the rods others take and it stores (15 exact covers 15 owed)
+        _, res = server._factory_plan("iron")
+        self.assertGreaterEqual(res["sink_nodes"]["Iron_Rod"], 15 - 1e-6)
+
+    def test_build_list(self):
+        rows = {r["key"]: r for r in server._build_list()}
+        self.assertGreater(rows["iron"]["machines"].get("Smelter", 0), 0)
+        self.assertGreater(rows["iron"]["materials"].get("Iron_Rod", 0), 0)   # constructors cost rods
+
+    def test_outputs_offer_what_is_left(self):
+        o = server._factory_outputs()
+        iron = next(f for f in o["factories"] if f["key"] == "iron")
+        self.assertIn("Iron_Plate", iron["made"])
+        self.assertNotIn("Power", iron["made"])
+        self.assertEqual(o["alerts"], {})
+
+    def test_network_counts_what_is_sent_once(self):
+        # iron's plan makes 150 plates, 30 of them for frames: the network holds
+        # 120 at iron and routes the 30 — not 150 and 30 more
+        held = {s["key"]: s["held"] for s in server._network_sites(["iron", "wires"])}
+        made = server._factory_plan("iron")[1]["sink_nodes"]["Iron_Plate"]
+        self.assertAlmostEqual(held["iron"]["Iron_Plate"], made - 30, places=3)
+
+    def test_routes_are_vehicles(self):
+        # belts and pipes stay inside factories: an old belt route is a train now
+        b = server._clean_board({"routes": [{"a": "iron", "b": "wires", "mode": "belt"},
+                                            {"a": "iron", "b": "wires", "mode": "tractor", "trip_min": 6}]})
+        self.assertEqual([r["mode"] for r in b["routes"]], ["train", "tractor"])
+        # what 1/min keeps busy: a round trip's worth of loads
+        plate = network.STACK.get("Iron_Plate", 100)
+        for mode, stacks in (("train", 32), ("truck", 48), ("tractor", 25), ("drone", 9)):
+            self.assertAlmostEqual(network._unit_cost("Iron_Plate", {"mode": mode, "trip_min": 6}), 6 / (stacks * plate))
+        self.assertAlmostEqual(network._unit_cost("Water", {"mode": "train", "trip_min": 4}), 4 / 1600)
+        self.assertIsNone(network._unit_cost("Water", {"mode": "tractor", "trip_min": 4}))
+
+    def test_network(self):
+        sites = server._network_sites(["iron", "wires"])
+        out = network.plan_network(sites, [{"a": "iron", "b": "wires", "mode": "train", "trip_min": 1}],
+                                   server.ALL_RECIPES)
+        self.assertTrue(out["ok"], out)
+        rt = out["routes"][0]
+        self.assertIn("Iron_Plate", {i["item"] for i in rt["items"] if i["from"] == "iron"})
+        # vehicles busy: the heavier way (what comes back rides along)
+        self.assertAlmostEqual(rt["load"], max(rt["ways"].values()), places=3)
+        self.assertAlmostEqual(rt["cars"]["solid"] + rt["cars"]["fluid"], rt["load"], places=3)
+        # a factory's own goals are never shipped to it
+        goals = {"iron": {"Iron_Plate", "Iron_Rod"}, "wires": {"Reinforced_Iron_Plate"}}
+        for i in rt["items"]:
+            self.assertNotIn(i["item"], goals[i["to"]])
+            self.assertGreater(i["rate"], 0)
+        self.assertAlmostEqual(rt["throughput"], sum(i["rate"] for i in rt["items"]), places=2)
+        self.assertIn("iron", out["headroom"])
+
+    def test_network_grows_every_goal_together(self):
+        sites = server._network_sites(["iron", "wires"])
+        rt = [{"a": "iron", "b": "wires", "mode": "train", "trip_min": 1}]
+        out = network.plan_network(sites, rt, server.ALL_RECIPES, grow=True)
+        self.assertTrue(out["ok"], out)
+        t = out["grow"]
+        self.assertGreaterEqual(t, 1 - 1e-6)            # never less than now
+        for f in out["factories"]:
+            for it, g in (f["goal"] or {}).items():     # each at least t × now: none traded for another
+                self.assertGreaterEqual(g["then"], g["now"] * t - 1e-3, (f["key"], it, g))
+        self.assertIsNone(network.plan_network(sites, rt, server.ALL_RECIPES)["grow"])
+
+    def test_grid_geothermal(self):
+        import supply
+        m = supply.map_nodes()
+        pure = [k for k, v in m.items() if v["r"] == "Geyser" and v["p"] == "pure"][:2]
+        ore = next(k for k, v in m.items() if v["r"] == "Iron_Ore")
+        # only geysers are kept, once each
+        server._save_board({"geysers": pure + [pure[0], ore, "nope", 5]})
+        self.assertEqual(server._load_board()["geysers"], sorted(pure))
+        g = server._grid()
+        self.assertEqual((g["count"], g["mw"], g["low"], g["high"]), (2, 800.0, 400.0, 1200.0))
+        self.assertEqual(g["cost"]["Wire"], 500)
+        grid = next(r for r in server._build_list() if r["key"] == "@grid")
+        self.assertEqual(grid["extractors"], {supply.GEOTHERMAL: 2})
+
+
+# ── The HTTP API: every answer JSON with a sensible status, 400 for input it can't use ──
+class Picks(unittest.TestCase):
+    """Recipes picked on the goal tree are offered to the solver (allowed, not forced)."""
+    def test_picked_alternate_is_allowed(self):
+        sc = server._build_scenario(server._clean_scenario({"name": "p", "alternate_recipes_enabled": [],
+            "recipe_picks": {"Iron_Ingot": "Alt_Iron_Alloy_Ingot", "Screw": "nope"}}))
+        self.assertIn("Alt_Iron_Alloy_Ingot", sc.alternate_recipes_enabled)
+        self.assertEqual(server._clean_scenario({"recipe_picks": {"Screw": "nope", "Wire": 3}})["recipe_picks"], {})
+
+
+class API(_Temp):
+    def setUp(self):
+        super().setUp()
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        super().tearDown()
+
+    def call(self, method, path, body=None, raw=None, ctype="application/json"):
+        data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers={"Content-Type": ctype})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, json.loads(r.read() or b"null")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"null")
+
+    def test_unchanged_files_answer_304(self):
+        import gzip
+        for path in ("/frontend/main.js", "/api/boot"):
+            req = urllib.request.Request(self.base + path, headers={"Accept-Encoding": "gzip"})
+            with urllib.request.urlopen(req) as r:
+                tag, body = r.headers["ETag"], gzip.decompress(r.read())
+            self.assertTrue(tag and body)
+            req = urllib.request.Request(self.base + path, headers={"If-None-Match": tag})
+            with self.assertRaises(urllib.error.HTTPError) as e:   # urllib raises on a 304
+                urllib.request.urlopen(req)
+            self.assertEqual(e.exception.code, 304)
+
+    def test_solve_answers_when_done(self):
+        sc = {"name": "w", "available_resources": {"Iron_Ore": 60}, "objective": {"Iron_Ingot": 1}}
+        code, d = self.call("POST", "/api/solve", {**sc, "solve_styles": [], "base_scenario": sc})
+        code, r = self.call("GET", f"/api/solve/{d['job_id']}?wait=1")      # no polling: the plan itself
+        self.assertEqual((code, r["status"]), (200, "done"))
+        self.assertAlmostEqual(r["result"]["objective_value"], 60, places=3)
+
+    def test_storage_set_from_elsewhere(self):
+        self.save("depot", to_storage=[{"item": "Iron_Plate", "rate": 5}, {"item": "Wire", "rate": 3}])
+        code, d = self.call("POST", "/api/storage", {"key": "depot", "item": "Iron_Plate", "rate": 9})
+        self.assertEqual((code, d["rate"]), (200, 9))
+        got = self.call("GET", "/api/scenarios/depot")[1]["to_storage"]
+        self.assertEqual(sorted((t["item"], t["rate"]) for t in got), [("Iron_Plate", 9), ("Wire", 3)])
+        self.call("POST", "/api/storage", {"key": "depot", "item": "Wire", "rate": 0})
+        self.assertEqual([t["item"] for t in self.call("GET", "/api/scenarios/depot")[1]["to_storage"]], ["Iron_Plate"])
+        for bad in ({"key": "../x", "item": "Wire"}, {"key": "nope", "item": "Wire"}, {"key": "depot", "item": "Nope"}):
+            self.assertEqual(self.call("POST", "/api/storage", bad)[0], 400)
+
+    def test_keys_stay_in_their_folder(self):
+        for method, path in (("GET", "/api/scenarios/../../x"), ("POST", "/api/scenarios/..%2Fevil"),
+                             ("DELETE", "/api/scenarios/../x"), ("GET", "/api/history/../x"),
+                             ("POST", "/api/history/../../x/restore")):
+            code, _ = self.call(method, path, {"name": "x"} if method == "POST" else None)
+            self.assertEqual(code, 400, path)
+        code, _ = self.call("GET", "/frontend/../server.py")
+        self.assertEqual(code, 404)
+        self.assertEqual(sorted(p.name for p in self.dir.glob("*.yaml")), [])
+
+    def test_bad_bodies_are_400(self):
+        for path in ("/api/scenarios/a", "/api/solve", "/api/progress", "/api/blackboard", "/api/network"):
+            self.assertEqual(self.call("POST", path, raw=b"{not json")[0], 400, path)
+        self.assertEqual(self.call("POST", "/api/scenarios/a", raw=b"[1, 2]")[0], 400)
+        self.assertEqual(self.call("POST", "/api/unlocked-alts", {"unlocked": "x"})[0], 400)
+        self.assertEqual(self.call("POST", "/api/resolve-chain", {"keys": "x"})[0], 400)
+        self.assertEqual(self.call("POST", "/api/save-file", raw=b"nope", ctype="application/octet-stream")[0], 400)
+        self.assertEqual(self.call("POST", "/api/map-image", raw=b"xx", ctype="text/plain")[0], 400)
+
+    def test_scenarios_are_cleaned(self):
+        code, out = self.call("POST", "/api/scenarios/t", {
+            "name": "  T  ", "power_shards_available": "-3", "max_power_mw": "abc",
+            "resource_nodes": [{"resource": "Iron_Ore", "extractor": "Miner", "count": "x", "shards": 9},
+                               {"extractor": "fixed", "rate": 5}],
+            "from_factories": [{"item": "Plastic", "factory": "oil", "rate": "lots"}, {"item": None}],
+            "to_storage": [{"item": "Wire", "rate": -5}, {"rate": 3}]})
+        self.assertEqual(code, 200)
+        _, d = self.call("GET", "/api/scenarios/t")
+        self.assertEqual(d["name"], "T")
+        self.assertEqual(d["power_shards_available"], 0)
+        self.assertIsNone(d.get("max_power_mw"))
+        self.assertEqual(d["resource_nodes"], [{"resource": "Iron_Ore", "extractor": "Miner", "count": 1, "shards": 3}])
+        self.assertEqual(d["from_factories"], [{"item": "Plastic", "factory": "oil", "rate": 0.0}])
+        self.assertEqual(d["to_storage"], [{"item": "Wire", "rate": 0.0}])
+
+    def test_unknown_factories_are_skipped(self):
+        code, out = self.call("POST", "/api/network", {"routes": [{"a": "nope", "b": "gone"}, "x"]})
+        self.assertEqual(code, 200)
+        self.assertEqual(out["routes"], [])
+        code, out = self.call("POST", "/api/apply-network", {"flows": [{"from": "a"}, 5], "alts": "x"})
+        self.assertEqual((code, out["changed"]), (200, []))
+        self.assertEqual(self.call("POST", "/api/blackboard", {"routes": "bad", "positions": 3, "geysers": ["nope", 4]})[0], 200)
+        _, b = self.call("GET", "/api/blackboard")
+        self.assertEqual(b["layout"], {"positions": {}, "routes": [], "geysers": []})
+
+    def test_backups_and_history_refuse_bad_input(self):
+        self.assertEqual(self.call("POST", "/api/restore", raw=b"not a zip", ctype="application/zip")[0], 400)
+        self.assertEqual(self.call("POST", "/api/restore", {"file": "../server.py"})[0], 400)
+        self.assertEqual(self.call("GET", "/api/backup/..%2Fserver.py")[0], 404)
+        self.assertEqual(self.call("POST", "/api/history/x/../confirm", {"on": True})[0], 400)
+        self.assertEqual(self.call("POST", "/api/history/nope/v1/confirm", {"on": True})[0], 400)
+        code, b = self.call("POST", "/api/backup", {})
+        self.assertEqual((code, len(b["backups"])), (200, 1))
+        self.assertEqual(self.call("GET", "/api/grid-status")[0], 200)
+
+    def test_map_picture_game_then_yours_then_game(self):
+        import server
+        self.assertEqual(self.call("GET", "/api/map-settings")[1]["source"], None)       # no game map in tests
+        (server.MAP_IMAGE_DIR / "map_game.avif").write_bytes(b"avif")
+        st = self.call("GET", "/api/map-settings")[1]
+        self.assertEqual((st["source"], st["ext"], st["dx"], st["scale"]), ("game", "avif", 0.0, 1.0))
+        self.call("POST", "/api/map-settings", {"dx": 30, "opacity": 0.4})              # nudges are yours only
+        st = self.call("GET", "/api/map-settings")[1]
+        self.assertEqual((st["dx"], st["opacity"]), (0.0, 0.4))
+        code, st = self.call("POST", "/api/map-image", raw=b"png", ctype="image/png")
+        self.assertEqual((code, st["source"], st["ext"], st["dx"]), (200, "own", "png", 30.0))
+        code, st = self.call("DELETE", "/api/map-image")
+        self.assertEqual((code, st["source"]), (200, "game"))
+        with urllib.request.urlopen(self.base + "/api/map-image") as r:
+            self.assertEqual((r.headers["Content-Type"], r.read()), ("image/avif", b"avif"))
+
+    def test_map_settings_stay_numbers(self):
+        _, st = self.call("POST", "/api/map-settings", {"dx": "abc", "scale": -1, "opacity": 7})
+        self.assertEqual((st["dx"], st["scale"], st["opacity"]), (0.0, 0.05, 1.0))
+        self.assertEqual(self.call("GET", "/api/map-image")[0], 404)   # still answers
 
 
 if __name__ == "__main__":

@@ -1,14 +1,11 @@
 /**
- * analysis.js — factory analysis modal.
- * Extracted from sidebar.js for maintainability.
+ * analysis.js — what limits the plan, where to lift it, and what-if sliders.
  */
-
-import { SC, RESULT, RECIPES, mCol, MABBR, itemName } from './state.js';
-import { fetchDuals } from './api.js';
-import { openDock, closeDock, dockTab } from './dock.js';
+import { SC, RESULT, RECIPES, mCol, MABBR, itemName, fetchDuals } from './state.js';
+import { openDock, closeDock, dockTab } from './nav.js';
 import { _fmtSpace } from './ui.js';
-import { freeNodes, takeNode, setSupplyTotal } from './supply-panel.js';
-import { goalOf, setGoal } from './kv-panel.js';
+import { freeNodes, takeNode, setSupplyTotal, goalOf, setGoal } from './sidebar.js';
+
 
 // ── DOM helpers ───────────────────────────────────────────
 function section(parent, title, extraHTML = '') {

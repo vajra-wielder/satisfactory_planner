@@ -6,11 +6,10 @@
  * clock the plan uses (least power), or all but one at 100% (easiest to set)
  * — what comes in and goes out, each with the belt (or pipe) it needs, and
  * for each input the splitters and mergers that feed every machine exactly
- * its share (splits.js), a click away.
+ * its share (geometry.js), a click away.
  */
 import { RESULT, RECIPES, itemName, mCol, MABBR, TRANSPORT, FLUIDS, PROGRESS, MACHINE_SIZE, BUILT } from './state.js';
-import { design, splitSVG, feedPattern } from './splits.js';
-import { itemColor } from './bundles.js';
+import { design, splitSVG, feedPattern, itemColor } from './geometry.js';
 
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const num = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(v < 10 ? 2 : 1)).toLocaleString();

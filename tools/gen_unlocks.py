@@ -1,4 +1,4 @@
-"""Build data/unlocks.json — what unlocks each recipe and machine in 1.0 —
+"""Build the unlocks in data/game_classes.json — what unlocks each recipe and machine in 1.0 —
 from the open SatisfactoryTools game data (github.com/greeny/SatisfactoryTools,
 data/data1.0.json):
 
@@ -44,11 +44,11 @@ def main(src):
                if not r.get("alternate") and classes["recipes"].get(k) in by}
     machines = {m: first(by[c]) for m, c in classes["machines"].items() if c in by}
     used = set(recipes.values()) | set(machines.values())
-    out = {"about": "What unlocks each recipe and machine (1.0) — tools/gen_unlocks.py, from SatisfactoryTools' game data",
-           "schematics": {k: v for k, v in sorted(sch.items(), key=lambda kv: (kv[1]["kind"] == "mam", kv[1]["tier"], kv[0]))
+    out = {"schematics": {k: v for k, v in sorted(sch.items(), key=lambda kv: (kv[1]["kind"] == "mam", kv[1]["tier"], kv[0]))
                           if k in used or v["kind"] in ("milestone", "hub")},
            "recipes": dict(sorted(recipes.items())), "machines": dict(sorted(machines.items()))}
-    (HERE / "data" / "unlocks.json").write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
+    classes["unlocks"] = out
+    (HERE / "data" / "game_classes.json").write_text(json.dumps(classes, indent=1) + "\n", encoding="utf-8")
     print(f"{len(out['recipes'])} recipes, {len(machines)} machines, {len(out['schematics'])} schematics")
 
 if __name__ == "__main__":

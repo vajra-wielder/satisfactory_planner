@@ -91,9 +91,9 @@ def unlocks(recipes: List[str]) -> dict:
 
 def schematics_done(have: set, g: dict = None) -> List[str]:
     """The milestones and MAM research a save has done: those that unlock a
-    recipe or machine it has (data/unlocks.json)."""
+    recipe or machine it has (game_classes.json unlocks)."""
     g = g or json.loads(_CLASSES.read_text(encoding="utf-8"))
-    u = json.loads((Path(__file__).parent / "data" / "unlocks.json").read_text(encoding="utf-8"))
+    u = g["unlocks"]
     done = {s for k, s in u["recipes"].items() if g["recipes"].get(k) in have}
     done |= {s for m, s in u["machines"].items() if g["machines"].get(m) in have}
     return sorted(done)

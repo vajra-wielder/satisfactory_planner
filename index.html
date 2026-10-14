@@ -182,7 +182,6 @@ html, body {
 }
 .tb-action-btn.warn:hover { opacity: .8; }
 
-
 /* ══════════════════════════════════════════════════════════
    SIDEBAR SHELL
 ══════════════════════════════════════════════════════════ */
@@ -284,7 +283,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .nrow-2 label { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
 .nrow-2 input { padding: 3px 5px; }
 .nrow-2 input[type=number] { width: 44px; font-family: var(--mono); font-size: 11px; }
-.nrow-2 .n-cl { width: 50px !important; }
+
 .nrow-2 .n-rate-in, .nrow-1 .f-rate { width: 74px; font-family: var(--mono); font-size: 12px; }
 .n-rate { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--t2); white-space: nowrap; }
 .n-sh { width: 100%; text-align: right; font-size: 10px; color: var(--t3); }
@@ -325,7 +324,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .nrow-c .n-sh-sel { width: auto; }
 .n-up { display: flex; align-items: center; gap: 6px; justify-content: space-between; font-size: 11px; color: var(--warn);
   border: 1px solid rgba(251,146,60,.35); background: rgba(251,146,60,.08); border-radius: 5px; padding: 4px 6px; margin-bottom: 5px; }
-.n-map-ex { font-size: 11px; color: var(--t2); }
+
 .n-mix { font-size: 11px; color: var(--t3); white-space: nowrap; }
 .nrow-2 .bsm { padding: 1px 6px; font-size: 10px; }
 .n-sh-sel { font-size: 10px !important; }
@@ -489,22 +488,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bsm.dan:hover { border-color: var(--err); color: var(--err); }
 
 /* ══════════════════════════════════════════════════════════
-   ALTERNATE RECIPE CHIPS
-══════════════════════════════════════════════════════════ */
-.altc {
-  display: flex; align-items: center; gap: 5px;
-  padding: 4px 8px; border-radius: var(--rsm);
-  border: 1px solid var(--b); background: var(--p3);
-  margin-bottom: 2px; cursor: pointer; transition: all .12s;
-}
-.altc:hover { background: var(--p2); }
-.altc.act   { border-color: var(--acc); background: var(--acc-glow); }
-.altdot { width: 6px; height: 6px; border-radius: 50%; background: var(--b2); flex-shrink: 0; }
-.altc.act .altdot { background: var(--acc); }
-.altn { flex: 1; font-size: 11px; color: var(--t2); }
-.altm { font-size: 10px; color: var(--t3); font-family: var(--mono); }
-
-/* ══════════════════════════════════════════════════════════
    MACHINE CHIPS
 ══════════════════════════════════════════════════════════ */
 .mchip {
@@ -563,20 +546,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
   width: 5px; height: 5px; border-radius: 50%;
   background: currentColor; flex-shrink: 0;
 }
-
-/* ══════════════════════════════════════════════════════════
-   RECIPE LOOKUP CARDS  (topbar panel + was sidebar)
-══════════════════════════════════════════════════════════ */
-.rlcard {
-  background: var(--p3); border: 1px solid var(--b);
-  border-radius: var(--rsm); padding: 8px 10px; margin-bottom: 5px;
-}
-.rlcard.prod { border-color: var(--ok); }
-.rlcard.cons { border-color: #3b82f6; }
-.rlrname { font-size: 11px; font-weight: 600; color: var(--t); }
-.rlrow { display: flex; justify-content: space-between; font-size: 11px; padding: 1px 0; }
-.rlrow span:first-child { color: var(--t2); }
-.rlrow span:last-child  { font-family: var(--mono); color: var(--t3); }
 
 /* ══════════════════════════════════════════════════════════
    GRAPH PANEL
@@ -753,7 +722,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .gn-p { border: 1px solid var(--b); border-radius: var(--rsm); padding: 6px 8px; margin: 5px 0; background: var(--p3); }
 .gn-ph { display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
 .gn-src { display: flex; flex-wrap: wrap; gap: 4px; }
-.gn-make summary { cursor: pointer; font-size: 11px; color: var(--t3); margin-top: 5px; }
+
 .gn-goal { border-top: 1px solid var(--b); margin-top: 8px; }
 #gc    { width: 100%; height: 100%; display: block; }
 
@@ -810,32 +779,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
   font-size: 12px; line-height: 1.5;
   display: flex; gap: 6px; align-items: flex-start;
 }
-.wmf { font-size: 11px; color: var(--t3); }
 
-/* ══════════════════════════════════════════════════════════
-   ANALYSIS MODAL
-══════════════════════════════════════════════════════════ */
-.ra-row {
-  display: flex; align-items: baseline; gap: 8px;
-  padding: 7px 10px; border-radius: var(--rsm);
-  border: 1px solid var(--b); margin-bottom: 5px;
-  background: var(--p3);
-}
-.ra-rank {
-  font-family: var(--mono); font-size: 11px; color: var(--t3);
-  min-width: 18px; text-align: right; flex-shrink: 0;
-}
-.ra-name { font-size: 12px; color: var(--t); flex: 1; }
-.ra-machine { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-weight: 600; flex-shrink: 0; }
-.ra-badge {
-  font-size: 9px; font-weight: 700; padding: 2px 7px;
-  border-radius: 10px; flex-shrink: 0; font-family: var(--mono);
-  letter-spacing: .04em;
-}
-.ra-delta { font-family: var(--mono); font-size: 11px; flex-shrink: 0; min-width: 70px; text-align: right; }
-.ra-row.nalt { flex-wrap: wrap; align-items: center; row-gap: 3px; }
-.ra-row.nalt .ra-delta { order: 5; flex-basis: 100%; text-align: left; padding-left: 26px; min-width: 0; }
-.ra-row.nalt .bsm { white-space: nowrap; }
 #analysis-body {
   overflow-y: auto;
   flex: 1;
@@ -934,13 +878,11 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .st-tab th { text-align: left; font-weight: 400; color: var(--t3); font-size: 11px; padding: 4px 8px; border-bottom: 1px solid var(--b2); }
 .st-tab td { padding: 5px 8px; border-bottom: 1px solid var(--b); vertical-align: top; }
 .st-tab td.num { font-family: var(--mono); text-align: right; color: var(--t); white-space: nowrap; }
-.st-bar { height: 6px; border-radius: 3px; background: var(--ok); opacity: .7; margin-top: 3px; }
+
 .st-by { font-size: 11px; color: var(--t3); }
 .st-in { width: 64px; text-align: right; font-family: var(--mono); font-size: 11px; padding: 1px 4px; }
 .bb-hint { font-size: 11px; color: var(--t3); }
 .bb-warn { color: var(--warn); }
-
-
 
 input.ac-bad { border-color: var(--warn, #f87171) !important; box-shadow: 0 0 0 1px rgba(248,113,113,.35); }
 .wm-fix { border: 1px solid #4ade80; background: rgba(74,222,128,.08); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
@@ -1056,7 +998,6 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       <input type="text" id="sc-name" placeholder="Scenario name" style="margin-bottom:4px"/>
       <input type="text" id="sc-desc" placeholder="Description (optional)"/>
     </div>
-
 
     <div id="tab-build">
       <div class="pc" id="sec-res">
@@ -1214,7 +1155,6 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
   </div>
   <div id="g-legend"></div>
 </div>
-
 
 <aside id="dock">
   <div id="dk-content">

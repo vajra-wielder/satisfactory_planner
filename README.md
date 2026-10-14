@@ -174,7 +174,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   which it has done; one click makes them match
 - Solves use only the recipes they unlock (alternates still come from hard
   drives); the goal tree grows to match. Which milestone or research unlocks
-  each recipe and machine is in data/unlocks.json, built by
+  each recipe and machine is in data/game_classes.json, built by
   tools/gen_unlocks.py from SatisfactoryTools' open 1.0 game data
 
 ### Layout — by how often you go there
@@ -406,42 +406,40 @@ satisfactory-planner/
 │                         owed outputs, re-solve chain, history, save files, Blackboard
 ├── solver.py             the optimiser (OR-Tools: SCIP + GLOP)
 ├── supply.py             nodes, extractors, shards, imports → supply; shared unlocks
-├── network.py            planning several factories together
-├── logistics.py          what each factory takes in and sends out
-├── savefile.py           what a game save mines and has unlocked
+├── network.py            several factories together: each from outside (what it takes
+│                         in and sends out), and planning them as one network
+├── savefile.py           a game save: the nodes it mines, what it has unlocked, the
+│                         machines it has built and what its storage holds
 ├── index.html            the page (and its styles)
 ├── frontend/
-│   ├── main.js           wiring, solve, save/open
-│   ├── sidebar.js        sidebar shell, autocomplete
-│   ├── dock.js           the right panel: Alternates, Analysis, Build cost, Issues
-│   ├── new-alts.js       the Alternates tab: worth unlocking, solver pruning
+│   ├── main.js           wiring, solve (and solving by itself), save/open, undo
+│   ├── state.js          shared state, every call to the server, the map's nodes
+│   ├── nav.js            getting around (go to anything, the systems, shortcuts),
+│   │                     the right panel; loads the Blackboard when it first opens
+│   ├── sidebar.js        the left panel: goals, constraints, the supply
+│   ├── ui.js             results bar, build cost, warnings, saved factories,
+│   │                     comparing two plans, the re-solve chain
+│   ├── unlocks.js        Unlocks, the Alternates tab, reading a save
+│   ├── analysis.js       what limits the plan, where to lift it, what-if sliders
+│   ├── build-sheet.js    the build sheet: each line, its clocks, belts, splits; floors
 │   ├── goal-tree.js      the Tree view: what your resources can become, goals on it
-│   ├── supply-panel.js   resources, imports, storage, sent out
-│   ├── kv-panel.js       goals
-│   ├── machines-panel.js Unlocks: machines, miner tier, unlocked alternates
-│   ├── map-picker.js     the world map: picking nodes, the Blackboard map
-│   ├── save-import.js    reading a save
 │   ├── graph.js          the production graph
-│   ├── analysis.js       factory analysis, and where to lift its limits
-│   ├── build-sheet.js    the build sheet: each line, its clocks, belts and splits
-│   ├── blackboard.js     logistics between factories
-│   ├── bundles.js        bands between factories (geometry)
-│   ├── splits.js         belt splits (geometry)
-│   ├── chain.js          re-solving factories in order
-│   ├── nav.js            getting around: go to anything, the systems, shortcuts
-│   └── ui.js, state.js, api.js
+│   ├── geometry.js       belt splits, and the bands between factories
+│   ├── blackboard.js     logistics between factories (loaded when first opened)
+│   └── map-picker.js     the world map: picking nodes, the Blackboard map (loaded when
+│                         first drawn)
 ├── data/
 │   ├── recipes_complete.yaml   recipes and machines (1.0)
 │   ├── map_nodes.json          every resource node, well satellite and geyser
-│   ├── game_classes.json       game class names, for reading saves
-│   ├── unlocks.json            what milestone or MAM research unlocks each recipe and machine
+│   ├── game_classes.json       game class names, for reading saves, and what
+│   │                           milestone or MAM research unlocks each recipe and machine
 │   └── unlocked_alts.yaml      your unlocked alternates
 │   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*,
 │    and map_game.avif, the game's map, fetched once)
 ├── scenarios/            your factories (.results: cached plans; .history: earlier versions)
 ├── backups/              your backups (git-ignored)
-├── tools/gen_unlocks.py   builds data/unlocks.json from the game data
-└── tests/
+├── tools/gen_unlocks.py  builds the unlocks in data/game_classes.json from the game data
+└── tests/                test_*.py (python), geometry.test.mjs (node), e2e.mjs (browser)
 ```
 
 ---
@@ -473,18 +471,11 @@ python server.py       # or in your browser, at http://127.0.0.1:5000
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .   # supply, claims, owed, chain, Blackboard, API, solver (seconds)
-node --test tests/*.test.mjs                # belt splits, Blackboard bands
-node tests/sidebar.e2e.mjs                  # every input saved and reloaded, the outputs (browser; needs Playwright)
-node tests/blackboard.e2e.mjs               # every Blackboard tab (browser; needs Playwright)
-node tests/nav.e2e.mjs                      # getting around: palette, systems, shortcuts, map keys (browser)
-node tests/spare.e2e.mjs                    # unused node supply, brought to a factory nearby (browser)
-node tests/typing.e2e.mjs                   # typed items stay, commit and save; misspelt ones are marked (browser)
-node tests/infeasible.e2e.mjs               # goals that can't be met: why, and a fix that works (browser)
-node tests/newalts.e2e.mjs                  # new alternates: listed after a solve, tick and solve (browser)
-node tests/tree.e2e.mjs                     # the goal tree: goals on tiles, what's next, tiers (browser)
-node tests/build.e2e.mjs                    # build sheet, splits per line, limits with free nodes (browser)
-node tests/improve.e2e.mjs                  # auto solve, machine cap, built from a save, floors, alternates everywhere, heavy routes, grow (browser)
+python -m unittest discover -s tests -t .   # server, supply, solver (seconds)
+node --test tests/*.test.mjs                # belt splits, the Blackboard's bands
+node tests/e2e.mjs                          # every browser section, a few at once (needs Playwright)
+node tests/e2e.mjs tree build               # just those sections: sidebar, blackboard, nav, spare,
+                                            # typing, infeasible, newalts, tree, build, improve
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```

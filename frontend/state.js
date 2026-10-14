@@ -1,5 +1,6 @@
 /**
- * state.js — shared application state.
+ * state.js — shared application state, every call to the server, and the
+ * world map's nodes.
  * All modules import from here; nothing stores its own copies.
  */
 
@@ -65,7 +66,7 @@ export function setRecipes(obj) { RECIPES = obj; }
 export let EXTRACTORS = {}, PURITY = {}, MINER_TIERS = {}, MAX_SHARDS = 3;
 // Shared unlocks, for every factory: miner tier, machines, belt/pipe tier
 export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2', schematics: null };
-// What unlocks each recipe and machine (data/unlocks.json): milestones (tier + sub-tier), MAM research
+// What unlocks each recipe and machine (data/game_classes.json, its unlocks): milestones (tier + sub-tier), MAM research
 export let UNLOCKS = { schematics: {}, recipes: {}, machines: {} };
 // Belt and pipe tiers: /min each
 export let TRANSPORT = { belts: {}, pipes: {} };
@@ -157,3 +158,93 @@ export const MTIERS = [
   { label: 'Power',               ms: ['Coal_Generator', 'Fuel_Generator', 'Nuclear_Power_Plant'] },
 ];
 export const ALL_MACHINES = MTIERS.flatMap(t => t.ms);
+
+
+// ══════════════════════════════════════════════════════════
+// THE SERVER
+// ══════════════════════════════════════════════════════════
+/**
+ * Calls to the backend server.
+ */
+// ── Core fetch helper ─────────────────────────────────────
+async function apiFetch(url, method = 'GET', body = null) {
+  const opts = { method, headers: {} };
+  if (body !== null) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(`${method} ${url} → ${r.status}`);
+  return r.json();
+}
+
+// ── Game data — single combined boot fetch ────────────────
+// Items, recipes, names, unlocks and tiers in one round-trip
+export const fetchBoot = () => apiFetch('/api/boot');
+
+// ── Scenarios ─────────────────────────────────────────────
+export const fetchScenarios   = ()        => apiFetch('/api/scenarios');
+export const fetchScenario    = (key)     => apiFetch(`/api/scenarios/${key}`);
+export const saveScenario     = (key, sc) => apiFetch(`/api/scenarios/${key}`, 'POST', sc);
+export const deleteScenario   = (key)     => apiFetch(`/api/scenarios/${key}`, 'DELETE');
+
+// What every saved factory makes, and who already takes it (From factories)
+export const fetchFactoryOutputs = () => apiFetch('/api/factory-outputs');
+
+export const saveProgress = (p) => apiFetch('/api/progress', 'POST', p);
+// The goal tree: what so much of a part takes that the factory can't give it
+export const fetchNeeds = (scenario, item, rate) => apiFetch('/api/needs', 'POST', { scenario, item, rate });
+export const fetchMapNodes = () => apiFetch('/api/map-nodes');
+
+// ── Solver (async job polling) ────────────────────────────
+// Server returns a job_id immediately; we poll until done or aborted.
+export async function solveScenario(payload, signal) {
+  const { job_id } = await fetch('/api/solve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  }).then(r => {
+    if (!r.ok) return r.json().then(e => { throw new Error(e.error || r.status); });
+    return r.json();
+  });
+
+  // each ask waits on the server until the plan is ready (or 20 s pass)
+  for (;;) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const poll = await fetch(`/api/solve/${job_id}?wait=1`, { signal }).then(r => r.json());
+
+    if (poll.status === 'pending') continue;
+    if (poll.status === 'done')    return poll.result;
+    if (poll.status === 'error')   throw new Error(poll.result?.error || 'Solve error');
+    throw new Error('Unexpected poll status: ' + poll.status);
+  }
+}
+
+// ── Shadow prices (duals) ─────────────────────────────────
+export const fetchDuals = () => apiFetch('/api/duals');
+
+// ── Unlocked alternate recipes ────────────────────────────
+export const fetchUnlockedAlts = ()      => apiFetch('/api/unlocked-alts');
+export const saveUnlockedAlts  = (keys) => apiFetch('/api/unlocked-alts', 'POST', { unlocked: keys });
+
+/** A saved factory's To storage of an item, set (rate 0: none) — kept to what it has free. */
+export function setStored(key, item, rate) {
+  return fetch('/api/storage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, item, rate }) }).then(r => r.json());
+}
+
+// ── The world map's nodes (data/map_nodes.json), what your save mines, the
+// map picture's settings — map-picker.js draws them, and loads when first drawn
+export const MAPD = { all: null, by: {}, bounds: null, save: new Set(), saveInfo: null, img: null };
+let _mapP = null;
+export const mapNode = id => MAPD.by[id];
+export function loadMap() {
+  return _mapP || (_mapP = Promise.all([fetchMapNodes(), fetch('/api/save-nodes').then(r => r.json()).catch(() => ({ nodes: [] })),
+                                        fetch('/api/map-settings').then(r => r.json()).catch(() => ({}))]).then(([d, sv, ms]) => {
+    Object.assign(MAPD, { all: d.nodes, bounds: d.bounds, by: Object.fromEntries(d.nodes.map(n => [n.id, n])),
+                          save: new Set(sv.nodes || []), saveInfo: sv.file ? sv : null, img: ms });
+    return MAPD.all;
+  }).catch(e => { _mapP = null; throw e; }));
+}
+document.addEventListener('save-read', e => { MAPD.save = new Set(e.detail.nodes || []); MAPD.saveInfo = e.detail; });

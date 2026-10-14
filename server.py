@@ -25,7 +25,6 @@ from solver import (
     result_to_dict, list_scenarios, get_all_items, Scenario, SCENARIOS_DIR,
     analyse,
 )
-import logistics
 import network
 import supply
 import savefile
@@ -119,7 +118,7 @@ def _build_boot_bytes():
         "max_shards":   supply.MAX_SHARDS,
         "progress":     _progress(),
         "unlocks":      supply.UNLOCKS,
-        "transport":    logistics.META["transport"],
+        "transport":    network.TRANSPORT,
         "fluids":       sorted(network.FLUIDS),
         "machine_size": {m: v.get("size_m") for m, v in MACHINE_META.items() if v.get("size_m")},
     }, default=str).encode()
@@ -148,7 +147,8 @@ RESULTS_DIR = SCENARIOS_DIR / ".results"
 _CODE_SIG = hashlib.sha256(
     (HERE / "solver.py").read_bytes() + (HERE / "data" / "recipes_complete.yaml").read_bytes()
 ).hexdigest()[:16]
-_mem_cache: "OrderedDict[str, dict]" = OrderedDict()   # signature → result (this session)
+_mem_cache: "OrderedDict[str, dict]" = OrderedDict()
+_suggest_memo: "OrderedDict[str, dict]" = OrderedDict()   # scenario signature → suggest_alts
 _MEM_CACHE_SIZE = 32
 _cache_lock = threading.Lock()
 
@@ -344,7 +344,7 @@ def _set_dual_cache(s, result_dict: dict, usable=None) -> None:
 
 # ── Blackboard ────────────────────────────────────────────────────────────────
 # Every saved scenario is a whole factory, a black box on the board showing
-# only what it imports and exports (logistics.factory_io), from its last plan
+# only what it imports and exports (network.factory_io), from its last plan
 # when that plan still matches the scenario. The board's layout — card
 # positions, links between factories, belt and pipe tiers — is one file.
 BOARD_PATH = HERE / "data" / "blackboard.yaml"
@@ -458,7 +458,7 @@ def _with_owed(s: Scenario, owed: dict) -> Scenario:
 def _owed_short(result: dict, owed: dict, supply: dict) -> dict:
     """How far a plan falls short of what's owed: made items it makes too few
     of; supplied items it uses too much of to leave what's owed."""
-    made, used = logistics.made(result), logistics.drawn(result)
+    made, used = network.made(result), network.drawn(result)
     out = {}
     for k, v in owed.items():
         short = (used.get(k, 0.0) + v - supply[k]) if k in supply else (v - made.get(k, 0.0))
@@ -560,7 +560,7 @@ def _blackboard_factories() -> list:
     saved, claims = _saved_factories()
     out = []
     for key, data, result in saved:
-        io = logistics.factory_io(data, result)
+        io = network.factory_io(data, result)
         out.append({"key": key, "name": data.get("name", key), **io, "at": _where(data),
                     "sources": [f for f in data.get("from_factories") or [] if f.get("factory")],
                     "storage": {t["item"]: float(t.get("rate") or 0) for t in data.get("to_storage") or [] if t.get("item")},
@@ -578,7 +578,7 @@ def _factory_outputs() -> dict:
     saved, claims = _saved_factories(stale_ok=True)
     facs, made, nodes = [], {}, {}
     for key, data, result in saved:
-        io = logistics.factory_io(data, result and {k: v for k, v in result.items() if k != "_stale"})
+        io = network.factory_io(data, result and {k: v for k, v in result.items() if k != "_stale"})
         # power goes over the grid, not to another factory or into storage
         # what others can take: its goals, its surplus, and what its nodes give that it doesn't use
         made[key] = {it: r for it, r in {**io["spare"], **io["surplus"], **io["exports"]}.items() if r and it != "Power"}
@@ -588,7 +588,7 @@ def _factory_outputs() -> dict:
                      "exports": {k: v for k, v in io["exports"].items() if v},
                      "power": {"use": round(p["machines"] + p["extractors"], 1), "made": round(p["generators"] + p["geothermal"], 1)},
                      "spare": io["spare"], "at": _where(data),
-                     "uses": sorted(k for k in supply.available(data) if k in logistics._NODE)})
+                     "uses": sorted(k for k in supply.available(data) if k in network.NODE)})
         for i in supply.nodes_of(data):
             nodes[i] = key
     alerts: dict = {}
@@ -748,9 +748,10 @@ def _build_progress() -> dict:
         by.setdefault(("r", ln["r"]), []).append(li)
         by.setdefault(("m", ln["m"]), []).append(li)
     pairs = []
-    for bi, b in enumerate(sv["machines"]):
-        for li in by.get(("r", b["r"]) if b["r"] else ("m", b["m"]), ()):
-            d = min((math.hypot(b["x"] - x, b["y"] - y) for x, y in lines[li]["pts"]), default=1e9)
+    rows = [b if isinstance(b, list) else [b["m"], b["r"], b["x"], b["y"]] for b in sv["machines"]]   # (or an older save's)
+    for bi, (m, r, bx, by_) in enumerate(rows):
+        for li in by.get(("r", r) if r else ("m", m), ()):
+            d = min((math.hypot(bx - x, by_ - y) for x, y in lines[li]["pts"]), default=1e9)
             pairs.append((d, bi, li))
     pairs.sort()
     used = set()
@@ -1039,11 +1040,11 @@ def _apply_network(flows, alts) -> list:
                 if data.get("resource_nodes") is not None:
                     data["resource_nodes"] = [n for n in data["resource_nodes"]
                                               if not (n.get("extractor") == "fixed" and n.get("resource") in got
-                                                      and n.get("resource") not in logistics._NODE)]
+                                                      and n.get("resource") not in network.NODE)]
                 elif data.get("available_resources"):   # saved before nodes: imports replace the typed rates
                     data["resource_nodes"] = [{"resource": r, "extractor": "fixed", "rate": float(v)}
                                               for r, v in data["available_resources"].items()
-                                              if not (r in got and r not in logistics._NODE)]
+                                              if not (r in got and r not in network.NODE)]
             if alts.get(key):
                 data["alternate_recipes_enabled"] = sorted(set(data.get("alternate_recipes_enabled") or []) | set(alts[key]))
             if touched:
@@ -1791,7 +1792,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"all": None, "steps": [], "on": []})
                 return
             if "suggest" not in cache:
-                cache["suggest"] = _solver_mod.suggest_alts(cache["scenario"], ALL_RECIPES)
+                # the same factory solved again (an auto solve back to it): the same suggestions
+                sig = _signature(cache["scenario"])
+                if sig not in _suggest_memo:
+                    _suggest_memo[sig] = _solver_mod.suggest_alts(cache["scenario"], ALL_RECIPES)
+                    while len(_suggest_memo) > 16:
+                        _suggest_memo.popitem(last=False)
+                cache["suggest"] = _suggest_memo[sig]
                 with _dual_lock:
                     if _dual_cache.get("flows") is cache.get("flows"):
                         _dual_cache["suggest"] = cache["suggest"]
@@ -1932,8 +1939,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/blackboard":
             self._json(200, {"factories": _blackboard_factories(), "layout": _load_board(), "grid": _grid(),
-                             "fluids": logistics.META["fluids"],
-                             "transport": logistics.META["transport"],
+                             "fluids": sorted(network.FLUIDS),
+                             "transport": network.TRANSPORT,
                              "stacks": network.STACK, "vehicles": network.VEHICLES})
             return
 
@@ -2105,7 +2112,8 @@ class Handler(BaseHTTPRequestHandler):
                    "nodes": [i for i in sv["nodes"] if i in known],
                    "unknown": len([i for i in sv["nodes"] if i not in known]),
                    "unlocks": savefile.unlocks(sv["recipes"]) if sv["recipes"] else None,
-                   "machines": [{"m": savefile.MACHINES[b["c"]], "r": rk.get(b["r"]), "x": b["x"], "y": b["y"]}
+                   # one short row per machine: [machine, recipe, x, y]
+                   "machines": [[savefile.MACHINES[b["c"]], rk.get(b["r"]), b["x"], b["y"]]
                                 for b in sv["machines"] if b["c"] in savefile.MACHINES],
                    "stock": stock}
             SAVE_NODES_PATH.write_text(json.dumps(out), encoding="utf-8")

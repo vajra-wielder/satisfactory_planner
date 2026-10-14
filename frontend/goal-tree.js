@@ -22,15 +22,12 @@
  * the solver's answer — and where from, and the milestone it waits on.
  * Search (Ctrl+Q, or the top bar's box) finds a part and opens it; a sum
  * there is worked out, and belts — "4 x 120 into 5 x 80 + 40 + 20 + 20" — get
- * the splitters and mergers that make the exact rates, drawn (splits.js).
+ * the splitters and mergers that make the exact rates, drawn (geometry.js).
  */
-import { itemColor } from './bundles.js';
-import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, TRANSPORT, FLUIDS, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR } from './state.js';
-import { goalOf, setGoal, evalExpr } from './kv-panel.js';
-import { storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './supply-panel.js';
-import { saveProgress, fetchNeeds } from './api.js';
-import { gainText } from './new-alts.js';
-import { parseSplit, design, splitSVG, feedPattern } from './splits.js';
+import { itemColor, parseSplit, design, splitSVG, feedPattern } from './geometry.js';
+import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, TRANSPORT, FLUIDS, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR, saveProgress, fetchNeeds } from './state.js';
+import { goalOf, setGoal, evalExpr, storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './sidebar.js';
+import { gainText } from './unlocks.js';
 import { openSplit } from './build-sheet.js';
 
 const $ = id => document.getElementById(id);
