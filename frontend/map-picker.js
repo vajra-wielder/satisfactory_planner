@@ -156,9 +156,32 @@ function makeMap(el, M) {
       for (let y = Math.ceil(BOUNDS.y[0] / step) * step; y <= BOUNDS.y[1]; y += step)
         g += `<line class="mp-grid" x1="${sx(BOUNDS.x[0])}" y1="${sy(y)}" x2="${sx(BOUNDS.x[1])}" y2="${sy(y)}"/>`;
     }
+    let labels = '';
+    // the network: factories where they are, joined by their routes — styled by
+    // what runs them, as thick as what they carry
+    if (M.network) {
+      const { hubs, routes } = M.network, at = Object.fromEntries(hubs.map(h => [h.key, h]));
+      const most = Math.max(1, ...routes.map(r => r.rate || 0));
+      routes.forEach(r => {
+        const a = at[r.a], b = at[r.b];
+        if (!a || !b) return;
+        const x1 = sx(a.x), y1 = sy(a.y), x2 = sx(b.x), y2 = sy(b.y), wpx = 2 + 7 * Math.sqrt((r.rate || 0) / most);
+        // drones fly: a bow; the rest go straight
+        const mx = (x1 + x2) / 2 - (r.mode === 'drone' ? (y2 - y1) * 0.18 : 0), my = (y1 + y2) / 2 + (r.mode === 'drone' ? (x2 - x1) * 0.18 : 0);
+        const d = `M${x1} ${y1}Q${mx} ${my} ${x2} ${y2}`;
+        g += `<path class="mp-rt ${r.mode}" d="${d}" style="stroke-width:${wpx.toFixed(1)}px"><title>${r.title || ''}</title></path>`;
+        if (r.mode === 'train') g += `<path class="mp-rt-ties" d="${d}" style="stroke-width:${(wpx + 6).toFixed(1)}px"/>`;
+        const lx = (x1 + 2 * mx + x2) / 4, ly = (y1 + 2 * my + y2) / 4;
+        if (r.label) labels += `<g class="mp-rt-lbl"><rect x="${lx - r.label.length * 3.1 - 6}" y="${ly - 9}" width="${r.label.length * 6.2 + 12}" height="17" rx="8"/><text x="${lx}" y="${ly + 3.5}" text-anchor="middle">${r.label}</text></g>`;
+      });
+      hubs.forEach(h => {
+        const x = sx(h.x), y = sy(h.y);
+        labels += `<g class="mp-hub" data-hub="${h.key}"><rect x="${x - 9}" y="${y - 9}" width="18" height="18" rx="4" style="fill:${h.color}"/>
+          <text class="mp-hub-n" x="${x + 13}" y="${y + 4}">${h.name}</text></g>`;
+      });
+    }
     const wells = {}, spare = spareIds(), vis = [];
     MAP.forEach(n => { if (n.w && M.shows(n, spare)) (wells[n.w] = wells[n.w] || []).push(n); });
-    let labels = '';
     Object.values(wells).forEach(list => {
       const cx = list.reduce((s, n) => s + n.x, 0) / list.length, cy = list.reduce((s, n) => s + n.y, 0) / list.length;
       const rad = Math.max(...list.map(n => Math.hypot(n.x - cx, n.y - cy))) * M.view.scale + 10;
@@ -300,6 +323,8 @@ function makeMap(el, M) {
     if (e.shiftKey && M.onBox) return;
     const tag = e.target.closest('[data-spare]');
     if (tag) { M.onSpare?.(+tag.dataset.spare); return; }
+    const hub = e.target.closest('[data-hub]');
+    if (hub) { M.onHub?.(hub.dataset.hub); return; }
     const pin = e.target.closest('[data-pin]');
     if (pin && M.onPinClick) { M.onPinClick(+pin.dataset.pin); return; }
     const hit = e.target.closest('[data-id]');
@@ -648,7 +673,7 @@ function renderList() {
 /** el: the container. owners: {node id: factory key}; factories: [{key, name}];
  *  pins: [{x, y, count, factory}]; grid: geyser ids with the grid's geothermal
  *  generators; onGrid(ids) when they change; onOpen(key). */
-export function mountMapView(el, { owners, factories, pins, grid = [], spare = [], onGrid = () => {}, onOpen }) {
+export function mountMapView(el, { owners, factories, pins, grid = [], spare = [], network = null, onGrid = () => {}, onOpen }) {
   return loadMap().then(() => {
     const color = {};
     factories.forEach((f, i) => { color[f.key] = FACTORY_COLORS[i % FACTORY_COLORS.length]; });
@@ -658,7 +683,9 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
     const M = { filter: new Set(Object.keys(COLORS)), owner: owners, ownerColor: k => color[k] || '#fff', ownerName: name,
                 pins: pins.map(p => ({ ...p, color: color[p.factory], label: name(p.factory), mine: true })),
                 grid: new Set(grid), geoMode: false,
-                spare: spare.map(sp => ({ ...sp, ids: sp.ids.filter(id => BY[id]?.r === sp.item) })) };
+                spare: spare.map(sp => ({ ...sp, ids: sp.ids.filter(id => BY[id]?.r === sp.item) })),
+                network: network && { hubs: network.hubs.map(h => ({ ...h, color: color[h.key] || '#fff' })), routes: network.routes },
+                onHub: onOpen };
     const setGrid = ids => { M.grid = new Set(ids); onGrid([...M.grid].sort()); redraw(); };
     // In geothermal mode a click on a geyser puts a generator on it (or takes it off)
     M.onClick = id => {

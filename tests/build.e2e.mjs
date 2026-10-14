@@ -68,6 +68,19 @@ try {
     await page.waitForFunction(() => /480/.test(document.getElementById('rb')?.innerText || ''), null, { timeout: 60000 });
   });
 
+  await step('the network on the map: factories where their nodes are, routes between them', async () => {
+    const cu = (await api('/api/map-nodes')).nodes.filter(n => n.r === 'Copper_Ore' && !n.w).slice(-2).map(n => n.id);
+    await api('/api/scenarios/wires', { name: 'Wires', resource_nodes: [{ resource: 'Copper_Ore', extractor: 'Miner', nodes: cu }],
+      from_factories: [{ item: 'Iron_Plate', factory: 'plates', rate: 60 }], objective: { Wire: 1 } });
+    await api('/api/blackboard', { positions: {}, routes: [{ a: 'plates', b: 'wires', mode: 'drone', trip_min: 3 }] });
+    await page.click('#btn-blackboard'); await sleep(900);
+    await page.click('#bb-tabs [data-tab="map"]'); await page.waitForSelector('#bb-map .mp-hub');
+    assert.equal(await page.locator('#bb-map .mp-hub').count(), 2);
+    assert.equal(await page.locator('#bb-map .mp-rt.drone').count(), 1);
+    assert.match(await page.locator('#bb-map .mp-rt-lbl').textContent(), /60\/min/);
+    await page.keyboard.press('Escape');
+  });
+
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }
   await browser.close();
   console.log(failed ? `\n${failed} failed` : '\nall passed');

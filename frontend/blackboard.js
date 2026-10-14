@@ -597,8 +597,28 @@ function renderMapTab() {
     })),
     // the grid's geothermal generators: saved with the board, at once
     grid: LAYOUT.geysers || [],
+    network: mapNetwork(),
     onGrid: ids => { LAYOUT.geysers = ids; saveNow(); },
   }));
+}
+
+// The network for the map: factories where their nodes are, and each route —
+// what the network plan sends over it (and the vehicles), else what the
+// factories' imports declare
+function mapNetwork() {
+  if (!DATA) return null;
+  const hubs = DATA.factories.filter(f => f.at).map(f => ({ key: f.key, name: f.name, x: f.at[0], y: f.at[1] }));
+  if (!hubs.length) return null;
+  const declared = (a, b) => DATA.factories.reduce((s, f) => s + (f.sources || [])
+    .filter(src => (f.key === a && src.factory === b) || (f.key === b && src.factory === a)).reduce((t, src) => t + (+src.rate || 0), 0), 0);
+  const routes = LAYOUT.routes.map((rt, i) => {
+    const plan = NET?.ok ? NET.routes[i] : null, rate = plan ? plan.throughput : declared(rt.a, rt.b);
+    const v = plan ? vehicles(plan) : null;
+    return { a: rt.a, b: rt.b, mode: rt.mode, rate,
+      label: `${{ train: '🚆', truck: '🚚', tractor: '🚜', drone: '🛸' }[rt.mode]} ${v ? v.short : `${fmt(rate)}/min`}`,
+      title: `${factory(rt.a)?.name} ⇄ ${factory(rt.b)?.name} · ${MODES[rt.mode]}, ${rt.trip_min} min round trip · ${fmt(rate)}/min${v ? `\n${v.long.replace(/\s+/g, ' ')}` : ''}` };
+  });
+  return { hubs, routes };
 }
 
 // Write the plan into the factories: what each takes from the others becomes
