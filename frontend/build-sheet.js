@@ -8,7 +8,7 @@
  * for each input the splitters and mergers that feed every machine exactly
  * its share (splits.js), a click away.
  */
-import { RESULT, RECIPES, itemName, mCol, MABBR, TRANSPORT, FLUIDS, PROGRESS } from './state.js';
+import { RESULT, RECIPES, itemName, mCol, MABBR, TRANSPORT, FLUIDS, PROGRESS, MACHINE_SIZE } from './state.js';
 import { design, splitSVG } from './splits.js';
 import { itemColor } from './bundles.js';
 
@@ -66,7 +66,8 @@ function clocks(f) {
 export function linesHTML() {
   const flows = (RESULT?.flows || []).filter(f => f.machines_final > 0);
   if (!flows.length) return '';
-  return `<div class="bc-h">Lines — what to place, in order</div>` + ordered(flows).map((f, li) => {
+  return `<div class="bc-h bc-top"><span>Lines — what to place, in order</span><button class="bsm" id="bs-plan" title="Each line's machines at their real footprint, and how many foundations">📐 Floor plan</button></div>`
+    + (fp => `<div class="n-hint" style="margin:-2px 0 4px">About ${Math.round(fp.W)} × ${Math.round(fp.L)} m on one floor · ${fp.found} foundations</div>`)(floorPlan()) + ordered(flows).map((f, li) => {
     const c = mCol(f.machine), k = clocks(f);
     const io = (items, dir) => Object.entries(items || {}).filter(([, r]) => r > 1e-6).map(([it, r]) => {
       const cr = carrier(it, r);
@@ -121,4 +122,44 @@ document.addEventListener('click', e => {
   if (!svg || svg.closest('#sp-full')) return;
   const box = svg.closest('#gt-split, .bs-d');
   openSplit(box?.querySelector('.sp-h')?.firstChild?.textContent?.trim() || box?.dataset.title || 'Splitters and mergers', box ? box.innerHTML : svg.outerHTML);
+});
+
+// ── Floor plan: a rough one, to judge the room a factory needs ──
+// Each line a row of its machines at their real footprint, side by side with
+// GAP between them and a LANE for belts on either side of the row; long rows
+// fold in two (or more) so the plan stays roughly square. Foundations: 8 m.
+const GAP = 1, LANE = 4, FOUND = 8, ROW_MAX = 120;
+export function floorPlan() {
+  const flows = ordered((RESULT?.flows || []).filter(f => f.machines_final > 0));
+  const rows = [];
+  flows.forEach(f => {
+    const [w, l] = MACHINE_SIZE[f.machine] || [8, 8];
+    const n = f.machines_final, per = Math.max(1, Math.floor((ROW_MAX + GAP) / (w + GAP)));
+    for (let k = 0; k < n; k += per) rows.push({ f, w, l, count: Math.min(per, n - k), first: k === 0 });
+  });
+  let y = 0, W = 0;
+  rows.forEach(r => { r.y = y + LANE; r.len = r.count * r.w + (r.count - 1) * GAP; W = Math.max(W, r.len); y = r.y + r.l + LANE; });
+  return { rows, W: W + 2 * LANE, L: y, found: Math.ceil((W + 2 * LANE) / FOUND) * Math.ceil(y / FOUND) };
+}
+export function floorPlanHTML() {
+  const p = floorPlan();
+  if (!p.rows.length) return '<p class="n-hint">Solve first.</p>';
+  const k = Math.min(6, 900 / Math.max(p.W, 1)), pad = 150;
+  let g = '';
+  for (let x = 0; x <= p.W; x += FOUND) g += `<line class="fp-g" x1="${pad + x * k}" y1="0" x2="${pad + x * k}" y2="${p.L * k}"/>`;
+  for (let y = 0; y <= p.L; y += FOUND) g += `<line class="fp-g" x1="${pad}" y1="${y * k}" x2="${pad + p.W * k}" y2="${y * k}"/>`;
+  p.rows.forEach(r => {
+    const c = mCol(r.f.machine);
+    g += `<rect class="fp-lane" x="${pad + (LANE - 1) * k}" y="${(r.y - LANE + 0.5) * k}" width="${(r.len + 2) * k}" height="${(LANE - 1) * k}"/>`;
+    for (let i = 0; i < r.count; i++)
+      g += `<rect x="${pad + (LANE + i * (r.w + GAP)) * k}" y="${r.y * k}" width="${r.w * k}" height="${r.l * k}" rx="2" style="fill:${c}33;stroke:${c}"/>`;
+    if (r.first) g += `<text class="fp-t" x="${pad - 8}" y="${(r.y + r.l / 2) * k + 4}" text-anchor="end">${esc(rname(r.f))}</text>
+      <text class="fp-s" x="${pad - 8}" y="${(r.y + r.l / 2) * k + 16}" text-anchor="end">${r.f.machines_final} × ${esc(r.f.machine.replace(/_/g, ' '))}</text>`;
+  });
+  return `<p class="n-hint" style="margin:0 0 6px">About <b>${Math.round(p.W)} × ${Math.round(p.L)} m</b> — <b>${p.found}</b> foundations (8 m), one floor.
+      Machines side by side ${GAP} m apart, a ${LANE} m belt lane either side of each row; long rows fold. A guide to the room it needs, not a layout.</p>
+    <svg class="fp" width="${pad + p.W * k + 10}" height="${p.L * k + 10}">${g}</svg>`;
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('#bs-plan')) openSplit(`Floor plan — ${RESULT?.scenario_name || 'this factory'}`, floorPlanHTML());
 });

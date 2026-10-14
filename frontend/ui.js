@@ -4,7 +4,8 @@
  */
 
 import { linesHTML, linesText, wireLines } from './build-sheet.js';
-import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS } from './state.js';
+import { itemColor } from './bundles.js';
+import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS, FLUIDS } from './state.js';
 const TIERS = ['Mk1', 'Mk2', 'Mk3'];
 import { openDock, setBadge } from './dock.js';
 
@@ -216,6 +217,17 @@ export function renderBuildCost(fresh = false) {
 // ══════════════════════════════════════════════════════════
 // SAVED SCENARIOS TAB
 // ══════════════════════════════════════════════════════════
+// A factory at a glance: what it makes for its goals, its power, and whether its plan is current
+function overview(s) {
+  const out = Object.entries(s.exports || {}).sort((a, b) => b[1] - a[1]);
+  const fmt = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(1)).toLocaleString();
+  const state = !s.solved ? ['', 'not solved'] : s.alerts?.length ? ['bad', 'short'] : s.stale ? ['old', 'out of date'] : ['ok', 'current'];
+  const pw = s.power ? (s.power.made > 0 ? `⚡ ${fmt(s.power.use)} MW · makes ${fmt(s.power.made)}` : `⚡ ${fmt(s.power.use)} MW`) : '';
+  return `<div class="sv-ov">${out.length ? out.slice(0, 3).map(([k, v]) =>
+      `<span class="sv-out"><i style="background:${itemColor(k, FLUIDS.has(k))}"></i>${itemName(k)} <b>${fmt(v)}</b></span>`).join('') + (out.length > 3 ? `<span class="n-hint">+${out.length - 3}</span>` : '')
+      : `<span class="n-hint">${(s.resources || []).slice(0, 3).map(r => r.replace(/_/g, ' ')).join(', ')}</span>`}</div>
+    <div class="sv-ov"><span class="sv-st ${state[0]}">${state[1]}</span>${pw ? `<span class="n-hint">${pw}</span>` : ''}</div>`;
+}
 export function renderSaved(saved, onLoad, onDelete, onRestore) {
   const el = document.getElementById('savedlist');
   if (!saved.length) { el.innerHTML = '<p style="font-size:12px;color:var(--t3)">No saved scenarios.</p>'; el.appendChild(backupBox()); return; }
@@ -239,7 +251,7 @@ export function renderSaved(saved, onLoad, onDelete, onRestore) {
           <div style="font-size:12px;color:var(--t)">${s.fresh ? '' : '<span class="sv-stale" title="No current plan — solve it, or re-solve out of date">●</span> '}${s.name}${
             s.miners && TIERS.indexOf(s.miner) < TIERS.indexOf(PROGRESS.miner) ? ` <span class="sv-up" title="${s.miners} miner${s.miners > 1 ? 's' : ''} at ${s.miner.replace('Mk', 'Mk.')} — ${PROGRESS.miner.replace('Mk', 'Mk.')} is unlocked: open it to upgrade">⛏ ${s.miner.replace('Mk', 'Mk.')}</span>` : ''}${s.alerts?.length ? ` <span class="sv-alert" title="${
             s.alerts.map(a => `${a.item.replace(/_/g, ' ')}${a.storage ? ' to storage' : ` from ${a.factory_name || a.factory}`}: ${a.rate}/min asked, ${a.left}/min left — its source changed`).join('\n')}">⚠ ${s.alerts.length}</span>` : ''}</div>
-          <div style="font-size:10px;color:var(--t3);margin-top:1px">${(s.resources||[]).slice(0,3).map(r => r.replace(/_/g, ' ')).join(', ')}</div>
+          ${overview(s)}
         </div>
         <button class="bsm">Load</button>
         <button class="bsm sv-h" title="Earlier versions">⟲</button>

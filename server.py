@@ -578,8 +578,11 @@ def _factory_outputs() -> dict:
         # power goes over the grid, not to another factory or into storage
         # what others can take: its goals, its surplus, and what its nodes give that it doesn't use
         made[key] = {it: r for it, r in {**io["spare"], **io["surplus"], **io["exports"]}.items() if r and it != "Power"}
+        p = _power(data, result)
         facs.append({"key": key, "name": data.get("name", key), "solved": io["solved"],
                      "stale": bool(result and result.get("_stale")), "made": made[key],
+                     "exports": {k: v for k, v in io["exports"].items() if v},
+                     "power": {"use": round(p["machines"] + p["extractors"], 1), "made": round(p["generators"] + p["geothermal"], 1)},
                      "spare": io["spare"], "at": _where(data),
                      "uses": sorted(k for k in supply.available(data) if k in logistics._NODE)})
         for i in supply.nodes_of(data):
@@ -1802,8 +1805,13 @@ class Handler(BaseHTTPRequestHandler):
             alerts = out["alerts"]
             fresh = {f["key"]: f["solved"] and not f["stale"] for f in out["factories"]}
         except Exception:
-            alerts, fresh = {}, {}
-        return [{**r, "alerts": alerts.get(r["key"], []), "fresh": fresh.get(r["key"], False)} for r in rows]
+            alerts, fresh, by = {}, {}, {}
+        else:
+            by = {f["key"]: f for f in out["factories"]}
+        # for the overview: what each makes for its goals, its power, whether its plan is current
+        return [{**r, "alerts": alerts.get(r["key"], []), "fresh": fresh.get(r["key"], False),
+                 "solved": by.get(r["key"], {}).get("solved", False), "stale": by.get(r["key"], {}).get("stale", False),
+                 "exports": by.get(r["key"], {}).get("exports", {}), "power": by.get(r["key"], {}).get("power")} for r in rows]
 
     # ── POST / PUT ────────────────────────────────────────────────────────────
 
