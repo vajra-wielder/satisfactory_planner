@@ -33,6 +33,7 @@ import {
 // all interaction goes through sidebar.js re-exports above.
 
 import { startChain, watchChain, onChain, chainHTML } from './chain.js';
+import { pinned, pinPlan, unpin, openCompare } from './compare.js';
 import { uploadSave, changesHTML, wireChanges } from './save-import.js';
 import { addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards, minerOf,
          refreshOutputs, applyCut, onResult, setStorage, shortfalls } from './supply-panel.js';
@@ -445,6 +446,7 @@ function handleReset() {
   refreshNewAlts(altsChanged);
   TOUCHED = false;
   forget();
+  unpin();
   updateSummaries();
   showTree(true);
   initLayout();
@@ -477,6 +479,7 @@ function openScenario(key) {
     fillUI({ skipMachines: true });
     TOUCHED = false;
     forget();
+    unpin();                                // a pin is of one factory's plans
     updateSummaries();
     showTree(!RESULT?.flows?.length);       // no plan yet: what its resources can become
     updateIssuesBadge(RESULT);
@@ -620,6 +623,19 @@ function paintImpact() {
     + (grid ? `<div class="n-warn" title="All your saved factories' power, with this plan in place of its saved one (the Blackboard's Power tab)">⚡ ${grid}</div>` : '');
   document.getElementById('save-resolve')?.addEventListener('click', () => handleSave(true));
 }
+
+// The pinned plan's inputs, back (Compare → Back to the pinned): an undoable edit, then solved
+document.addEventListener('restore-sc', e => {
+  readUI(); remember();
+  const machines = SC.enabled_machines;
+  Object.keys(SC).forEach(k => delete SC[k]);
+  Object.assign(SC, JSON.parse(JSON.stringify(e.detail)), { enabled_machines: machines });
+  fillUI({ skipMachines: true });
+  TOUCHED = true;
+  updateSummaries();
+  closeFar();
+  handleSolve();
+});
 
 // ── Undo ─────────────────────────────────────────────────
 // Every settled change to this factory (a pause in typing, a click, a pick on
@@ -824,6 +840,7 @@ window.addEventListener('keydown', e => {
   if (tab && clear) { toggleDock(tab); return; }
   if ((e.key === 't' || e.key === 'T') && !mod && !e.altKey && !inInput && clear) { showTree(!treeShown()); return; }
   if ((e.key === 'c' || e.key === 'C') && !mod && !e.altKey && !inInput && clear && !treeShown()) { cycleColorBy(); return; }
+  if ((e.key === 'p' || e.key === 'P') && !mod && !e.altKey && !inInput && clear) { pinned() ? openCompare() : pinPlan(); return; }
   if (!mod) return;
   // Undo / redo this factory's edits (the notes box keeps its own)
   const z = e.key.toLowerCase();

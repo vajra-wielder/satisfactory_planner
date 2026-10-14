@@ -1284,6 +1284,19 @@ def _fractional_ceiling(scenario: Scenario, usable: Dict[str, Recipe]) -> Option
     return lp.value(lp.goal) + 0.0
 
 
+def whatif(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
+    """A quick answer for a slider: the goal with machines, shards and sloops
+    fractional (the ceiling — whole machines land a little under it), each
+    goal item's rate, and whether the fixed goals fit at all."""
+    sc = _with_unlimited(scenario)
+    usable, _ = prune_recipes(sc, all_recipes)
+    lp = _Model(sc, usable, integer=False)
+    if lp.run(lp.goal, True, _STAGE_TIME_S[0]) is None:
+        return {"ok": False}
+    items = {it: round(lp.value(lp.net.get(it, {})), 4) for it in sc.objective}
+    return {"ok": True, "goal": round(lp.value(lp.goal), 4), "items": items}
+
+
 def _dive_sloops(scenario: Scenario, usable: Dict[str, Recipe]
                  ) -> Optional[Tuple[Dict[str, int], float]]:
     """Returns (sloops per recipe, relaxation ceiling on the goal), or None."""

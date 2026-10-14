@@ -7,7 +7,8 @@ import { SC, RESULT, RECIPES, mCol, MABBR, itemName } from './state.js';
 import { fetchDuals } from './api.js';
 import { openDock, closeDock, dockTab } from './dock.js';
 import { _fmtSpace } from './ui.js';
-import { freeNodes, takeNode } from './supply-panel.js';
+import { freeNodes, takeNode, setSupplyTotal } from './supply-panel.js';
+import { goalOf, setGoal } from './kv-panel.js';
 
 // ── DOM helpers ───────────────────────────────────────────
 function section(parent, title, extraHTML = '') {
@@ -197,6 +198,7 @@ function renderAnalysis() {
   }
 
   fillFixes(el);
+  whatIf(el);
 
   // ── Power breakdown ───────────────────────────────────────────────────────
   section(el, 'Power Breakdown');
@@ -279,6 +281,63 @@ function fillFixes(el) {
         document.dispatchEvent(new Event('supply-changed'));
         document.getElementById('bsolve')?.click();
       }));
+    });
+  });
+}
+
+// ── What if: drag a supply or a fixed goal, watch the goal move ──
+// Each drag asks the server for the goal's ceiling with that one number
+// changed (fractional machines: fast enough to follow the mouse; whole
+// machines land a little under). "Use it" puts the number in the factory.
+let WI_SEQ = 0;
+function whatIf(el) {
+  const res = Object.entries(RESULT.source_nodes || {}).filter(([i]) => !(RESULT.unlimited_resources || []).includes(i));
+  const goals = [...Object.entries(SC.must_produce || {}).map(([i, v]) => ['must', i, v]), ...Object.entries(SC.min_produce || {}).map(([i, v]) => ['min', i, v])];
+  if (!res.length && !goals.length) return;
+  section(el, 'What if', '<p class="n-hint" style="margin:0 0 8px">Drag one: the goal follows (with machines in fractions — whole ones land a little under).</p><div class="wi-out"></div>');
+  const body = el.querySelector('.an-section:last-child .an-body'), out = body.querySelector('.wi-out');
+  const obj = Object.keys(SC.objective || {});
+  const show = (d, base, label) => {
+    if (!d?.ok) { out.innerHTML = `<span class="n-warn">${label}: it can't be done — a fixed goal doesn't fit</span>`; return; }
+    out.innerHTML = `<span class="n-hint">${label}</span> ` + (obj.length ? obj.map(i => {
+      const v = d.items[i] || 0, b = base?.items?.[i] ?? v, dd = v - b;
+      return `<span class="wi-v">${itemName(i)} <b>${num(v)}</b>${Math.abs(dd) > 1e-3 ? ` <i class="${dd > 0 ? 'up' : 'down'}">${dd > 0 ? '+' : '−'}${num(Math.abs(dd))}</i>` : ''}</span>`;
+    }).join(' ') : '<span class="wi-v">fits</span>');
+  };
+  let BASE = null;
+  const ask = (set, label) => {
+    const mine = ++WI_SEQ;
+    return fetch('/api/whatif', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario: SC, set }) })
+      .then(r => r.json()).then(d => { if (mine === WI_SEQ && label) show(d, BASE, label); return d; }).catch(() => null);
+  };
+  ask({}, null).then(d => { BASE = d; if (!out.innerHTML) show(d, d, 'As it is:'); });
+  const rows = [...res.map(([i, v]) => ['res', i, v]), ...goals];
+  body.insertAdjacentHTML('beforeend', rows.map(([k, i, v], n) => {
+    const max = Math.max(10, Math.ceil(v * 2.5 / 10) * 10);
+    return `<div class="wi-r" data-n="${n}"><span class="wi-l">${k === 'res' ? '⛏' : k === 'must' ? '=' : '≥'} ${itemName(i)}</span>
+      <input type="range" min="0" max="${max}" step="${max > 200 ? 5 : 1}" value="${v}"/><span class="wi-n">${num(v)}</span>
+      <button class="bsm" data-use title="${k === 'res' ? 'Make the supply this — through its typed rate' : 'Make the goal this'}" style="visibility:hidden">Use it</button></div>`;
+  }).join(''));
+  body.querySelectorAll('.wi-r').forEach(r => {
+    const [k, i, v0] = rows[+r.dataset.n], rng = r.querySelector('input'), lbl = r.querySelector('.wi-n'), use = r.querySelector('[data-use]');
+    let t = 0;
+    rng.addEventListener('input', () => {
+      const v = +rng.value;
+      lbl.textContent = num(v);
+      use.style.visibility = Math.abs(v - v0) > 1e-6 ? 'visible' : 'hidden';
+      const set = k === 'res' ? { resources: { [i]: v } } : { [k]: { [i]: v } };
+      clearTimeout(t); t = setTimeout(() => ask(set, `${itemName(i)} at ${num(v)}:`), 40);
+    });
+    use.addEventListener('click', () => {
+      const v = +rng.value;
+      if (k === 'res') {
+        if (!setSupplyTotal(i, v)) { use.textContent = 'from nodes — add some above'; return; }
+        document.dispatchEvent(new Event('supply-changed'));
+      } else {
+        setGoal(i, { ...goalOf(i), [k]: v });
+        document.dispatchEvent(new Event('goals-changed'));
+      }
+      document.getElementById('bsolve')?.click();
     });
   });
 }

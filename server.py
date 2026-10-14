@@ -699,6 +699,7 @@ def _build_list() -> list:
                     "extractors": {supply.GEOTHERMAL: g["count"]}, "materials": g["cost"], "shards": 0, "sloops": 0})
     return out
 
+_whatif_claims = [0.0, {}]   # [when, claims]: one read of the factories per few seconds of dragging
 _save_lock = threading.Lock()   # claim check + write as one step, so two saves can't both take the same
 
 def _hold_claims(key: str, data: dict) -> list:
@@ -2037,6 +2038,27 @@ class Handler(BaseHTTPRequestHandler):
                 raise _BadRequest("item: an item key")
             sc = _build_scenario(_clean_scenario(data.get("scenario") or {}))
             self._json(200, _solver_mod.needs(sc, ALL_RECIPES, item, rate))
+            return
+
+        if path == "/api/whatif":
+            # a slider: this factory with one supply or goal changed — the goal's
+            # ceiling (fractional machines), fast enough to follow a drag
+            b = self._read_obj()
+            sc = _clean_scenario(b.get("scenario") or {})
+            ch = b.get("set") if isinstance(b.get("set"), dict) else {}
+            try:
+                s = _build_scenario(sc)
+            except Exception as e:
+                raise _BadRequest(str(e))
+            now = time.time()
+            if now - _whatif_claims[0] > 5:
+                _whatif_claims[:] = [now, _claims(_scenario_files())]
+            s = _with_owed(s, _owed(_save_key(s.name), _whatif_claims[1], s, storage=sc.get("to_storage") or []))
+            num = lambda d: {k: _num(v, 0.0, lo=0.0) for k, v in (d or {}).items() if k in ALL_ITEMS} if isinstance(d, dict) else {}
+            s = _dc_replace(s, available_resources={**s.available_resources, **num(ch.get("resources"))},
+                            must_produce={**s.must_produce, **num(ch.get("must"))},
+                            min_produce={**s.min_produce, **num(ch.get("min"))})
+            self._json(200, _solver_mod.whatif(s, ALL_RECIPES))
             return
 
         if path == "/api/solve":

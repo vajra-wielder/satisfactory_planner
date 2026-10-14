@@ -5,6 +5,7 @@
 
 import { linesHTML, linesText, wireLines } from './build-sheet.js';
 import { itemColor } from './bundles.js';
+import { pinned, delta, pinPlan, unpin, openCompare } from './compare.js';
 import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS, FLUIDS } from './state.js';
 const TIERS = ['Mk1', 'Mk2', 'Mk3'];
 import { openDock, setBadge } from './dock.js';
@@ -76,8 +77,11 @@ export function renderResultsBar() {
     _rbLastHTML = null;
     return;
   }
-  const st  = (label, val, color = 'var(--acc)', title = '') =>
-    `<div class="rbs"${title ? ` title="${title}"` : ''}><div class="rbv" style="color:${color}">${val}</div><div class="rbl">${label}</div></div>`;
+  // against the pinned plan (📌): how each number moved
+  const A = pinned()?.s;
+  const dl = (now, was, more) => { const d = A && delta(now, was, more); return d && d.text !== '=' ? `<div class="rbd ${d.cls}">${d.text}</div>` : ''; };
+  const st  = (label, val, color = 'var(--acc)', title = '', d = '') =>
+    `<div class="rbs"${title ? ` title="${title}"` : ''}><div class="rbv" style="color:${color}">${val}</div>${d}<div class="rbl">${label}</div></div>`;
   const sep = '<div class="rbsep"></div>';
 
   const objItems = Object.entries(RESULT.objective_items || {})
@@ -94,19 +98,19 @@ export function renderResultsBar() {
   const powTip = made > 0 ? `Draws ${used.toFixed(0)} MW (extractors ${(RESULT.extractor_power_mw || 0).toFixed(0)}); makes ${made.toFixed(0)} MW — ${
     net >= 0 ? `${net.toFixed(0)} MW to spare` : `${(-net).toFixed(0)} MW short`}` : `Machines and extractors (${(RESULT.extractor_power_mw || 0).toFixed(0)} MW)`;
   const mwTxt = v => `${Math.round(v).toLocaleString()} MW`;
-  const useSt = capMw ? st(`Power use · ${(100 * (RESULT.total_power_mw ?? 0) / capMw).toFixed(1)}% of cap`, mwTxt(used), 'var(--warn)', powTip)
-                      : st('Power use', mwTxt(used), 'var(--warn)', powTip);
+  const useSt = capMw ? st(`Power use · ${(100 * (RESULT.total_power_mw ?? 0) / capMw).toFixed(1)}% of cap`, mwTxt(used), 'var(--warn)', powTip, dl(used, A?.used, 'worse'))
+                      : st('Power use', mwTxt(used), 'var(--warn)', powTip, dl(used, A?.used, 'worse'));
 
   let h = useSt + sep;
   objItems.forEach(([k, v], i) => {
-    h += k === 'Power' ? st('Power made', mwTxt(v), 'var(--ok)', powTip)
-                       : st(itemName(k), perMin(k, v, 1, true), 'var(--ok)');
+    h += k === 'Power' ? st('Power made', mwTxt(v), 'var(--ok)', powTip, dl(v, A?.goals[k] ?? 0, 'better'))
+                       : st(itemName(k), perMin(k, v, 1, true), 'var(--ok)', '', dl(v, A?.goals[k] ?? 0, 'better'));
     if (i < objItems.length - 1) h += sep;
   });
   if (objItems.length) h += sep;
-  h += st('Machines', RESULT.total_machines) + sep;
+  h += st('Machines', RESULT.total_machines, undefined, '', dl(RESULT.total_machines, A?.machines, 'worse')) + sep;
   // Room the machines take — what the planner minimises (w×l×h per machine)
-  if (RESULT.total_space != null) h += st('Space · smelters', _fmtSpace(RESULT.total_space));
+  if (RESULT.total_space != null) h += st('Space · smelters', _fmtSpace(RESULT.total_space), undefined, '', dl(RESULT.total_space, A?.space, 'worse'));
   if (RESULT.shards_used > 0) h += sep + st('Shards', RESULT.shards_used, '#3b82f6');
   if (RESULT.sloops_used > 0) h += sep + st('Sloops', RESULT.sloops_used, '#a855f7');
   // The plan against the fractional ceiling: the goal with whole machines,
@@ -120,6 +124,10 @@ export function renderResultsBar() {
     h += sep + st('Of ceiling', `${pct >= 99.995 ? '100' : pct.toFixed(2)}%`, pct >= 95 ? 'var(--ok)' : 'var(--warn)', tip);
   }
 
+  // pin this plan, or (pinned) compare against it
+  h += sep + (A ? `<div class="rb-pin"><button class="bsm act" data-rb="compare" title="The pinned plan and this one side by side">📌 Compare</button>
+      <button class="bsm" data-rb="unpin" title="Unpin">✕</button></div>`
+    : `<div class="rb-pin"><button class="bsm" data-rb="pin" title="Keep this plan to compare the next ones against (P)">📌 Pin</button></div>`);
   if (h === _rbLastHTML) { rb.style.display = 'flex'; return; }
   _rbLastHTML = h;
   rb.style.display = 'flex';
@@ -349,3 +357,11 @@ function backupBox() {
   fetch('/api/backups').then(r => r.json()).then(draw).catch(() => {});
   return el;
 }
+
+// the results bar's pin
+document.addEventListener('click', e => {
+  const b = e.target.closest('#rb [data-rb]');
+  if (!b) return;
+  ({ pin: pinPlan, unpin, compare: openCompare })[b.dataset.rb]?.();
+});
+document.addEventListener('pin-changed', () => { _rbLastHTML = null; renderResultsBar(); });

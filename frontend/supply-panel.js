@@ -857,3 +857,14 @@ export function shortfalls() {
   });
   return out;
 }
+
+/** For a slider: make a resource's supply this much in all — through its typed
+ *  (fixed) rate; false when it has none (nodes give what they give). */
+export function setSupplyTotal(item, total) {
+  const row = NODES.find(n => n.resource === item && n.extractor === 'fixed');
+  if (!row) return false;
+  const now = (SC.available_resources || {})[item] || 0;
+  row.rate = +Math.max(0, (parseFloat(row.rate) || 0) + total - now).toFixed(3);
+  syncSupply(); renderNodes();
+  return true;
+}
