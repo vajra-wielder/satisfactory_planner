@@ -87,6 +87,31 @@ try {
     await page.click('#mp-apply'); await sleep(300);
     assert.equal(await page.locator('#kv-from .f-rate').count(), 0);
   });
+  await step('picking a region: drag a box and everything inside is picked; Shift+drag takes out; right-drag pans', async () => {
+    await page.keyboard.press('Control+m'); await page.waitForSelector('#mp-map [data-id]'); await sleep(300);
+    const picked = () => page.locator('#mp-map .mp-n.on').count();
+    const before = await picked();
+    const b = await page.locator('#mp-map').boundingBox();
+    const box = async (shift, from, to) => {
+      if (shift) await page.keyboard.down('Shift');
+      await page.mouse.move(b.x + from[0], b.y + from[1]); await page.mouse.down();
+      await page.mouse.move(b.x + to[0], b.y + to[1], { steps: 6 }); await page.mouse.up();
+      if (shift) await page.keyboard.up('Shift');
+      await sleep(250);
+    };
+    await box(false, [b.width * .3, b.height * .3], [b.width * .7, b.height * .7]);
+    const after = await picked();
+    assert.ok(after > before + 3, `a box picks every node in it (${before} → ${after})`);
+    await box(true, [b.width * .3, b.height * .3], [b.width * .7, b.height * .7]);
+    assert.ok(await picked() <= before, 'Shift+drag takes them out');
+    const x0 = (await page.locator('#mp-map [data-id]').first().boundingBox()).x;
+    await page.mouse.move(b.x + 200, b.y + 200); await page.mouse.down({ button: 'right' });
+    await page.mouse.move(b.x + 320, b.y + 260, { steps: 5 }); await page.mouse.up({ button: 'right' }); await sleep(300);
+    const x1 = (await page.locator('#mp-map [data-id]').first().boundingBox()).x;
+    assert.ok(Math.abs(x1 - x0 - 120) < 15, `a right-drag pans (${x0} → ${x1})`);
+    assert.ok(await picked() <= before, 'and picks nothing');
+    await page.click('#mp-cancel'); await sleep(200);
+  });
   await step('the Blackboard\'s map shows what\'s unused', async () => {
     await page.keyboard.press('Alt+5'); await page.waitForSelector('.mp-view [data-id]'); await sleep(400);
     await page.click('.mp-filters [data-only="spare"]'); await sleep(300);

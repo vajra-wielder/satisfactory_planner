@@ -4,8 +4,9 @@
  * brighter is purer.
  *
  * Two uses of one map:
- *   openMapPicker  pick the nodes a factory mines. Click a node, Shift+drag a
- *                  box, drag to pan, scroll to zoom. Nodes another factory
+ *   openMapPicker  pick the nodes a factory mines. Click a node, or drag a box
+ *                  round a region (Shift+drag takes them out); pan with the
+ *                  right button, Space+drag or the arrows; scroll to zoom. Nodes another factory
  *                  mines are crossed out. Geysers take geothermal generators.
  *                  Water extractors go anywhere there's water: drop pins.
  *                  The list on the right sets each extractor's shards.
@@ -76,7 +77,7 @@ function waitForPicture(tries = 0) {
 // ══════════════════════════════════════════════════════════
 
 function makeMap(el, M) {
-  // M: { filter:Set, picked?:Set, taken?, owner?, ownerColor?, pins?, onClick(id), onBox(ids), onPin?(x,y) }
+  // M: { filter:Set, picked?:Set, taken?, owner?, ownerColor?, pins?, onClick(id), onBox(ids, remove), onPin?(x,y) }
   el._mapOff?.abort();                    // a map remade in the same place drops the old one's listeners
   const off = new AbortController(), on = { signal: off.signal };
   el._mapOff = off;
@@ -248,22 +249,32 @@ function makeMap(el, M) {
     else return;
     e.preventDefault();
   }, on);
+  // Picking nodes: drag a box and everything shown inside it is picked (Shift:
+  // taken out instead); a click picks one. The map pans with the right or
+  // middle button, Space + drag, the arrows — or, where nothing is picked
+  // (the Blackboard's map), any drag.
+  let space = false;
+  window.addEventListener('keydown', e => { if (e.code === 'Space' && el.isConnected && !/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName)) space = true; });
+  window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
+  el.addEventListener('contextmenu', e => { if (M.onBox) e.preventDefault(); }, on);
   el.addEventListener('mousedown', e => {
-    if (e.button !== 0) return;
-    if (e.target.closest('[data-id],[data-pin],[data-spare]') && !e.shiftKey) return;   // clicks handled on click
+    if (e.button > 2) return;
+    const panning = !M.onBox || e.button !== 0 || space;
+    if (e.button === 0 && !M.onBox && e.target.closest('[data-id],[data-pin],[data-spare]')) return;   // clicks handled on click
     e.preventDefault();
     const r = el.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY - r.top;
-    const v0 = { ...M.view }, box = e.shiftKey && M.onBox;
+    const v0 = { ...M.view }, box = !panning;
     let rect = null, moved = false;
-    if (box) {
-      rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      rect.setAttribute('class', 'mp-sel');
-      svg.appendChild(rect);
-    }
     const move = ev => {
       const x = ev.clientX - r.left, y = ev.clientY - r.top;
-      moved = moved || Math.hypot(x - x0, y - y0) > 3;
+      moved = moved || Math.hypot(x - x0, y - y0) > 4;
+      if (!moved) return;
       if (box) {
+        if (!rect) {
+          rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          rect.setAttribute('class', `mp-sel${e.shiftKey ? ' out' : ''}`);
+          svg.appendChild(rect);
+        }
         rect.setAttribute('x', Math.min(x0, x)); rect.setAttribute('y', Math.min(y0, y));
         rect.setAttribute('width', Math.abs(x - x0)); rect.setAttribute('height', Math.abs(y - y0));
       } else { M.view.ox = v0.ox + x - x0; M.view.oy = v0.oy + y - y0; soon(); }
@@ -272,18 +283,21 @@ function makeMap(el, M) {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       const x = ev.clientX - r.left, y = ev.clientY - r.top;
-      if (box) {
+      if (box && moved) {
         const [ax, bx, ay, by] = [Math.min(x0, x), Math.max(x0, x), Math.min(y0, y), Math.max(y0, y)];
         M.onBox(MAP.filter(n => M.shows(n) && !M.taken?.[n.id]
-          && sx(n.x) >= ax && sx(n.x) <= bx && sy(n.y) >= ay && sy(n.y) <= by).map(n => n.id));
-        rect.remove();
-      } else if (!moved && M.onPin) M.onPin(Math.round(wx(x)), Math.round(wy(y)));
+          && sx(n.x) >= ax && sx(n.x) <= bx && sy(n.y) >= ay && sy(n.y) <= by).map(n => n.id), e.shiftKey);
+        rect?.remove();
+        M.boxed = true;            // the click that follows isn't a pick
+      } else if (!moved && e.button === 0 && M.onPin && !e.target.closest('[data-id],[data-pin],[data-spare]'))
+        M.onPin(Math.round(wx(x)), Math.round(wy(y)));      // a water extractor, where clicked (when placing them)
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   }, on);
   el.addEventListener('click', e => {
-    if (e.shiftKey) return;
+    if (M.boxed) { M.boxed = false; return; }
+    if (e.shiftKey && M.onBox) return;
     const tag = e.target.closest('[data-spare]');
     if (tag) { M.onSpare?.(+tag.dataset.spare); return; }
     const pin = e.target.closest('[data-pin]');
@@ -353,7 +367,7 @@ function chips(el, M, redraw, kinds = Object.keys(COLORS)) {
         title="${nSpare ? 'Every node a factory has that its plan leaves some of unused' : 'No factory leaves any of its nodes unused'}"><i class="ring sp"></i>Leftover${nSpare ? ` ${nSpare}` : ''}</button>
       <button class="mp-f ${M.only === 'save' ? 'on' : ''}" data-only="save" ${nSave ? '' : 'disabled'}
         title="${nSave ? 'Every node your save mines that no factory here has yet' : SAVE.size ? 'Every node your save mines is in a factory' : 'Load a save to see what you already mine'}"><i class="ring sv"></i>In your save${nSave ? ` ${nSave}` : ''}</button>
-      ${M.only === 'save' && M.onBox ? '<button class="bsm act mp-addview" title="Add the save\'s nodes on screen to this factory — zoom or pan to choose; Shift+drag a box for fewer"></button>' : ''}`;
+      ${M.only === 'save' && M.onBox ? '<button class="bsm act mp-addview" title="Add the save\'s nodes on screen to this factory — zoom or pan to choose; drag a box for fewer"></button>' : ''}`;
     el.querySelectorAll('.mp-f').forEach(b => b.addEventListener('click', e => {
       const r = b.dataset.r, only = b.dataset.only;
       if (only) M.only = M.only === only ? null : only;
@@ -464,7 +478,7 @@ export function openMapPicker(opts) {
         <div class="mp-box">
           <div class="mp-top">
             <b>Pick nodes</b>
-            <span class="mp-hint">Click a node · Shift+drag a box · drag to pan · scroll to zoom</span>
+            <span class="mp-hint">Drag a box round a region · Shift+drag takes out · click a node · right-drag or Space+drag pans · scroll zooms</span>
             <button class="bsm" id="mp-pin" title="Click on the map where water extractors go">💧 Place water extractors</button>
             <span style="flex:1"></span>
             <button class="bsm" id="mp-cancel">Cancel</button>
@@ -499,7 +513,7 @@ export function openMapPicker(opts) {
     $('mp-pin').classList.remove('act');
     const M = S;
     M.onClick = id => { M.picked.has(id) ? M.picked.delete(id) : M.picked.add(id); M.map.draw(); renderList(); };
-    M.onBox = ids => { ids.forEach(id => M.picked.add(id)); M.map.draw(); renderList(); };
+    M.onBox = (ids, remove) => { ids.forEach(id => (remove ? M.picked.delete(id) : M.picked.add(id))); M.map.draw(); renderList(); };
     M.onPin = (x, y) => { if (!M.pinMode) return; M.pins.push({ x, y, count: 1, shards: 0 }); M.map.draw(); renderList(); };
     M.onPinClick = i => { if (M.pinMode) { M.pins.splice(i, 1); M.map.draw(); renderList(); } };
     // a tag on another factory's nodes: bring what it leaves unused here, or leave it

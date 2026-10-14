@@ -50,9 +50,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   tab, so you can plan which to take next. In your save (beside the
   resources) shows the ones no factory has yet — to rebuild factories planned
   before you used the map: picking nodes, "+ Add the N on screen" adds the
-  ones in view (zoom to one site), or Shift+drag a box — and to see what it has unlocked (alternates,
+  ones in view (zoom to one site), or drag a box — and to see what it has unlocked (alternates,
   machines, miner and belt tiers) against the planner's; one click makes
   them match
+- Picking nodes for a regional factory: drag a box round the region and every
+  node shown inside it is picked (only the resources you've filtered to, when
+  you have; none another factory mines); Shift+drag a box takes them out; a
+  click picks one. Pan with the right button, Space+drag or the arrows
 - The map is drawn on the game's own map picture (fetched once into data/ the
   first time you open a map — the in-game map from the open-source
   satisfactorymap project, lined up with the map's edges), or on your own
