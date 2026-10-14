@@ -30,7 +30,7 @@ import { goalOf, setGoal, evalExpr } from './kv-panel.js';
 import { storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './supply-panel.js';
 import { saveProgress, fetchNeeds } from './api.js';
 import { gainText } from './new-alts.js';
-import { parseSplit, design, splitSVG } from './splits.js';
+import { parseSplit, design, splitSVG, feedPattern } from './splits.js';
 import { openSplit } from './build-sheet.js';
 
 const $ = id => document.getElementById(id);
@@ -574,7 +574,12 @@ function drawSplit(q) {
     d.over && `Red: over a ${tier} belt (${num(cap)}/min).`,
     d.splitters && 'Exact while every output flows freely.',
   ].filter(Boolean);
-  el.innerHTML = `<div class="sp-h">${list(p.ins)} → ${list(p.outs)}<span><b>${d.splitters}</b> splitter${d.splitters === 1 ? '' : 's'} · <b>${d.mergers}</b> merger${d.mergers === 1 ? '' : 's'}</span></div>
+  // one belt into equal shares: the pattern in words, before the drawing
+  const same = p.ins.length === 1 && p.outs.every(o => Math.abs(o - p.outs[0]) < 1e-9) && Math.abs(p.outs[0] * p.outs.length - p.ins[0]) < 1e-6;
+  const fp = same && p.outs.length > 1 && feedPattern(p.ins[0], p.outs.length);
+  const words = fp ? `<p class="fd-w">${fp.spare ? `Merge ${fp.spare} looped-back belt${fp.spare > 1 ? 's' : ''} into it (${num(fp.load)}/min), then s` : 'S'}plit ${
+    fp.splits.map(x => `${x}`).join(' → ')} ways, each belt again: ${fp.ends} belts of ${num(fp.each)}/min${fp.spare ? ` — ${p.outs.length} out, ${fp.spare} back` : ''}.</p>` : '';
+  el.innerHTML = `<div class="sp-h">${list(p.ins)} → ${list(p.outs)}<span><b>${d.splitters}</b> splitter${d.splitters === 1 ? '' : 's'} · <b>${d.mergers}</b> merger${d.mergers === 1 ? '' : 's'}</span></div>${words}
     <div class="sp-d">${splitSVG(d.graph, num)}</div>${notes.map(n => `<p class="n-hint">${n}</p>`).join('')}`;
   return true;
 }

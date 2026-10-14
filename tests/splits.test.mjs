@@ -2,7 +2,7 @@
 //   node --test tests/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { design, parseSplit, splitBelt, splitSVG, streamCount } from '../frontend/splits.js';
+import { design, parseSplit, splitBelt, splitSVG, streamCount, feedPattern } from '../frontend/splits.js';
 
 const ev = t => { const v = Number(t); return Number.isFinite(v) ? v : null; };
 
@@ -85,4 +85,12 @@ test('drawn without gaps', () => {
   const svg = splitSVG(d.graph, v => String(+v.toFixed(2)));
   assert.ok(!svg.includes('NaN') && !svg.includes('undefined'));
   assert.equal((svg.match(/class="sp-e/g) || []).length, d.graph.edges.length);
+});
+
+test('feeding n machines: a pattern that repeats', () => {
+  const nine = feedPattern(270, 9);                 // 3 ways, then each 3 ways: 9 belts of 30
+  assert.deepEqual(nine.splits, [3, 3]); assert.equal(nine.spare, 0); assert.equal(nine.splitters, 4); assert.equal(nine.each, 30);
+  const ten = feedPattern(400, 10);                 // 12 ends, 2 looped back: each carries 40, the start 480
+  assert.deepEqual(ten.splits, [2, 2, 3]); assert.equal(ten.spare, 2); assert.equal(ten.load, 480); assert.equal(ten.splitters, 7);
+  assert.equal(feedPattern(480, 16).splitters, 15);
 });

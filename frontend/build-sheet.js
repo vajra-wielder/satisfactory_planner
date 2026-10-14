@@ -9,7 +9,7 @@
  * its share (splits.js), a click away.
  */
 import { RESULT, RECIPES, itemName, mCol, MABBR, TRANSPORT, FLUIDS, PROGRESS, MACHINE_SIZE } from './state.js';
-import { design, splitSVG } from './splits.js';
+import { design, splitSVG, feedPattern } from './splits.js';
 import { itemColor } from './bundles.js';
 
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -92,20 +92,63 @@ export function linesText() {
 }
 
 /** Wire the ⑂ buttons in `el` (after linesHTML). */
+// How one input reaches a line's machines, in words: the easy way (a manifold)
+// and the exact one (a balancer), as a pattern that repeats — per belt when
+// it takes more than one
+function feedHTML(f, it) {
+  const rate = f.inputs[it], cr = carrier(it, rate), n = f.machines_final, m = f.machine.replace(/_/g, ' ');
+  const ms = k => `${k} ${m}${k === 1 ? '' : 's'}`;
+  const belt = cr.label.replace(/^\d+ × /, '').replace(/s$/, '');
+  // the machines shared across the belts: as even as it goes
+  const per = [...Array(cr.n)].map((_, i) => Math.floor(n / cr.n) + (i < n % cr.n ? 1 : 0)).filter(k => k);
+  const groups = [...new Set(per)].map(k => [k, per.filter(x => x === k).length]);
+  const pattern = k => {
+    if (k === 1) return '<li>The belt goes straight in.</li>';
+    const p = feedPattern(rate * k / n, k);
+    let belts = 1, lines = [];
+    if (p.spare) lines.push(`<li><b>Merge</b> ${p.spare} belt${p.spare > 1 ? 's' : ''} looped back from the end into the incoming one — it then carries <b>${num(p.load)}/min</b>${p.load > cr.cap + 1e-6 ? ' <span class="n-warn">(over the belt)</span>' : ''}</li>`);
+    // runs of the same split, said once: "2 ways, 3 times over: 1 → 2 → 4 → 8"
+    const runs = [];
+    p.splits.forEach(x => (runs.length && runs[runs.length - 1][0] === x ? runs[runs.length - 1][1]++ : runs.push([x, 1])));
+    const times = t => ['', '', 'twice', 'three times', 'four times', 'five times', 'six times'][t] || `${t} times`;
+    runs.forEach(([x, t], i) => {
+      const chain = [belts];
+      for (let j = 0; j < t; j++) chain.push(chain[chain.length - 1] * x);
+      const out = chain[chain.length - 1], last = i === runs.length - 1;
+      lines.push(`<li>${belts === 1 ? 'Split it' : `Split each of the ${belts}`} <b>${x} ways${t > 1 ? `, ${times(t)} over` : ''}</b>${
+        t > 1 ? ` <span class="n-hint">(each new belt splits again)</span>` : ''}: ${chain.join(' → ')} belts of ${num(p.load / out)}/min${
+        last ? (p.spare ? ` — ${k} to the ${m}s, ${p.spare} back to the merger` : ` — one per ${m}`) : ''}</li>`);
+      belts = out;
+    });
+    return lines.join('') + `<li class="n-hint">${p.splitters} splitter${p.splitters === 1 ? '' : 's'}${p.spare ? ', 1 merger' : ''}</li>`;
+  };
+  const head = cr.n > 1
+    ? `${cr.n} ${belt}s of ${num(rate / cr.n)}/min${groups.length === 1 ? `, ${ms(groups[0][0])} on each` : ''}`
+    : `one ${belt}`;
+  return `<div class="fd-h">${esc(itemName(it))} <b>${num(rate)}/min</b> → ${ms(n)}, ${num(rate / n)}/min each</div>
+    <div class="fd-w"><b>Easiest — a manifold:</b> run ${head} along the ${m}s with a splitter in front of each.
+      They fill up, then each takes its share.</div>
+    <div class="fd-w"><b>Exact from the start — a balancer</b>${cr.n > 1 ? `, on each belt` : ''}:
+      ${groups.map(([k, c]) => `${groups.length > 1 ? `<div class="n-hint">${c} belt${c > 1 ? 's' : ''} with ${ms(k)}:</div>` : ''}<ol class="fd-ol">${pattern(k)}</ol>`).join('')}</div>
+    ${f.layout?.length > 1 ? '<div class="n-hint">Machines at a lower clock take a little less: their belt backs up and the rest still get theirs.</div>' : ''}
+    <button class="bsm fd-draw">Draw it</button>`;
+}
+
+/** Wire the ⑂ buttons in `el` (after linesHTML). */
 export function wireLines(el) {
   const flows = ordered((RESULT?.flows || []).filter(f => f.machines_final > 0));
   el.querySelectorAll('.bs-sp').forEach(b => b.addEventListener('click', () => {
     const f = flows[+b.dataset.line], it = b.dataset.item, box = el.querySelector(`.bs-d[data-for="${b.dataset.line}|${CSS.escape(it)}"]`);
     if (!box) return;
     if (box.innerHTML) { box.innerHTML = ''; b.classList.remove('on'); return; }
-    const rate = f.inputs[it], cr = carrier(it, rate);
-    const ins = Array(cr.n).fill(rate / cr.n), outs = shares(f, rate);
-    const d = design(ins, outs, { cap: cr.cap });
     b.classList.add('on');
-    box.dataset.title = `${itemName(it)} ${num(rate)}/min → ${outs.length} × ${f.machine.replace(/_/g, ' ')}`;
-    box.innerHTML = d?.graph ? `<div class="n-hint">${d.splitters} splitter${d.splitters === 1 ? '' : 's'} · ${d.mergers} merger${d.mergers === 1 ? '' : 's'} — each of the ${outs.length} machines gets exactly its share.
-        A manifold (a splitter per machine along the belt) works too: they back up and take their share, only slower to fill.</div>
-      <div class="sp-d">${splitSVG(d.graph, num, itemColor(it, FLUIDS.has(it)))}</div>` : `<p class="n-warn">${esc(d?.error || 'No design for these numbers.')}</p>`;
+    box.innerHTML = feedHTML(f, it);
+    box.querySelector('.fd-draw').onclick = () => {
+      const rate = f.inputs[it], cr = carrier(it, rate);
+      const d = design(Array(cr.n).fill(rate / cr.n), shares(f, rate), { cap: cr.cap });
+      openSplit(`${itemName(it)} ${num(rate)}/min → ${f.machines_final} × ${f.machine.replace(/_/g, ' ')}`, d?.graph
+        ? `<div class="sp-d">${splitSVG(d.graph, num, itemColor(it, FLUIDS.has(it)))}</div>` : `<p class="n-warn">${esc(d?.error || 'No design for these numbers.')}</p>`);
+    };
   }));
 }
 

@@ -51,10 +51,15 @@ try {
     const ingot = await page.locator('.bs-l').first().innerText();
     assert.match(ingot, /× 100%/); assert.match(ingot, /Iron Ore\s+480\/min/); assert.match(ingot, /Mk\.4 belt/);
   });
-  await step('⑂: the splitters that feed every machine its share; a click shows it large', async () => {
-    await page.locator('.bs-sp').first().click(); await page.waitForSelector('.bs-d svg');
-    assert.match(await page.locator('.bs-d').first().innerText(), /each of the 16 machines/);
-    await page.locator('.bs-d svg').first().click(); await page.waitForSelector('#sp-full.show svg');
+  await step('⑂: how the belt feeds the machines, in words — a manifold, or a balancer as a repeating split; drawn on asking', async () => {
+    await page.locator('.bs-sp').first().click(); await page.waitForSelector('.bs-d .fd-w');
+    const t = await page.locator('.bs-d').first().innerText();
+    assert.match(t, /Iron Ore 480\/min → 16 Smelters, 30\/min each/);
+    assert.match(t, /manifold/);
+    assert.match(t, /2 ways, four times over[\s\S]*1 → 2 → 4 → 8 → 16 belts of 30\/min — one per Smelter/);
+    assert.match(t, /15 splitters/);
+    assert.equal(await page.locator('.bs-d svg').count(), 0, 'no drawing in the side panel');
+    await page.locator('.bs-d .fd-draw').first().click(); await page.waitForSelector('#sp-full.show svg');
     assert.match(await page.locator('#sp-full-t').innerText(), /Iron Ore 480\/min → 16 × Smelter/);
     await page.keyboard.press('Escape'); await sleep(200);
     assert.equal(await page.locator('#sp-full.show').count(), 0);

@@ -312,3 +312,19 @@ export function splitSVG(g, fmt, color = null) {
   });
   return `<svg class="sp-svg" width="${W}" height="${Hpx}" viewBox="0 0 ${W} ${Hpx}">${s}</svg>`;
 }
+
+/**
+ * One belt of `rate` evenly into `n` machines, as a pattern you can repeat:
+ * split 2 or 3 ways, then each of those again, until there's a belt per
+ * machine. n isn't 2^a·3^b: the next one up, the spare belts merged back into
+ * the start (so each carries rate ÷ n). Smallest splits first: fewest splitters.
+ * Returns { splits: [2, 2, 3…], ends, spare, each, load, splitters }.
+ */
+export function feedPattern(rate, n) {
+  const { n: ends, a, b } = streamCount(n);
+  const splits = [...Array(a).fill(2), ...Array(b).fill(3)];
+  let belts = 1, splitters = 0;
+  splits.forEach(f => { splitters += belts; belts *= f; });
+  const spare = ends - n, each = rate / n;
+  return { splits, ends, spare, each, load: each * ends, splitters };
+}
