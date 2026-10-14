@@ -284,6 +284,68 @@ class Save(unittest.TestCase):
                              # the milestones those come from: the Foundry's Tier 3, the Constructor's HUB upgrade
                              "schematics": ["Schematic_3-4", "Schematic_Tutorial2"]})
 
+    def test_reads_machines_and_storage(self):
+        def fstr(t):
+            b = t.encode() + b"\x00"
+            return struct.pack("<i", len(b)) + b
+        F = "/Game/FactoryGame/Buildable/Factory/"
+        smelter, box = "Persistent_Level:PersistentLevel.Build_SmelterMk1_C_1", "Persistent_Level:PersistentLevel.Build_StorageContainerMk1_C_2"
+        def actor(cls, name, x, y):
+            return (struct.pack("<i", 1) + fstr(cls) + fstr("Persistent_Level") + fstr(name) + struct.pack("<I", 0)
+                    + struct.pack("<i", 1) + struct.pack("<10f", 0, 0, 0, 1, x * 100, y * 100, 0, 1, 1, 1) + struct.pack("<i", 0))
+        heads = [actor(F + "SmelterMk1/Build_SmelterMk1.Build_SmelterMk1_C", smelter, 120, -40),
+                 actor(F + "StorageContainerMk1/Build_StorageContainerMk1.Build_StorageContainerMk1_C", box, 0, 0),
+                 struct.pack("<i", 0) + fstr("/Script/FactoryGame.FGInventoryComponent") + fstr("Persistent_Level")
+                 + fstr(box + ".StorageInventory") + struct.pack("<I", 0) + fstr(box)]
+        stack = (b"/Game/FactoryGame/Resource/Parts/IronPlate/Desc_IronPlate.Desc_IronPlate_C\x00" + b"\x00" * 4
+                 + b"\x09\x00\x00\x00NumItems\x00\x0c\x00\x00\x00IntProperty\x00" + b"\x04\x00\x00\x00" + b"\x00" * 5
+                 + struct.pack("<i", 250))
+        bodies = [b"\x00" * 8 + b"mCurrentRecipe\x00" + b"\x00" * 12 + b"/Game/FactoryGame/Recipes/Smelter/Recipe_IngotIron.Recipe_IngotIron_C\x00",
+                  b"\x00" * 16, b"mInventoryStacks\x00" + stack + stack]
+        toc = struct.pack("<i", 3) + b"".join(heads)
+        data = struct.pack("<i", 3) + b"".join(struct.pack("<iii", 46, 0, len(x)) + x for x in bodies)
+        level = (struct.pack("<ii", len(toc), 0) + toc + struct.pack("<ii", len(data), 0) + data)
+        raw = struct.pack("<I", 0x9E2A83C1) + b"\x00" * 44 + zlib.compress(b"\x00" * 30 + level + b"\x00" * 30)
+        got = savefile.read(raw)
+        self.assertEqual(got["machines"], [{"c": "Build_SmelterMk1", "r": "Recipe_IngotIron", "x": 120.0, "y": -40.0}])
+        self.assertEqual(got["stock"], {"Desc_IronPlate": 500})
+        self.assertEqual(savefile.recipe_keys()["Recipe_IngotIron"], "Iron_Ingot")
+        self.assertEqual(savefile.item_key("Desc_IronPlateReinforced", server.ALL_ITEMS), "Reinforced_Iron_Plate")
+        self.assertEqual(savefile.item_key("Desc_IronPlate", server.ALL_ITEMS), "Iron_Plate")
+
+
+class BuildProgress(_Temp):
+    def test_machines_count_toward_the_nearest_factory(self):
+        import json
+        from tests.test_blackboard import _solved
+        iron = [k for k, v in supply.map_nodes().items() if v["r"] == "Iron_Ore" and not v.get("w")]
+        a, b = supply.map_nodes()[iron[0]], None
+        far = next(k for k in iron if abs(supply.map_nodes()[k]["x"] - a["x"]) > 1500)
+        b = supply.map_nodes()[far]
+        for key, node in (("west", iron[0]), ("east", far)):
+            _solved(self, key, resource_nodes=[{"resource": "Iron_Ore", "extractor": "Miner", "nodes": [node]}],
+                    objective={"Iron_Ingot": 1})
+        need = server._factory_plan("west")[1]["flows"][0]["machines_final"]
+        # all the smelters stand by the west factory's node, and its miner is placed; one more by the east
+        machines = [{"m": "Smelter", "r": "Iron_Ingot", "x": a["x"] + 20, "y": a["y"]} for _ in range(need + 1)]
+        machines.append({"m": "Smelter", "r": "Iron_Ingot", "x": b["x"], "y": b["y"] + 10})
+        server.SAVE_NODES_PATH.write_text(json.dumps({"file": "x.sav", "nodes": [iron[0]], "machines": machines,
+                                                      "stock": {"Iron_Rod": 5}}))
+        p = server._build_progress()
+        west, east = p["factories"]["west"], p["factories"]["east"]
+        self.assertEqual(west["lines"]["Iron_Ingot"], [need, need])
+        self.assertEqual(west["machines_left"], {})
+        self.assertEqual(west["extractors_left"], {})
+        # the spare one by the west goes to the east, past its own: 2 of them
+        self.assertEqual(east["lines"]["Iron_Ingot"][1], 2)
+        self.assertEqual(east["machines_left"]["Smelter"], server._factory_plan("east")[1]["flows"][0]["machines_final"] - 2)
+        self.assertEqual(sum(east["extractors_left"].values()), 1)       # its node isn't mined
+        self.assertGreater(east["materials_left"]["Iron_Rod"], 0)
+        self.assertEqual(p["stock"], {"Iron_Rod": 5})
+        self.assertEqual(p["spare"], 0)
+        server.SAVE_NODES_PATH.write_text(json.dumps({"nodes": []}))      # a save from before: nothing to say
+        self.assertFalse(server._build_progress()["read"])
+
 
 if __name__ == "__main__":
     unittest.main()

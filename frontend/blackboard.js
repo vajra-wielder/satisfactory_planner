@@ -42,6 +42,45 @@ const LOAD_UNIT = { train: 'freight cars', truck: 'trucks', tractor: 'tractors',
 // (24,000 MJ a trip plus 12 MJ a metre between the ports, 6,000 MJ a battery);
 // the port's own readout is exact
 const ceil = v => Math.ceil(v - 1e-6);
+
+// What a route's flows keep busy, as the network plan counts it: per kind of
+// car, the heavier way's loads (one per round trip) — for the declared flows
+function declaredLoad(rt, flows) {
+  const v = DATA?.vehicles?.[rt.mode] || DATA?.vehicles?.train || { stacks: 32 }, each = {};
+  flows.forEach(f => {
+    const fluid = FLUIDS.has(f.item);
+    if (fluid && !v.fluid) return;
+    const c = fluid ? rt.trip_min / v.fluid : rt.trip_min / (v.stacks * (DATA?.stacks?.[f.item] || 100));
+    const k = `${fluid ? 'fluid' : 'solid'}|${f.from}`;
+    each[k] = (each[k] || 0) + f.rate * c;
+  });
+  const cars = { solid: 0, fluid: 0 };
+  Object.entries(each).forEach(([k, x]) => { const kind = k.split('|')[0]; cars[kind] = Math.max(cars[kind], x); });
+  return { ...rt, cars, load: cars.solid + cars.fluid };
+}
+
+// Too much for one route: over this many cars (one train), vehicles or drones
+const HEAVY = { train: 8, truck: 6, tractor: 6, drone: 4 };
+const STK = it => DATA?.stacks?.[it] || 100;
+// The heaviest thing on it, and a step the receiving factory runs on it that
+// would ship lighter if it ran at the sending end instead
+function heavy(rt, flows) {
+  const v = vehicles(rt);
+  const n = rt.mode === 'train' ? ceil((rt.cars?.solid || 0) + (rt.cars?.fluid || 0)) : ceil(rt.cars?.solid || 0);
+  if (n <= HEAVY[rt.mode]) return null;
+  const worst = flows.filter(f => !FLUIDS.has(f.item)).sort((a, b) => b.rate / STK(b.item) - a.rate / STK(a.item))[0];
+  let tip = '';
+  if (worst) {
+    const cars = (io) => Object.entries(io || {}).reduce((s, [i, r]) => s + (FLUIDS.has(i) ? 0 : r / STK(i)), 0);
+    const best = (factory(worst.to)?.recipes || []).map(k => RECIPES[k]).filter(r => r && worst.item in (r.inputs || {}))
+      .map(r => ({ r, ratio: cars(r.outputs) / (cars(r.inputs) || 1) })).sort((a, b) => a.ratio - b.ratio)[0];
+    if (best && best.ratio < 0.75) {
+      const outs = Object.keys(best.r.outputs).filter(i => !FLUIDS.has(i)).map(itemName).join(' + ');
+      tip = ` Run ${(best.r.display || '').replace(/^Alternate:\s*/i, 'Alt: ')} at ${nameOf(worst.from)} instead and ship ${outs}: about ${Math.round((1 - best.ratio) * 100)}% less to carry.`;
+    }
+  }
+  return { short: `⚠ ${v.short}`, long: `Heavy: ${n} ${LOAD_UNIT[rt.mode]} busy${worst ? ` — mostly ${itemName(worst.item)} (${fmt(worst.rate)}/min)` : ''}.${tip}${NET ? '' : ' Plan network finds the lightest split.'}` };
+}
 function distance(rt) {
   const a = factory(rt.a)?.at, b = factory(rt.b)?.at;
   return a && b ? Math.hypot(a[0] - b[0], a[1] - b[1]) : null;
@@ -75,7 +114,8 @@ export function initBlackboard({ onOpenFactory: open }) {
   $('btn-close-bb').addEventListener('click', closeBlackboard);
   document.querySelectorAll('#bb-tabs button').forEach(b =>
     b.addEventListener('click', () => showTab(b.dataset.tab)));
-  $('bb-plan').addEventListener('click', planNetwork);
+  $('bb-plan').addEventListener('click', () => planNetwork(false));
+  $('bb-grow').addEventListener('click', () => planNetwork(true));
   document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
     FLOW_SRC = b.dataset.src;
     document.querySelectorAll('#bb-flow-src button').forEach(x => x.classList.toggle('on', x === b));
@@ -315,7 +355,8 @@ function drawRoutes() {
     const half = items.length ? bandStripes(a, b, items, scale).width / 2 : 0;
     lab.style.left = (a[0] + b[0]) / 2 + 'px';
     lab.style.top = (a[1] + b[1]) / 2 + half + 6 + 'px';
-    const plan = NET?.routes?.[i];
+    const plan = NET?.routes?.[i] || (flows[i].length ? declaredLoad(rt, flows[i]) : null);
+    const hv = plan && heavy(plan, flows[i]);
     lab.innerHTML = `
       <select class="bb-mode">${Object.entries(MODES).map(([m, t]) =>
         `<option value="${m}" ${m === rt.mode ? 'selected' : ''}>${t}</option>`).join('')}</select>
@@ -323,7 +364,7 @@ function drawRoutes() {
         title="One ${MODES[rt.mode].toLowerCase()}'s round trip, minutes — it holds ${HOLDS[rt.mode]}"/> min trip
       <span class="bb-x" title="Remove this route">✕</span>
       ${items.length ? `<div class="bb-route-sum" title="${items.map(flowTitle).join('\n')}">${items.length} item${items.length > 1 ? 's' : ''} · ${fmt(total)}/min</div>` : ''}
-      ${plan ? `<div class="bb-route-load" title="${vehicles(plan).long.replace(/\s+/g, ' ').replace(/"/g, '&quot;')}">${vehicles(plan).short}</div>` : ''}`;
+      ${plan ? `<div class="bb-route-load ${hv ? 'heavy' : ''}" title="${(hv ? hv.long + '\n\n' : '') + vehicles(plan).long.replace(/\s+/g, ' ').replace(/"/g, '&quot;')}">${hv ? hv.short : vehicles(plan).short}</div>` : ''}`;
     lab.querySelector('.bb-mode').addEventListener('change', e => { rt.mode = e.target.value; NET = null; save(); drawRoutes(); });
     lab.querySelector('.bb-trip')?.addEventListener('change', e => {
       const v = Math.max(0.1, parseFloat(e.target.value) || 4);
@@ -337,7 +378,7 @@ function drawRoutes() {
   });
 }
 
-function planNetwork() {
+function planNetwork(grow) {
   const panel = $('bb-net');
   if (!LAYOUT.routes.length) {
     panel.style.display = '';
@@ -348,7 +389,7 @@ function planNetwork() {
   panel.innerHTML = '<p class="bb-hint">Planning…</p>';
   fetch('/api/network', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ routes: LAYOUT.routes }),
+    body: JSON.stringify({ routes: LAYOUT.routes, grow }),
   }).then(r => r.json()).then(out => { NET = out; drawRoutes(); renderNet(); })
     .catch(e => { panel.innerHTML = `<p class="bb-warn">Planning failed: ${e.message}</p>`; });
 }
@@ -361,11 +402,13 @@ function renderNet() {
   let h = `<div class="bb-net-t">Network plan <span class="bb-x" id="bb-net-close" title="Close">✕</span></div>
     <p class="bb-hint">Fractional machines — a planning view. Solve each factory on its own for its exact build.</p>`;
   if (NET.unsolved?.length) h += `<p class="bb-warn">Not solved, so held at their declared outputs: ${NET.unsolved.join(', ')}.</p>`;
+  if (NET.grow != null) h += `<div class="bb-kpi">Every goal <b>× ${fmt(NET.grow)}</b>${NET.grow < 1.0005 ? ' — no room to grow them all together' : ''}</div>`;
   h += `<div class="bb-kpi"><b>${fmt(NET.throughput)}/min</b> moving between factories · <b>${fmt(NET.stacks)}</b> stacks/min</div>
     <button class="bsm act" id="bb-apply" style="margin-top:6px" title="Write this plan into the factories, then re-solve them in order">Apply to the factories…</button>
     <div id="bb-chain"></div>`;
   NET.routes.forEach(rt => {
-    const vh = vehicles(rt);
+    const vh = vehicles(rt), hv = heavy(rt, rt.items);
+    if (hv) h += `<p class="bb-warn">${hv.long}</p>`;
     h += `<div class="bb-net-s">${name(rt.a)} ⇄ ${name(rt.b)} · ${MODES[rt.mode]}, ${rt.trip_min} min round trip
       — <b>${vh.short}</b></div><div class="bb-hint">${vh.long}${rt.ways && Object.values(rt.ways).every(v => v > 1e-6)
         ? ` Loaded both ways (${name(rt.a)} → ${fmt(rt.ways[rt.a])}, ${name(rt.b)} → ${fmt(rt.ways[rt.b])}): the lighter way rides along.` : ''}</div>`;
@@ -385,7 +428,9 @@ function renderNet() {
       return `${itemName(it)} ${fmt(x.used)} of ${fmt(x.supply)}${Math.abs(d) > 0.01 ? ` <span class="${d < 0 ? 'bb-ok' : 'bb-warn'}">(${d < 0 ? '' : '+'}${fmt(d)})</span>` : ''}`;
     });
     const hr = NET.headroom?.[f.key];
-    h += `<div class="bb-net-s">${f.name}</div>
+    const gl = NET.grow != null && f.goal ? Object.entries(f.goal).map(([it, g]) =>
+      `${itemName(it)} ${fmt(g.now)} → <b>${fmt(g.then)}</b>/min`).join(' · ') : '';
+    h += `<div class="bb-net-s">${f.name}</div>${gl ? `<div class="bb-net-b">${gl}</div>` : ''}
       <div class="bb-net-b">${lines.join('<br>') || 'Same recipes as its own plan.'}</div>
       ${res.length ? `<div class="bb-net-b">Draws: ${res.join(' · ')}</div>` : ''}
       ${hr ? `<div class="bb-net-b">With the network's leftovers: up to <b>${fmt(hr.most)}</b>

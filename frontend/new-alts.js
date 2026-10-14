@@ -36,6 +36,7 @@ let seq = 0;
 export function refreshNewAlts(onChange) {
   const el = $('new-alts');
   if (!el) return;
+  drawEverywhere();
   const res = RESULT;
   if (!res?.status?.startsWith('Optimal')) {
     el.innerHTML = '<div class="na-head"><b>New alternates</b></div><p class="n-hint">After a solve: the alternates you haven\'t unlocked that would make it better.</p>';
@@ -117,6 +118,39 @@ function draw(onChange) {
   });
 }
 
+
+// Every alternate you haven't unlocked, by what it adds to all your saved
+// factories as they are — each on its own, so the first is the hard drive
+// worth most across the lot
+// (the saved factories: asked again at most every 10 s, or when unlocks change)
+let ALL_SEQ = 0, ALL_OPEN = false, ALL = null, ALL_AT = 0;
+document.addEventListener('unlocks-changed', () => { ALL_AT = 0; });
+function drawEverywhere() {
+  const el = $('alts-all');
+  if (!el) return;
+  const mine = ++ALL_SEQ;
+  const got = ALL && Date.now() - ALL_AT < 10000 ? Promise.resolve(ALL)
+    : fetch('/api/alts-everywhere').then(r => r.json()).then(d => { ALL = d; ALL_AT = Date.now(); return d; });
+  got.then(d => {
+    if (mine !== ALL_SEQ) return;
+    const list = d.alts || [];
+    const nm = k => d.names?.[k] || k;
+    const pc = v => `${v >= 10 ? v.toFixed(0) : v.toFixed(1)}%`;
+    const row = (a, i) => {
+      const r = RECIPES[a.key] || {}, c = mCol(r.machine);
+      const gains = [...Object.entries(a.output).map(([f, v]) => `<span style="color:var(--ok)">+${pc(v)}</span> ${nm(f)}`),
+                     ...Object.entries(a.resources).map(([f, v]) => `<span style="color:var(--ok)">−${pc(v)} resources</span> ${nm(f)}`)];
+      return `<div class="na-row"><span class="na-i">${i + 1}</span>
+        <span class="na-m" style="background:${c}22;color:${c};border:1px solid ${c}44">${MABBR[r.machine] || r.machine || ''}</span>
+        <span class="na-n">${name(a.key)}<br><span class="na-g">${gains.join('<span class="na-dot"> · </span>')}</span></span></div>`;
+    };
+    const shown = ALL_OPEN ? list : list.slice(0, 6);
+    el.innerHTML = `<div class="na-head"><b>Across all factories</b><span class="n-hint">${list.length ? 'each on its own' : ''}</span></div>
+      ${list.length ? shown.map(row).join('') + (list.length > 6 ? `<button class="bsm" id="aa-more">${ALL_OPEN ? 'Fewer' : `All ${list.length}`}</button>` : '')
+        : '<p class="n-hint">None you haven\'t unlocked would help a saved factory.</p>'}`;
+    $('aa-more')?.addEventListener('click', () => { ALL_OPEN = !ALL_OPEN; drawEverywhere(); });
+  }).catch(() => { el.innerHTML = ''; });
+}
 
 // How the solver narrowed the recipes down before solving: each step and what's left
 function drawPrune() {

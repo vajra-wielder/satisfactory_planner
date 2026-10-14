@@ -45,9 +45,10 @@ export async function solveScenario(payload, signal) {
     return r.json();
   });
 
-  while (true) {
+  // quick looks first (a cached plan is ready at once), then every 150 ms
+  for (let n = 0; ; n++) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    await new Promise(res => setTimeout(res, 150));
+    await new Promise(res => setTimeout(res, n < 3 ? 25 : 150));
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     const poll = await fetch(`/api/solve/${job_id}`, { signal }).then(r => r.json());

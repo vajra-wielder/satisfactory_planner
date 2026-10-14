@@ -25,6 +25,10 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   in this factory (untick the ones you don't want), then Solve with these —
   or Unlock ticked once you've found their hard drives: every factory has
   them, and it re-solves. Every alternate you've unlocked is in every solve
+- Across all factories (under them): every alternate you haven't unlocked,
+  ranked by what it adds to all your saved factories as they are, each on its
+  own — more output (% of now), or fewer resources for the same. The first is
+  the hard drive worth most across the lot
 - Solver pruning (under the suggestions): how far the recipes are narrowed
   before solving — every recipe, allowed by your unlocks, makeable from your
   resources, on a path to your goals, into the solver (pointless loops
@@ -107,6 +111,13 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Mark abundant resources (e.g. Water) unlimited: uncapped and free
 - Power cap: the plan is built to fit under it, as close as it can get (typically
   99%+ of the cap when power is what limits output)
+- Machine cap: the most it makes with at most so many machines (extractors
+  aside) — the most on a budget; shards stretch it. Too few for an exact
+  amount: it says so. Both caps get a What if slider
+- Auto (by ▶ Solve, on unless you turn it off): a change that matters to the
+  plan solves by itself a moment after you stop — not its name or notes; a
+  change while one solves waits for it, then solves once more. It stays on
+  the view you're in
 - Power Shard placement optimised across the whole factory
 - Somersloop placement optimised across the whole factory
 - Power plants: Coal (coal, compacted coal, petroleum coke) and Fuel generators
@@ -198,7 +209,18 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   fractions); Use it puts the number in the factory and solves
 - Floor plan (📐 on the build sheet): each line's machines at their real
   footprint, rows folding past 120 m with belt lanes between, the size and
-  the 8 m foundations it takes — a guide to the room, not a layout
+  the 8 m foundations it takes — a guide to the room, not a layout. Give it a
+  footprint (foundations across × deep) and it folds rows to the width and
+  stacks floors past the depth, each as high as its tallest machine plus a
+  belt layer, with a lift wherever a line takes from a line on another floor
+- Built, from your save: reading a .sav also reads every machine in it (what
+  it runs, where it stands) and what your storage containers and dimensional
+  depot hold. Each machine counts toward the nearest saved factory (by its
+  nodes) that runs its recipe, no line past what it needs; extractors are
+  built where the save mines the nodes. The build sheet marks each line ✓, 3/8
+  or to build, the machine list says how many are left, and What's left
+  everywhere lists every saved factory's unbuilt lines and extractors with the
+  materials for all of it against what your storage holds
 - Build sheet (Build cost, under the materials): every line the plan runs,
   in the order you'd build it — its machines and clock (the even clock the
   plan uses, the least power, or all but one at 100%, the easiest to set),
@@ -259,6 +281,15 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   what each factory draws, and how much more each goal the leftovers could make.
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
+  ⇧ Grow all goals plans them together instead of holding today's outputs:
+  the largest share every goal can rise by at once (none traded for another),
+  then the most of each on top, then least resources and transport as above —
+  each factory's goal from now to then. Apply writes it in like any plan.
+- Heavy routes: past one train (8 cars), 6 trucks or tractors, or 4 drones,
+  a route's load turns amber — the vehicles counted for the imports you set
+  too, before any network plan — saying what most of it is and, when the
+  factory it goes to turns it into something lighter, to do that step at the
+  sending end instead (about how much less to carry)
 - Flows: a Sankey of everything moving between factories and into storage —
   as set in each factory, or as the network plan would send it; one band per
   pair of factories, its items as stripes inside it.
@@ -453,6 +484,7 @@ node tests/infeasible.e2e.mjs               # goals that can't be met: why, and 
 node tests/newalts.e2e.mjs                  # new alternates: listed after a solve, tick and solve (browser)
 node tests/tree.e2e.mjs                     # the goal tree: goals on tiles, what's next, tiers (browser)
 node tests/build.e2e.mjs                    # build sheet, splits per line, limits with free nodes (browser)
+node tests/improve.e2e.mjs                  # auto solve, machine cap, built from a save, floors, alternates everywhere, heavy routes, grow (browser)
 python -m tests.stress                      # every scenario over a sloop/shard grid, a case per core
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```

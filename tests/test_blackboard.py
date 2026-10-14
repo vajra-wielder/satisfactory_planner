@@ -129,6 +129,18 @@ class Cards(_Temp):
         self.assertAlmostEqual(rt["throughput"], sum(i["rate"] for i in rt["items"]), places=2)
         self.assertIn("iron", out["headroom"])
 
+    def test_network_grows_every_goal_together(self):
+        sites = server._network_sites(["iron", "wires"])
+        rt = [{"a": "iron", "b": "wires", "mode": "train", "trip_min": 1}]
+        out = network.plan_network(sites, rt, server.ALL_RECIPES, grow=True)
+        self.assertTrue(out["ok"], out)
+        t = out["grow"]
+        self.assertGreaterEqual(t, 1 - 1e-6)            # never less than now
+        for f in out["factories"]:
+            for it, g in (f["goal"] or {}).items():     # each at least t × now: none traded for another
+                self.assertGreaterEqual(g["then"], g["now"] * t - 1e-3, (f["key"], it, g))
+        self.assertIsNone(network.plan_network(sites, rt, server.ALL_RECIPES)["grow"])
+
     def test_grid_geothermal(self):
         import supply
         m = supply.map_nodes()

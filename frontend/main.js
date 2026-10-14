@@ -301,7 +301,8 @@ function updateIssuesBadge(result) {
 let solving = false;
 let solveAbort = null;  // AbortController for the in-flight solve fetch
 
-function handleSolve() {
+function handleSolve(e) {
+  const auto = e === 'auto';     // by itself: stays on the view you're in, and the Issues tab waits for you
   // Cancel any in-flight request before starting a new one
   if (solveAbort) {
     solveAbort.abort();
@@ -309,6 +310,7 @@ function handleSolve() {
   }
 
   readUI();
+  SOLVED_K = solveKey();
   const basePayload = { ...SC };
   if (basePayload.power_shards_available == null) basePayload.power_shards_available = 0;
   if (basePayload.somersloops_available  == null) basePayload.somersloops_available  = 0;
@@ -365,14 +367,14 @@ function handleSolve() {
       if (mySeq !== solveSeq) return;
       setResult(result);
       onResult(); paintImpact();
-      if (result.flows?.length) showTree(false);     // solved: the plan
+      if (result.flows?.length && !auto) showTree(false);     // solved: the plan
       updateIssuesBadge(result);
       refreshNewAlts(altsChanged);
       // fell short: the Issues tab says why; otherwise the badges do, and an
       // open Analysis redraws for the new plan
       const shortOf = !result.status?.startsWith('Optimal') || result.conflict_hints?.length > 0
         || Object.keys(result.error_sources ?? {}).length > 0;
-      if (shortOf) openWarn();
+      if (shortOf && !auto) openWarn();
       else if (dockTab() === 'analysis') showAnalysis();
     })
     .catch(err => {
@@ -396,6 +398,7 @@ function handleSolve() {
       renderResultsBar();
       renderBuildCost();
       initLayout();
+      if (AUTO_AGAIN) { AUTO_AGAIN = false; autoSolve(); }
     });
 }
 
@@ -539,13 +542,48 @@ function updateSummaries() {
   paintDirty();
   paintImpact();
   renderTree();
+  autoSolve();
   set('sum-res', [`${new Set(nodes.map(r => r.resource)).size} resources`, ex ? `${ex} extractors` : '', imp ? `${imp} imports` : ''].filter(Boolean).join(' · '));
   set('sum-goals', [n(SC.objective) && `${n(SC.objective)} max`, n(SC.must_produce) && `${n(SC.must_produce)} exact`,
     n(SC.min_produce) && `${n(SC.min_produce)} at least`, n(SC.max_produce) && `${n(SC.max_produce)} at most`,
     (SC.to_storage || []).length && `${SC.to_storage.length} stored`].filter(Boolean).join(' · ') || 'none yet');
   set('sum-oc', [SC.power_shards_available ? `${SC.power_shards_available} shards` : '', SC.somersloops_available ? `${SC.somersloops_available} sloops` : '',
-    SC.max_power_mw ? `cap ${SC.max_power_mw} MW` : '', SC.machines_first ? 'min machines' : '', SC.minimize_new_alts ? 'min new alts' : ''].filter(Boolean).join(' · '));
+    SC.max_power_mw ? `cap ${SC.max_power_mw} MW` : '', SC.max_machines ? `≤ ${SC.max_machines} machines` : '', SC.machines_first ? 'min machines' : '', SC.minimize_new_alts ? 'min new alts' : ''].filter(Boolean).join(' · '));
 }
+// ── Solve as you change it ──
+// A moment after a change that matters to the plan (not its name or notes),
+// it solves by itself; a change while one is solving waits for it, then
+// solves once more. Auto off: ▶ Solve as before.
+let AUTO = true, AUTO_AGAIN = false, SOLVED_K = null, _autoT = 0;
+try { AUTO = localStorage.getItem('auto-solve') !== '0'; } catch {}
+function solveKey() {
+  const s = JSON.parse(snap());
+  delete s.name; delete s.description; delete s.notes;
+  return JSON.stringify(s);
+}
+function autoSolve() {
+  if (!AUTO || !TOUCHED) return;
+  clearTimeout(_autoT);
+  _autoT = setTimeout(() => {
+    readUI();
+    const goals = ['objective', 'must_produce', 'min_produce'].some(k => Object.keys(SC[k] || {}).length);
+    if (!goals || solveKey() === SOLVED_K) return;
+    if (solving) { AUTO_AGAIN = true; return; }
+    handleSolve('auto');
+  }, 350);
+}
+function paintAuto() {
+  const b = document.getElementById('bauto');
+  b.classList.toggle('on', AUTO);
+  b.textContent = AUTO ? 'Auto ✓' : 'Auto';
+}
+document.getElementById('bauto').addEventListener('click', () => {
+  AUTO = !AUTO;
+  try { localStorage.setItem('auto-solve', AUTO ? '1' : '0'); } catch {}
+  paintAuto();
+  if (AUTO) autoSolve();
+});
+paintAuto();
 let _sumT = null;
 const soonSummaries = () => { clearTimeout(_sumT); _sumT = setTimeout(updateSummaries, 150); };
 // Anything you do to this factory — the left panel, the map picker, the
@@ -580,7 +618,9 @@ document.addEventListener('factory-edited', e => {
 // in the top bar and on Save, and a question before opening another factory.
 // Until you change something, whatever the panels settle on is the baseline.
 let SNAP = null, TOUCHED = false;
-const snap = () => JSON.stringify(SC, (k, v) => (k === 'enabled_machines' || k.startsWith('_')) ? undefined
+// (supply totals worked out from the nodes aren't a change of their own: an old save's may be out of date)
+const snap = () => JSON.stringify(SC, (k, v) => (k === 'enabled_machines' || k.startsWith('_')
+  || (k === 'available_resources' && SC.resource_nodes?.length)) ? undefined
   : v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v);
 const isDirty = () => TOUCHED && SNAP !== null && snap() !== SNAP;
 function paintDirty() {
@@ -757,7 +797,7 @@ document.getElementById('btn-keys')     .addEventListener('click', openHelp);
 
 // KV add-row buttons
 // Enter in a single box: keep it and go on to the next (the last one just keeps it)
-[['sc-name', 'sc-desc'], ['sc-desc'], ['sc-sh', 'sc-sl'], ['sc-sl', 'sc-mp'], ['sc-mp']].forEach(([id, next]) =>
+[['sc-name', 'sc-desc'], ['sc-desc'], ['sc-sh', 'sc-sl'], ['sc-sl', 'sc-mp'], ['sc-mp', 'sc-mm'], ['sc-mm']].forEach(([id, next]) =>
   document.getElementById(id)?.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
     e.preventDefault();

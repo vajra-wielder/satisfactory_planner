@@ -60,6 +60,37 @@ class Power(unittest.TestCase):
         self.assertLessEqual(r.total_power_mw, 0.5)
 
 
+class Budget(unittest.TestCase):
+    def test_machine_cap(self):
+        # 300 ore is 10 smelters of ingots; with 4 machines it makes 120
+        sc = solver.Scenario(name="cap", enabled_machines=["Smelter"], available_resources={"Iron_Ore": 300},
+                             objective={"Iron_Ingot": 1}, max_machines=4)
+        r = solver.solve(sc, RECIPES, META)
+        self.assertTrue(r.status.startswith("Optimal"))
+        self.assertLessEqual(r.total_machines, 4)
+        self.assertAlmostEqual(r.objective_value, 120, places=3)
+        # shards stretch a budget: 4 smelters at 250% make all 300
+        r = solver.solve(dataclasses.replace(sc, power_shards_available=12), RECIPES, META)
+        self.assertAlmostEqual(r.objective_value, 300, places=3)
+
+
+class AltsEverywhere(unittest.TestCase):
+    def test_ranked_by_what_they_add(self):
+        mk = lambda **kw: solver.Scenario(name="a", enabled_machines=["Smelter", "Refinery"], unlimited_resources=["Water"], **kw)
+        out = solver.alts_everywhere({
+            "ingots": mk(available_resources={"Iron_Ore": 300, "Water": 1000}, objective={"Iron_Ingot": 1}),
+            # nothing to maximise: the same 100 ingots from less ore
+            "fixed": mk(available_resources={"Iron_Ore": 300, "Water": 1000}, must_produce={"Iron_Ingot": 100})}, RECIPES)
+        top = out[0]
+        self.assertEqual(top["key"], "Alt_Pure_Iron_Ingot")
+        self.assertAlmostEqual(top["output"]["ingots"], 100 * (65 / 35 - 1), places=1)   # 35 ore → 65 ingots, not 35
+        self.assertGreater(top["resources"]["fixed"], 40)
+        # an unlocked one isn't new
+        un = solver.alts_everywhere({"i": mk(available_resources={"Iron_Ore": 300, "Water": 1000}, objective={"Iron_Ingot": 1},
+                                             unlocked_alt_recipes=["Alt_Pure_Iron_Ingot"])}, RECIPES)
+        self.assertNotIn("Alt_Pure_Iron_Ingot", [a["key"] for a in un])
+
+
 class WhyNot(unittest.TestCase):
     """A plan that can't be made says why, and each fix it offers works."""
     def scenario(self, **kw):

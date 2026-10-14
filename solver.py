@@ -111,6 +111,8 @@ class Scenario:
     power_shards_available: int   = 0
     somersloops_available:  int   = 0
     max_power_mw:  Optional[float] = None
+    # At most this many machines (extractors aside): the most it makes on a budget
+    max_machines:  Optional[int] = None
     notes: str = ""
     # Permanent unlock tracking — populated by the server from unlocked_alts.yaml.
     # The solver treats these alts as always-available (no per-scenario enable needed)
@@ -258,6 +260,7 @@ def load_scenario(path) -> Scenario:
         power_shards_available=_si(raw.get("power_shards_available"), 0),
         somersloops_available=_si(raw.get("somersloops_available"), 0),
         max_power_mw=_sf(raw.get("max_power_mw")) if raw.get("max_power_mw") else None,
+        max_machines=_si(raw.get("max_machines")) if raw.get("max_machines") not in (None, "") else None,
         notes=raw.get("notes", "") or "",
         minimize_new_alts=bool(raw.get("minimize_new_alts", False)),
         unlimited_resources=list(raw.get("unlimited_resources") or []),
@@ -677,6 +680,8 @@ class _Model:
             self.budget_ct["shards"] = self.ct(
                 -INF, float(SH), {key: 1.0 for key in self.var if key[0] == "s"})
         self.power: Dict[Key, float] = {}
+        if scenario.max_machines is not None:
+            self.budget_ct["machines"] = self.ct(-INF, float(scenario.max_machines), self.machines)
         if scenario.max_power_mw is not None:
             self.power = _power_bound(usable, self.var)
             self.budget_ct["power"] = self.ct(-INF, float(scenario.max_power_mw), self.power)
@@ -1214,6 +1219,8 @@ def diagnose(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
                  "has": {k: round(sc.available_resources.get(k, 0.0), 1) for k in base["short"]}}
     if not base["short"]:
         out["fits_relaxed"] = True
+        if scenario.max_machines is not None:
+            out["machine_cap"] = scenario.max_machines
         return out
     # each goal: the most of it there can be with the rest met — lowered to
     # that, the plan fits; failing that, the most on its own
@@ -1270,7 +1277,9 @@ def diagnosis_hints(d: dict, name=None, recipe=lambda k: k) -> List[str]:
         out.append(f"Alternates you haven't unlocked would {'make it work' if not a['short'] else 'narrow the gap'}: {names}"
                    + ("." if not a["short"] else f" (still short: {', '.join(f'{name(k)} {f(v)}/min' for k, v in a['short'].items())})."))
     if d.get("fits_relaxed"):
-        out.append("The goals fit with fractional machines but not whole ones — loosen an exact amount, "
+        out.append(f"It doesn't fit in {d['machine_cap']} machines — raise the machine cap, allow more shards, "
+                   "or loosen an exact amount." if d.get("machine_cap") is not None else
+                   "The goals fit with fractional machines but not whole ones — loosen an exact amount, "
                    "raise the power cap, or allow more shards.")
     return out
 
@@ -2075,6 +2084,46 @@ def suggest_alts(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
     return out
 
 
+def alts_everywhere(scenarios: Dict[str, Scenario], all_recipes: Dict[str, Recipe]) -> List[dict]:
+    """Every alternate you haven't unlocked, by what it adds to your factories
+    as they are, each on its own: per factory, more output (% of now) or — no
+    more to make — fewer resources for the same (%). Ranked by the output it
+    adds summed over the factories, then the resources it saves.
+    [{key, output: {factory: %}, resources: {factory: %}}]."""
+    found: Dict[str, dict] = {}
+    for fk, scenario in scenarios.items():
+        unlocked = set(scenario.unlocked_alt_recipes)
+        new = {k for k, r in all_recipes.items() if r.alternate and k not in unlocked}
+        sc = _with_unlimited(_dc_replace(scenario, minimize_new_alts=False,
+                                         alternate_recipes_enabled=sorted(set(scenario.alternate_recipes_enabled) | new)))
+        usable, _ = prune_recipes(sc, all_recipes)
+        cand = sorted(k for k in usable if k in new)
+        if not cand:
+            continue
+        lab = _AltLab(sc, usable, cand)
+        g0 = lab.goal(()) if lab.lp.goal else None
+        if lab.lp.goal and not g0:
+            continue
+        if g0:
+            maybe = lab.priced(cand, True)
+            for k in maybe:
+                g = lab.goal({k})
+                gain = 100.0 * (g - g0) / abs(g0) if g is not None else 0.0
+                if gain > _GAIN["output"]:
+                    found.setdefault(k, {"key": k, "output": {}, "resources": {}})["output"][fk] = round(gain, 2)
+        c0 = lab.cost((), g0, space=False, price=cand)
+        if not c0 or c0[0] <= 1e-12:
+            continue
+        for k in c0[3]:
+            if fk in found.get(k, {}).get("output", {}):
+                continue
+            c = lab.cost({k}, g0, space=False)
+            save = 100.0 * (c0[0] - c[0]) / c0[0] if c else 0.0
+            if save > _GAIN["resources"]:
+                found.setdefault(k, {"key": k, "output": {}, "resources": {}})["resources"][fk] = round(save, 2)
+    return sorted(found.values(), key=lambda x: (-sum(x["output"].values()), -sum(x["resources"].values()), x["key"]))
+
+
 def needs(scenario: Scenario, all_recipes: Dict[str, Recipe], item: str, rate: float) -> dict:
     """What `rate`/min of `item` takes that this factory can't give it: the
     fewest per minute to bring in, made with the recipes it may use.
@@ -2161,6 +2210,7 @@ def result_to_dict(result: SolveResult, scenario: Scenario, machine_meta: Dict) 
         "objective_value":       result.objective_value,
         "total_power_mw":        result.total_power_mw,
         "max_power_mw":          scenario.max_power_mw,
+        "max_machines":          scenario.max_machines,
         "total_machines":        result.total_machines,
         # Room the machines take (Σ machines × w·l·h), what the planner minimises
         "total_space":           sum(f.machines_final * machine_space(machine_meta, f.machine)

@@ -6,7 +6,7 @@
 import { linesHTML, linesText, wireLines, openSplit } from './build-sheet.js';
 import { itemColor } from './bundles.js';
 import { pinned, delta, pinPlan, unpin, openCompare } from './compare.js';
-import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS, FLUIDS } from './state.js';
+import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS, FLUIDS, BUILT } from './state.js';
 const TIERS = ['Mk1', 'Mk2', 'Mk3'];
 import { openDock, setBadge } from './dock.js';
 
@@ -142,7 +142,10 @@ let BL = null, BL_ASKED = false;      // /api/build-list: every saved factory (a
 const BL_PICK = new Set();
 let _bcLastKey = null;
 /** Which saved factory the planner has open (null: a new one). */
-export function setBuildSelf(key, name) { BC_SELF = key; BC_NAME = name || ''; }
+export function setBuildSelf(key, name) { BC_SELF = key; BC_NAME = name || ''; BUILT.key = key; }
+// A save read: what it has built, a fetch away
+const askBuilt = () => fetch('/api/build-progress').then(r => r.json()).then(d => { BUILT.p = d.read ? d : null; _bcLastKey = null; renderBuildCost(); }).catch(() => {});
+document.addEventListener('save-read', askBuilt);
 export function toggleBC() { openDock('build'); }
 const machName = m => m.replace(/_/g, ' ').replace(/Mk(\d)/, 'Mk.$1');
 const fmtN = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(2)).toLocaleString();
@@ -153,6 +156,7 @@ export function renderBuildCost(fresh = false) {
   if (fresh || (!BL && !BL_ASKED)) {
     BL_ASKED = true;
     fetch('/api/build-list').then(r => r.json()).then(d => { BL = d.factories || []; renderBuildCost(); }).catch(() => {});
+    askBuilt();
   }
   // this factory, from the last solve: its machines, extractors and what they take
   const self = { key: '@self', name: BC_NAME || 'This factory', machines: {}, extractors: {}, materials: { ...(RESULT?.build_cost ?? {}) },
@@ -174,17 +178,27 @@ export function renderBuildCost(fresh = false) {
     return Object.entries(out).sort((a, b) => b[1].total - a[1].total);
   };
   const machines = sum('machines'), extractors = sum('extractors'), mats = sum('materials');
+  // From the save: this factory's machines built, line by line (its saved plan's count, up to what this plan needs)
+  const bp = BUILT.p, mine = bp && BC_SELF ? bp.factories[BC_SELF] : null;
+  const left = {};
+  if (mine) (RESULT?.flows || []).forEach(f => {
+    const got = Math.min(f.machines_final || 0, mine.lines[f.recipe_key]?.[1] || 0);
+    left[f.machine] = (left[f.machine] || 0) + (f.machines_final || 0) - got;
+  });
   const shards = pick.reduce((t, f) => t + (f.shards || 0), 0), sloops = pick.reduce((t, f) => t + (f.sloops || 0), 0);
   setBadge('bcc', self.solved ? String(machines.length + extractors.length) : '');
 
-  const key = JSON.stringify([pick.map(f => f.key), machines, extractors, mats, shards, sloops, others.map(f => [f.key, f.solved]),
+  const key = JSON.stringify([pick.map(f => f.key), machines, extractors, mats, shards, sloops, others.map(f => [f.key, f.solved]), left, bp?.when,
     (RESULT?.flows || []).map(f => [f.recipe_key, f.machines_final, f.clock_pct, f.inputs])]);
   if (key === _bcLastKey) return;
   _bcLastKey = key;
 
   const many = pick.length > 1;
-  const rows = (list, name, icon = '') => list.map(([k, x]) =>
-    `<div class="bcr" ${many ? `title="${x.by.join(' · ')}"` : ''}><span>${icon}${name(k)}</span><span>×${fmtN(x.total)}</span></div>`).join('');
+  const rows = (list, name, icon = '', lf = null) => list.map(([k, x]) =>
+    `<div class="bcr" ${many ? `title="${x.by.join(' · ')}"` : ''}><span>${icon}${name(k)}</span><span>${
+      lf && !many && k in lf ? (lf[k] > 0 ? `<span class="bc-left">${fmtN(lf[k])} left</span> ` : '<span class="bc-done">✓ built</span> ') : ''}×${fmtN(x.total)}</span></div>`).join('');
+  const saveNote = bp ? `<div class="bc-save"><span class="n-hint">From ${bp.file || 'your save'}${mine ? '' : ' — save this factory to match it'}</span>
+    <button class="bsm" id="bc-left" title="Every saved factory: what's still to build, and the materials against what your storage holds">🧱 What's left everywhere</button></div>` : '';
   const chips = others.length ? `<div class="bc-add"><span class="n-hint">Add:</span>${others.map(f =>
     `<label title="${f.solved ? (f.stale ? 'Its last plan — it changed since' : 'Add its build to this list') : 'Not solved: nothing to count yet'}">
       <input type="checkbox" data-key="${f.key}" ${BL_PICK.has(f.key) ? 'checked' : ''} ${f.solved ? '' : 'disabled'}/>${f.name}${f.stale ? '*' : ''}</label>`).join('')}</div>` : '';
@@ -192,12 +206,13 @@ export function renderBuildCost(fresh = false) {
   body.innerHTML = `${chips}
     ${empty ? '<p class="n-hint">Solve to see the machines and materials to have ready.</p>' : `
     <div class="bc-h bc-top"><span>Machines${many ? ` · ${pick.length} factories` : ''}</span><button class="bsm" id="bc-copy">Copy as a list</button></div>
-    ${rows(machines, machName)}${rows(extractors, machName, '⛏ ')}
+    ${saveNote}${rows(machines, machName, '', mine ? left : null)}${rows(extractors, machName, '⛏ ', mine && !many ? Object.fromEntries(extractors.map(([k]) => [k, mine.extractors_left[k] || 0])) : null)}
     ${many && shards ? `<div class="bcr"><span style="color:#3b82f6">💎 Power Shards</span><span style="color:#3b82f6">×${shards}</span></div>` : ''}
     ${many && sloops ? `<div class="bcr"><span style="color:#a855f7">🔮 Somersloops</span><span style="color:#a855f7">×${sloops}</span></div>` : ''}
     <div class="bc-h">Materials to build them</div>${rows(mats, itemName)}
     ${self.solved ? `<div id="bc-lines">${linesHTML()}</div>` : ''}`}`;
   if (self.solved) wireLines(body);
+  body.querySelector('#bc-left')?.addEventListener('click', openLeft);
   body.querySelectorAll('.bc-add input').forEach(c => c.addEventListener('change', () => {
     c.checked ? BL_PICK.add(c.dataset.key) : BL_PICK.delete(c.dataset.key);
     renderBuildCost();
@@ -220,6 +235,34 @@ export function renderBuildCost(fresh = false) {
     };
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), old); else old();
   });
+}
+
+// Everything still to build, every saved factory, from the last save read: the
+// lines short of machines, the extractors not on their nodes, and the
+// materials for all of it against what the save's storage holds
+function openLeft() {
+  const bp = BUILT.p;
+  if (!bp) return;
+  const fs = Object.entries(bp.factories).filter(([, f]) => Object.keys(f.machines_left).length || Object.keys(f.extractors_left).length);
+  const total = {};
+  fs.forEach(([, f]) => Object.entries(f.materials_left).forEach(([k, v]) => { total[k] = (total[k] || 0) + v; }));
+  const rname = k => (RECIPES[k]?.display || k).replace(/^Alternate:\s*/i, 'Alt: ');
+  const fac = ([key, f]) => {
+    const lines = Object.entries(f.lines).filter(([, [n, b]]) => b < n);
+    return `<div class="lf-f"><div class="lf-h">${f.name}${f.located ? '' : ' <span class="n-hint" title="It has no map nodes, so its machines are matched by recipe alone">· not on the map</span>'}</div>
+      ${lines.map(([r, [n, b]]) => `<div class="bcr"><span>${rname(r)}</span><span>${b ? `${b} of ${n} built` : `${n} to build`}</span></div>`).join('')}
+      ${Object.entries(f.extractors_left).map(([m, n]) => `<div class="bcr"><span>⛏ ${machName(m)}</span><span>${n} to place</span></div>`).join('')}</div>`;
+  };
+  const mats = Object.entries(total).sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+    const have = bp.stock[k] || 0, short = Math.max(0, v - have);
+    return `<tr><td>${itemName(k)}</td><td class="num">${fmtN(v)}</td><td class="num">${fmtN(have)}</td>
+      <td class="num ${short ? 'cmp-down' : 'cmp-up'}">${short ? `${fmtN(short)} short` : '✓'}</td></tr>`;
+  }).join('');
+  openSplit(`What's left to build — from ${bp.file || 'your save'}`, fs.length ? `
+    <table class="st-tab cmp"><tr><th>Materials</th><th style="text-align:right">Needed</th><th style="text-align:right">In storage</th><th></th></tr>${mats}</table>
+    <div class="lf-g">${fs.map(fac).join('')}</div>
+    ${bp.spare ? `<p class="n-hint">${bp.spare} machine${bp.spare > 1 ? 's' : ''} in the save match no line of a saved plan.</p>` : ''}`
+    : '<p class="n-hint">Everything in your saved plans is built.</p>');
 }
 
 // ══════════════════════════════════════════════════════════

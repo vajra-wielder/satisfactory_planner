@@ -220,6 +220,9 @@ def _clean_scenario(d) -> dict:
     if d.get("max_power_mw") not in (None, ""):
         mw = _num(d.get("max_power_mw"), None)
         out["max_power_mw"] = None if mw is None else max(0.0, mw)
+    if d.get("max_machines") not in (None, ""):
+        mm = _num(d.get("max_machines"), None)
+        out["max_machines"] = None if mm is None else int(max(0.0, mm))
     rows = lambda k: [r for r in d.get(k) if isinstance(r, dict)] if isinstance(d.get(k), list) else None
     if d.get("resource_nodes") is not None:
         nodes = []
@@ -564,6 +567,7 @@ def _blackboard_factories() -> list:
                     "taken": {it: round(sum(by.values()), 3) for it, by in claims.get(key, {}).items()},
                     "taken_by": claims.get(key, {}),
                     "inside": _gross(result),
+                    "recipes": sorted({f["recipe_key"] for f in (result or {}).get("flows", []) if f.get("machines_final")}),
                     "power": _power(data, result)})
     return out
 
@@ -698,6 +702,72 @@ def _build_list() -> list:
         out.append({"key": "@grid", "name": "Power grid", "solved": True, "stale": False, "machines": {},
                     "extractors": {supply.GEOTHERMAL: g["count"]}, "materials": g["cost"], "shards": 0, "sloops": 0})
     return out
+
+def _build_progress() -> dict:
+    """What the last save read has built of each saved factory's plan. Each
+    machine in the save counts toward a line that runs its recipe (a generator:
+    one of its kind) — the nearest factory first, by its nodes on the map, and
+    no line past what it needs. A factory's extractors are built where the
+    save mines its nodes. Per factory: {lines: {recipe: [need, built]},
+    machines_left, extractors_left, materials_left}; all of it left, and what
+    the save's storage holds ({stock})."""
+    sv = _save_nodes()
+    if "machines" not in sv:
+        return {"read": False}
+    nodes, mined = supply.map_nodes(), set(sv.get("nodes") or [])
+    saved, _ = _saved_factories(stale_ok=True)
+    lines, out = [], {}
+    for key, data, result in saved:
+        pts = [(nodes[i]["x"], nodes[i]["y"]) for r in data.get("resource_nodes") or []
+               for i in r.get("nodes") or [] if i in nodes]
+        f_out = out[key] = {"name": data.get("name", key), "lines": {}, "machines_left": {}, "extractors_left": {},
+                            "materials_left": {}, "located": bool(pts)}
+        for f in (result or {}).get("flows", []):
+            n = int(f.get("machines_final") or 0)
+            if n:
+                lines.append({"key": key, "r": f["recipe_key"], "m": f["machine"], "need": n, "pts": pts, "built": 0})
+        # extractors: the nodes it lists that the save doesn't mine
+        ex = supply.extractor_build(data)
+        miner = supply.miner_of(data)
+        for row in data.get("resource_nodes") or []:
+            ids = row.get("nodes") or []
+            kind = row.get("extractor")
+            name = f"Miner_{miner}" if kind == "Miner" else kind
+            if not ids or name not in ex:
+                continue
+            per = {it: a / max(1, ex[name]["count"]) for it, a in ex[name]["cost"].items()}
+            left = len([i for i in ids if i not in mined])
+            if left:
+                f_out["extractors_left"][name] = f_out["extractors_left"].get(name, 0) + left
+                for it, a in per.items():
+                    f_out["materials_left"][it] = f_out["materials_left"].get(it, 0) + a * left
+    import math
+    pairs = []
+    for bi, b in enumerate(sv["machines"]):
+        for li, ln in enumerate(lines):
+            if (b["r"] and ln["r"] == b["r"]) or (not b["r"] and ln["m"] == b["m"]):
+                d = min((math.hypot(b["x"] - x, b["y"] - y) for x, y in ln["pts"]), default=1e9)
+                pairs.append((d, bi, li))
+    pairs.sort()
+    used = set()
+    for d, bi, li in pairs:
+        ln = lines[li]
+        if bi not in used and ln["built"] < ln["need"]:
+            ln["built"] += 1
+            used.add(bi)
+    for ln in lines:
+        f = out[ln["key"]]
+        need, got = f["lines"].get(ln["r"], [0, 0])
+        f["lines"][ln["r"]] = [need + ln["need"], got + ln["built"]]
+        left = ln["need"] - ln["built"]
+        if left > 0:
+            f["machines_left"][ln["m"]] = f["machines_left"].get(ln["m"], 0) + left
+            for it, a in ((MACHINE_META.get(ln["m"]) or {}).get("build_cost") or {}).items():
+                f["materials_left"][it] = f["materials_left"].get(it, 0) + a * left
+    for f in out.values():
+        f["materials_left"] = {k: math.ceil(v - 1e-9) for k, v in f["materials_left"].items() if v > 1e-9}
+    return {"read": True, "file": sv.get("file", ""), "when": sv.get("when"), "factories": out,
+            "spare": len(sv["machines"]) - len(used), "stock": sv.get("stock") or {}}
 
 _whatif_claims = [0.0, {}]   # [when, claims]: one read of the factories per few seconds of dragging
 _save_lock = threading.Lock()   # claim check + write as one step, so two saves can't both take the same
@@ -1104,7 +1174,7 @@ def _diff(cur: dict, old: dict, most: int = 8) -> list:
     for k, label in (("alternate_recipes_enabled", ""), ("enabled_machines", "machine "), ("unlimited_resources", "unlimited ")):
         a, b = set(cur.get(k) or []), set(old.get(k) or [])
         out += [f"+ {label}{_nice(x)}" for x in sorted(b - a)] + [f"− {label}{_nice(x)}" for x in sorted(a - b)]
-    for k, label in (("max_power_mw", "power cap"), ("power_shards_available", "shards"),
+    for k, label in (("max_power_mw", "power cap"), ("max_machines", "machine cap"), ("power_shards_available", "shards"),
                      ("somersloops_available", "sloops"), ("minimize_new_alts", "min new alts"),
                      ("machines_first", "min machines"), ("sloop_search", "sloop search")):
         if cur.get(k) != old.get(k) and not (not cur.get(k) and not old.get(k)):
@@ -1448,6 +1518,7 @@ def _build_scenario(b: dict) -> Scenario:
         power_shards_available=int(b.get("power_shards_available") or 0),
         somersloops_available=int(b.get("somersloops_available") or 0),
         max_power_mw=cap,
+        max_machines=int(b["max_machines"]) if b.get("max_machines") not in (None, "") else None,
         notes=b.get("notes", "") or "",
         unlocked_alt_recipes=unlocked,
         locked_recipes=supply.locked_recipes(prog),
@@ -1772,6 +1843,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if path == "/api/alts-everywhere":
+            # every alternate you haven't unlocked, by what it adds to your saved factories
+            claims = _claims(_scenario_files())
+            scs = {}
+            for key, data in _scenario_files():
+                s = _build_scenario(data)
+                scs[key] = _with_owed(s, _owed(key, claims, s))
+            names = {k: d.get("name", k) for k, d in _scenario_files()}
+            self._json(200, {"alts": _solver_mod.alts_everywhere(scs, ALL_RECIPES), "names": names})
+            return
+
+        if path == "/api/build-progress":
+            self._json(200, _build_progress())
+            return
+
         if path == "/api/build-list":
             self._json(200, {"factories": _build_list()})
             return
@@ -1792,7 +1878,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/blackboard":
             self._json(200, {"factories": _blackboard_factories(), "layout": _load_board(), "grid": _grid(),
                              "fluids": logistics.META["fluids"],
-                             "transport": logistics.META["transport"]})
+                             "transport": logistics.META["transport"],
+                             "stacks": network.STACK, "vehicles": network.VEHICLES})
             return
 
         self._json(404, {"error": "Not found"})
@@ -1832,7 +1919,7 @@ class Handler(BaseHTTPRequestHandler):
             keys = sorted({k for r in routes for k in (r["a"], r["b"])})
             try:
                 sites = _network_sites(keys)
-                out = network.plan_network(sites, routes, ALL_RECIPES)
+                out = network.plan_network(sites, routes, ALL_RECIPES, grow=bool(b.get("grow")))
                 out["unsolved"] = [s["name"] for s in sites if not s["solved"]]
                 self._json(200, out)
             except Exception as e:
@@ -1953,12 +2040,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             known = supply.map_nodes()
             import time as _t
+            rk = savefile.recipe_keys()
+            stock: dict = {}
+            for c, n in sv["stock"].items():
+                k = savefile.item_key(c, ALL_ITEMS)
+                if k and n > 0:
+                    stock[k] = stock.get(k, 0) + n
             out = {"file": self.headers.get("X-File-Name", ""), "when": int(_t.time()),
                    "nodes": [i for i in sv["nodes"] if i in known],
                    "unknown": len([i for i in sv["nodes"] if i not in known]),
-                   "unlocks": savefile.unlocks(sv["recipes"]) if sv["recipes"] else None}
+                   "unlocks": savefile.unlocks(sv["recipes"]) if sv["recipes"] else None,
+                   "machines": [{"m": savefile.MACHINES[b["c"]], "r": rk.get(b["r"]), "x": b["x"], "y": b["y"]}
+                                for b in sv["machines"] if b["c"] in savefile.MACHINES],
+                   "stock": stock}
             SAVE_NODES_PATH.write_text(json.dumps(out), encoding="utf-8")
-            self._json(200, {**out, "changes": _unlock_changes(out["unlocks"])})
+            self._json(200, {**{k: v for k, v in out.items() if k not in ("machines", "stock")},
+                             "built": len(out["machines"]), "changes": _unlock_changes(out["unlocks"])})
             return
 
         if path == "/api/save-unlocks":
@@ -2095,6 +2192,11 @@ class Handler(BaseHTTPRequestHandler):
             s = _dc_replace(s, available_resources={**s.available_resources, **num(ch.get("resources"))},
                             must_produce={**s.must_produce, **num(ch.get("must"))},
                             min_produce={**s.min_produce, **num(ch.get("min"))})
+            caps = ch.get("caps") if isinstance(ch.get("caps"), dict) else {}
+            if "machines" in caps:
+                s = _dc_replace(s, max_machines=int(_num(caps["machines"], 0, 0)))
+            if "power" in caps:      # the typed cap: geysers add to it, as when it's solved
+                s = _dc_replace(s, max_power_mw=_num(caps["power"], 0, 0) + supply.geothermal_mw(sc))
             self._json(200, _solver_mod.whatif(s, ALL_RECIPES))
             return
 

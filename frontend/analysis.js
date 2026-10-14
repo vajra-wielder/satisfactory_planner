@@ -293,7 +293,9 @@ let WI_SEQ = 0;
 function whatIf(el) {
   const res = Object.entries(RESULT.source_nodes || {}).filter(([i]) => !(RESULT.unlimited_resources || []).includes(i));
   const goals = [...Object.entries(SC.must_produce || {}).map(([i, v]) => ['must', i, v]), ...Object.entries(SC.min_produce || {}).map(([i, v]) => ['min', i, v])];
-  if (!res.length && !goals.length) return;
+  const caps = [...(SC.max_machines != null ? [['cap', 'machines', +SC.max_machines]] : []),
+                ...(SC.max_power_mw != null ? [['cap', 'power', +SC.max_power_mw]] : [])];
+  if (!res.length && !goals.length && !caps.length) return;
   section(el, 'What if', '<p class="n-hint" style="margin:0 0 8px">Drag one: the goal follows (with machines in fractions — whole ones land a little under).</p><div class="wi-out"></div>');
   const body = el.querySelector('.an-section:last-child .an-body'), out = body.querySelector('.wi-out');
   const obj = Object.keys(SC.objective || {});
@@ -311,12 +313,14 @@ function whatIf(el) {
       .then(r => r.json()).then(d => { if (mine === WI_SEQ && label) show(d, BASE, label); return d; }).catch(() => null);
   };
   ask({}, null).then(d => { BASE = d; if (!out.innerHTML) show(d, d, 'As it is:'); });
-  const rows = [...res.map(([i, v]) => ['res', i, v]), ...goals];
+  const rows = [...res.map(([i, v]) => ['res', i, v]), ...goals, ...caps];
+  const CAP = { machines: ['▦ Machine cap', 'sc-mm', ''], power: ['⚡ Power cap', 'sc-mp', ' MW'] };
+  const nameOf = (k, i) => k === 'cap' ? CAP[i][0] : itemName(i);
   body.insertAdjacentHTML('beforeend', rows.map(([k, i, v], n) => {
     const max = Math.max(10, Math.ceil(v * 2.5 / 10) * 10);
-    return `<div class="wi-r" data-n="${n}"><span class="wi-l">${k === 'res' ? '⛏' : k === 'must' ? '=' : '≥'} ${itemName(i)}</span>
+    return `<div class="wi-r" data-n="${n}"><span class="wi-l">${k === 'cap' ? CAP[i][0] : `${k === 'res' ? '⛏' : k === 'must' ? '=' : '≥'} ${itemName(i)}`}</span>
       <input type="range" min="0" max="${max}" step="${max > 200 ? 5 : 1}" value="${v}"/><span class="wi-n">${num(v)}</span>
-      <button class="bsm" data-use title="${k === 'res' ? 'Make the supply this — through its typed rate' : 'Make the goal this'}" style="visibility:hidden">Use it</button></div>`;
+      <button class="bsm" data-use title="${k === 'res' ? 'Make the supply this — through its typed rate' : k === 'cap' ? 'Make the cap this' : 'Make the goal this'}" style="visibility:hidden">Use it</button></div>`;
   }).join(''));
   body.querySelectorAll('.wi-r').forEach(r => {
     const [k, i, v0] = rows[+r.dataset.n], rng = r.querySelector('input'), lbl = r.querySelector('.wi-n'), use = r.querySelector('[data-use]');
@@ -325,12 +329,15 @@ function whatIf(el) {
       const v = +rng.value;
       lbl.textContent = num(v);
       use.style.visibility = Math.abs(v - v0) > 1e-6 ? 'visible' : 'hidden';
-      const set = k === 'res' ? { resources: { [i]: v } } : { [k]: { [i]: v } };
-      clearTimeout(t); t = setTimeout(() => ask(set, `${itemName(i)} at ${num(v)}:`), 40);
+      const set = k === 'res' ? { resources: { [i]: v } } : k === 'cap' ? { caps: { [i]: v } } : { [k]: { [i]: v } };
+      clearTimeout(t); t = setTimeout(() => ask(set, `${nameOf(k, i)} at ${num(v)}${k === 'cap' ? CAP[i][2] : ''}:`), 40);
     });
     use.addEventListener('click', () => {
       const v = +rng.value;
-      if (k === 'res') {
+      if (k === 'cap') {
+        const inp = document.getElementById(CAP[i][1]);
+        inp.value = v; inp.dispatchEvent(new Event('input', { bubbles: true }));
+      } else if (k === 'res') {
         if (!setSupplyTotal(i, v)) { use.textContent = 'from nodes — add some above'; return; }
         document.dispatchEvent(new Event('supply-changed'));
       } else {

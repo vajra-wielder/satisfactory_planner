@@ -8,7 +8,7 @@
  * for each input the splitters and mergers that feed every machine exactly
  * its share (splits.js), a click away.
  */
-import { RESULT, RECIPES, itemName, mCol, MABBR, TRANSPORT, FLUIDS, PROGRESS, MACHINE_SIZE } from './state.js';
+import { RESULT, RECIPES, itemName, mCol, MABBR, TRANSPORT, FLUIDS, PROGRESS, MACHINE_SIZE, BUILT } from './state.js';
 import { design, splitSVG, feedPattern } from './splits.js';
 import { itemColor } from './bundles.js';
 
@@ -66,8 +66,15 @@ function clocks(f) {
 export function linesHTML() {
   const flows = (RESULT?.flows || []).filter(f => f.machines_final > 0);
   if (!flows.length) return '';
+  const got = BUILT.p && BUILT.key ? BUILT.p.factories[BUILT.key]?.lines : null;
+  const built = f => {
+    if (!got) return '';
+    const b = Math.min(f.machines_final, got[f.recipe_key]?.[1] || 0);
+    return b >= f.machines_final ? '<span class="bs-b done" title="Built, in your save">✓</span>'
+      : `<span class="bs-b" title="In your save">${b ? `${b}/${f.machines_final}` : 'to build'}</span>`;
+  };
   return `<div class="bc-h bc-top"><span>Lines — what to place, in order</span><button class="bsm" id="bs-plan" title="Each line's machines at their real footprint, and how many foundations">📐 Floor plan</button></div>`
-    + (fp => `<div class="n-hint" style="margin:-2px 0 4px">About ${Math.round(fp.W)} × ${Math.round(fp.L)} m on one floor · ${fp.found} foundations</div>`)(floorPlan()) + ordered(flows).map((f, li) => {
+    + (fp => `<div class="n-hint" style="margin:-2px 0 4px">About ${Math.round(fp.W)} × ${Math.round(fp.L)} m${fp.floors.length > 1 ? `, ${fp.floors.length} floors` : ' on one floor'} · ${fp.found} foundations</div>`)(floorPlan(fpSize())) + ordered(flows).map((f, li) => {
     const c = mCol(f.machine), k = clocks(f);
     const io = (items, dir) => Object.entries(items || {}).filter(([, r]) => r > 1e-6).map(([it, r]) => {
       const cr = carrier(it, r);
@@ -78,7 +85,7 @@ export function linesHTML() {
     }).join('');
     return `<div class="bs-l" data-line="${li}">
       <div class="bs-h"><span class="rl-m" style="background:${c}22;color:${c};border:1px solid ${c}44">${MABBR[f.machine] || f.machine}</span>
-        <span class="bs-n">${esc(rname(f))}</span><span class="bs-k" title="${k.easy ? `Or ${k.easy} — easier to set, a little more power` : 'Every machine at this clock'}">${k.even}</span></div>
+        <span class="bs-n">${esc(rname(f))}</span>${built(f)}<span class="bs-k" title="${k.easy ? `Or ${k.easy} — easier to set, a little more power` : 'Every machine at this clock'}">${k.even}</span></div>
       ${k.easy ? `<div class="n-hint bs-alt">or ${k.easy}</div>` : ''}
       ${io(f.inputs, 'in')}${io(f.outputs, 'out')}</div>`;
   }).join('');
@@ -170,39 +177,96 @@ document.addEventListener('click', e => {
 // ── Floor plan: a rough one, to judge the room a factory needs ──
 // Each line a row of its machines at their real footprint, side by side with
 // GAP between them and a LANE for belts on either side of the row; long rows
-// fold in two (or more) so the plan stays roughly square. Foundations: 8 m.
-const GAP = 1, LANE = 4, FOUND = 8, ROW_MAX = 120;
-export function floorPlan() {
+// fold so they fit the width. Given a footprint (foundations across × deep),
+// the rows fill a floor up to its depth, then the next floor goes on top —
+// each as high as its tallest machine plus a belt layer — and a line fed from
+// another floor gets a lift. Foundations: 8 m.
+const GAP = 1, LANE = 4, FOUND = 8, ROW_MAX = 120, BELT_LAYER = 4;
+export function floorPlan(fp = {}) {
   const flows = ordered((RESULT?.flows || []).filter(f => f.machines_final > 0));
+  const wide = fp.wide > 0 ? fp.wide * FOUND : null, deep = fp.deep > 0 ? fp.deep * FOUND : null;
+  const rowMax = wide ? Math.max(8, wide - 2 * LANE) : ROW_MAX;
   const rows = [];
   flows.forEach(f => {
-    const [w, l] = MACHINE_SIZE[f.machine] || [8, 8];
-    const n = f.machines_final, per = Math.max(1, Math.floor((ROW_MAX + GAP) / (w + GAP)));
-    for (let k = 0; k < n; k += per) rows.push({ f, w, l, count: Math.min(per, n - k), first: k === 0 });
+    const [w, l, h] = MACHINE_SIZE[f.machine] || [8, 8, 8];
+    const n = f.machines_final, per = Math.max(1, Math.floor((rowMax + GAP) / (w + GAP)));
+    for (let k = 0; k < n; k += per) rows.push({ f, w, l, h: h || 8, count: Math.min(per, n - k), first: k === 0 });
   });
-  let y = 0, W = 0;
-  rows.forEach(r => { r.y = y + LANE; r.len = r.count * r.w + (r.count - 1) * GAP; W = Math.max(W, r.len); y = r.y + r.l + LANE; });
-  return { rows, W: W + 2 * LANE, L: y, found: Math.ceil((W + 2 * LANE) / FOUND) * Math.ceil(y / FOUND) };
+  // rows onto floors: a row that would pass the depth starts the next floor
+  const floors = [];
+  let cur = null;
+  rows.forEach(r => {
+    const need = r.l + 2 * LANE;
+    if (!cur || (deep && cur.y + need > deep && cur.rows.length)) floors.push(cur = { rows: [], y: 0, W: 0, H: 0 });
+    r.y = cur.y + LANE; r.len = r.count * r.w + (r.count - 1) * GAP;
+    cur.y = r.y + r.l + LANE; cur.W = Math.max(cur.W, r.len); cur.H = Math.max(cur.H, r.h);
+    r.floor = floors.length - 1; cur.rows.push(r);
+  });
+  const W = Math.max(0, ...floors.map(x => x.W)) + 2 * LANE, L = Math.max(0, ...floors.map(x => x.y));
+  let up = 0;
+  floors.forEach(x => { x.z = up; up += x.H + BELT_LAYER; });
+  // lifts: what a line takes from a line on another floor
+  const at = new Map(), lifts = [];
+  rows.forEach(r => { if (r.first) at.set(r.f, r.floor); });
+  const makers = {};
+  flows.forEach(f => Object.keys(f.outputs || {}).forEach(it => (makers[it] = makers[it] || []).push(f)));
+  flows.forEach(f => Object.entries(f.inputs || {}).forEach(([it, rate]) => {
+    const to = at.get(f);
+    [...new Set((makers[it] || []).filter(m => m !== f).map(m => at.get(m)))].forEach(from => {
+      if (from !== to) lifts.push({ item: it, rate, from, to, f });
+    });
+  }));
+  const rw = wide || W, rl = deep || L;
+  return { rows, floors, lifts, W: rw, L: rl, height: up - BELT_LAYER,
+           found: Math.ceil(rw / FOUND) * Math.ceil(rl / FOUND) * floors.length };
 }
+const FP_KEY = 'fp-size';
+const fpSize = () => { try { return JSON.parse(localStorage.getItem(FP_KEY)) || {}; } catch { return {}; } };
 export function floorPlanHTML() {
-  const p = floorPlan();
-  if (!p.rows.length) return '<p class="n-hint">Solve first.</p>';
-  const k = Math.min(6, 900 / Math.max(p.W, 1)), pad = 150;
-  let g = '';
-  for (let x = 0; x <= p.W; x += FOUND) g += `<line class="fp-g" x1="${pad + x * k}" y1="0" x2="${pad + x * k}" y2="${p.L * k}"/>`;
-  for (let y = 0; y <= p.L; y += FOUND) g += `<line class="fp-g" x1="${pad}" y1="${y * k}" x2="${pad + p.W * k}" y2="${y * k}"/>`;
-  p.rows.forEach(r => {
-    const c = mCol(r.f.machine);
-    g += `<rect class="fp-lane" x="${pad + (LANE - 1) * k}" y="${(r.y - LANE + 0.5) * k}" width="${(r.len + 2) * k}" height="${(LANE - 1) * k}"/>`;
-    for (let i = 0; i < r.count; i++)
-      g += `<rect x="${pad + (LANE + i * (r.w + GAP)) * k}" y="${r.y * k}" width="${r.w * k}" height="${r.l * k}" rx="2" style="fill:${c}33;stroke:${c}"/>`;
-    if (r.first) g += `<text class="fp-t" x="${pad - 8}" y="${(r.y + r.l / 2) * k + 4}" text-anchor="end">${esc(rname(r.f))}</text>
-      <text class="fp-s" x="${pad - 8}" y="${(r.y + r.l / 2) * k + 16}" text-anchor="end">${r.f.machines_final} × ${esc(r.f.machine.replace(/_/g, ' '))}</text>`;
-  });
-  return `<p class="n-hint" style="margin:0 0 6px">About <b>${Math.round(p.W)} × ${Math.round(p.L)} m</b> — <b>${p.found}</b> foundations (8 m), one floor.
-      Machines side by side ${GAP} m apart, a ${LANE} m belt lane either side of each row; long rows fold. A guide to the room it needs, not a layout.</p>
-    <svg class="fp" width="${pad + p.W * k + 10}" height="${p.L * k + 10}">${g}</svg>`;
+  const size = fpSize(), v = x => (x ? x : '');
+  if (!RESULT?.flows?.some(f => f.machines_final > 0)) return '<p class="n-hint">Solve first.</p>';
+  return `<div class="fp-ctl">Footprint <input type="number" id="fp-w" min="0" step="1" placeholder="any" value="${v(size.wide)}"/> ×
+      <input type="number" id="fp-d" min="0" step="1" placeholder="any" value="${v(size.deep)}"/> foundations
+      <span class="n-hint">— deeper than that, it stacks floors</span></div><div id="fp-body">${floorPlanBody(size)}</div>`;
 }
+function floorPlanBody(size) {
+  const p = floorPlan(size);
+  const many = p.floors.length > 1;
+  const k = Math.min(6, (many ? 560 : 900) / Math.max(p.W, 1)), pad = 150, gapF = 40;
+  let g = '', ox = 0;
+  p.floors.forEach((fl, fi) => {
+    const x0 = ox + pad;
+    for (let x = 0; x <= p.W + 1e-6; x += FOUND) g += `<line class="fp-g" x1="${x0 + x * k}" y1="24" x2="${x0 + x * k}" y2="${24 + p.L * k}"/>`;
+    for (let y = 0; y <= p.L + 1e-6; y += FOUND) g += `<line class="fp-g" x1="${x0}" y1="${24 + y * k}" x2="${x0 + p.W * k}" y2="${24 + y * k}"/>`;
+    if (many) g += `<text class="fp-t" x="${x0}" y="14">Floor ${fi + 1}${fl.z ? ` · ${Math.round(fl.z)} m up` : ' · ground'}</text>`;
+    fl.rows.forEach(r => {
+      const c = mCol(r.f.machine), y = 24 + r.y * k;
+      g += `<rect class="fp-lane" x="${x0 + (LANE - 1) * k}" y="${y - (LANE - 0.5) * k}" width="${(r.len + 2) * k}" height="${(LANE - 1) * k}"/>`;
+      for (let i = 0; i < r.count; i++)
+        g += `<rect x="${x0 + (LANE + i * (r.w + GAP)) * k}" y="${y}" width="${r.w * k}" height="${r.l * k}" rx="2" style="fill:${c}33;stroke:${c}"/>`;
+      if (r.first) {
+        const ins = p.lifts.filter(l => l.f === r.f);
+        g += `<text class="fp-t" x="${x0 - 8}" y="${y + r.l * k / 2 + 4}" text-anchor="end">${esc(rname(r.f))}</text>
+          <text class="fp-s" x="${x0 - 8}" y="${y + r.l * k / 2 + 16}" text-anchor="end">${r.f.machines_final} × ${esc(r.f.machine.replace(/_/g, ' '))}</text>
+          ${ins.map((l, i) => `<text class="fp-lift" x="${x0 - 8}" y="${y + r.l * k / 2 + 28 + i * 12}" text-anchor="end">${l.from < l.to ? '↑' : '↓'} ${esc(itemName(l.item))} from floor ${l.from + 1}</text>`).join('')}`;
+      }
+    });
+    ox += pad + p.W * k + gapF;
+  });
+  return `<p class="n-hint" style="margin:0 0 6px">About <b>${Math.round(p.W)} × ${Math.round(p.L)} m</b>${many
+      ? `, <b>${p.floors.length} floors</b> (${Math.round(p.height)} m tall), <b>${p.lifts.length}</b> belt lift${p.lifts.length === 1 ? '' : 's'} between them` : ', one floor'}
+      — <b>${p.found}</b> foundations (8 m). Machines side by side ${GAP} m apart, a ${LANE} m belt lane either side of each row; long rows fold.
+      A guide to the room it needs, not a layout.</p>
+    <svg class="fp" width="${ox - gapF + 10}" height="${24 + p.L * k + 10 + (many ? 0 : 0)}">${g}</svg>`;
+}
+// the footprint boxes, typed: kept for next time, and the plan (not the boxes) redrawn as you type
+document.addEventListener('input', e => {
+  if (!e.target.closest('#fp-w, #fp-d')) return;
+  const n = id => Math.max(0, Math.floor(+document.getElementById(id).value || 0)) || null;
+  const size = { wide: n('fp-w'), deep: n('fp-d') };
+  try { localStorage.setItem(FP_KEY, JSON.stringify(size)); } catch {}
+  document.getElementById('fp-body').innerHTML = floorPlanBody(size);
+});
 document.addEventListener('click', e => {
   if (e.target.closest('#bs-plan')) openSplit(`Floor plan — ${RESULT?.scenario_name || 'this factory'}`, floorPlanHTML());
 });

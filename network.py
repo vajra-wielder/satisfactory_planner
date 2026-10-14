@@ -70,7 +70,7 @@ def _unit_cost(item: str, route: dict) -> Optional[float]:
 class _Net:
     """One LP of the network. held: per factory, outputs it must still make."""
 
-    def __init__(self, sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], free_goal: Optional[str] = None):
+    def __init__(self, sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], free_goal=None):
         self.s = s = pywraplp.Solver.CreateSolver("GLOP")
         inf = s.infinity()
         self.keys = keys = [x["key"] for x in sites]
@@ -103,7 +103,7 @@ class _Net:
             sc = by[k]["scenario"]
             unlimited = set(sc.unlimited_resources)
             held = by[k]["held"]
-            if k == free_goal:     # its goal items are what's being maximised
+            if k == free_goal or (isinstance(free_goal, set) and k in free_goal):   # its goal items are what's being maximised
                 held = {it: r for it, r in held.items() if it not in sc.objective}
             items = {it for r in allowed[k].values() for it in (*r.inputs, *r.outputs)} \
                 | set(sc.available_resources) | set(by[k]["held"])
@@ -145,12 +145,56 @@ class _Net:
     def value(self, obj: Dict[object, float]) -> float:
         return sum(c * v.solution_value() for v, c in obj.items())
 
+    def goal_of(self, k: str) -> Dict[object, float]:
+        """Factory k's weighted goal: what it makes of its goal items, net."""
+        g: Dict[object, float] = {}
+        for it, w in self.by[k]["scenario"].objective.items():
+            for v, c in self.net.get((k, it), {}).items():
+                g[v] = g.get(v, 0.0) + w * c
+        return g
 
-def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe]) -> dict:
+
+def _now_goal(x: dict) -> float:
+    return sum(w * x["held"].get(it, 0.0) for it, w in x["scenario"].objective.items())
+
+
+def _grow(m: "_Net", sites: List[dict]) -> Optional[float]:
+    """Raise every goal together: the largest t with each factory that has a
+    goal making at least t × what it makes now (so none is traded for
+    another), then — t held — the most of every goal on top, each as a share
+    of its own. Returns t, or None when nothing has a goal to grow."""
+    grow = [x for x in sites if x["scenario"].objective and _now_goal(x) > 1e-9]
+    if not grow:
+        return None
+    t = m.s.NumVar(0, m.s.infinity(), "")
+    for x in grow:
+        ct = m.s.Constraint(0, m.s.infinity())          # goal − t·now ≥ 0
+        for v, c in m.goal_of(x["key"]).items():
+            ct.SetCoefficient(v, c)
+        ct.SetCoefficient(t, -_now_goal(x))
+    if not m.run({t: 1.0}, maximize=True):
+        return None
+    best = t.solution_value()
+    t.SetLb(best * (1 - 1e-6))
+    share: Dict[object, float] = {}
+    for x in grow:
+        for v, c in m.goal_of(x["key"]).items():
+            share[v] = share.get(v, 0.0) + c / _now_goal(x)
+    m.run(share, maximize=True)
+    m.lock({v: -c for v, c in share.items()}, -m.value(share))
+    return best
+
+
+def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], grow: bool = False) -> dict:
     """sites: [{key, name, scenario: Scenario, held: {item: rate},
     own: {recipe: machine-equivalents}, own_draw: {item: rate}}];
-    routes: [{a, b, mode, trip_min}]."""
-    m = _Net(sites, routes, recipes)
+    routes: [{a, b, mode, trip_min}]. grow: raise every goal together first
+    (see _grow) — the factories' goals, not only their current outputs."""
+    goals = {x["key"] for x in sites if x["scenario"].objective} if grow else None
+    m = _Net(sites, routes, recipes, free_goal=goals)
+    t = _grow(m, sites) if grow else None
+    if grow and t is None:
+        return {"ok": False, "error": "No factory here has a goal it makes yet — solve them first."}
     supply = {key: float(m.by[key[0]]["scenario"].available_resources[key[1]]) for key in m.draw}
     res_obj = {u: 100.0 / supply[key] / max(1, len(m.draw)) for key, u in m.draw.items()}
     if not m.run(res_obj):
@@ -199,7 +243,8 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
     m.run({m.q[(k, rk)]: float(machine_space(META, r.machine))
            for k in m.keys for rk, r in m.allowed[k].items()})
 
-    out = {"ok": True, "resource_score": round(score, 3), "factories": [], "routes": []}
+    out = {"ok": True, "resource_score": round(score, 3), "factories": [], "routes": [],
+           "grow": None if t is None else round(t, 4)}
     for k in m.keys:
         ran = {rk: m.q[(k, rk)].solution_value() for rk in m.allowed[k]}
         ran = {rk: v for rk, v in ran.items() if v > _SHOW}
@@ -216,7 +261,12 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
         res = {it: {"supply": round(supply[(kk, it)], 3), "used": round(u.solution_value(), 3),
                     "before": round(m.by[k]["own_draw"].get(it, 0.0), 3)}
                for (kk, it), u in m.draw.items() if kk == k}
-        out["factories"].append({"key": k, "name": m.by[k]["name"], "recipes": moved, "resources": res})
+        sc = m.by[k]["scenario"]
+        goal = None
+        if sc.objective:
+            items = {it: round(m.value(m.net.get((k, it), {})), 3) for it in sc.objective}
+            goal = {it: {"now": round(m.by[k]["held"].get(it, 0.0), 3), "then": v} for it, v in items.items()}
+        out["factories"].append({"key": k, "name": m.by[k]["name"], "recipes": moved, "resources": res, "goal": goal})
     for ri, rt in enumerate(routes):
         items, each = [], {}
         for (r2, a, b, it, v, c) in m.arcs:

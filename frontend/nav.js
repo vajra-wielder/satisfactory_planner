@@ -214,7 +214,8 @@ export function initNav(api) {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tag);
     const mod = e.ctrlKey || e.metaKey;
     if (e.key === 'Escape') {
-      if (typing && !document.activeElement.closest('#nav-pal')) return;   // inputs keep their own Esc
+      // inputs keep their own Esc — but a number box in a window just closes it
+      if (typing && !document.activeElement.closest('#nav-pal') && !(tag === 'INPUT' && document.activeElement.type === 'number' && document.activeElement.closest('.far'))) return;
       if (closeTop()) e.preventDefault();
       return;
     }

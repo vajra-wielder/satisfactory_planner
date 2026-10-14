@@ -477,6 +477,8 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 }
 .bsolve:hover:not(:disabled) { opacity: .9; }
 .bsolve:disabled { opacity: .4; cursor: wait; }
+#bauto { flex: none; padding: 0 10px; }
+#bauto.on { border-color: var(--acc); color: var(--acc); }
 .bsm {
   padding: 4px 8px; border: 1px solid var(--b2); border-radius: var(--rsm);
   background: var(--p3); color: var(--t2); font-size: 11px; cursor: pointer;
@@ -671,6 +673,9 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .fp-lane { fill: #e6a23c14; }
 .fp-t { font: 600 11px var(--font); fill: var(--t); }
 .fp-s { font: 10px var(--mono); fill: var(--t3); }
+.fp-lift { font: 10px var(--mono); fill: var(--acc); }
+.fp-ctl { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; flex-wrap: wrap; }
+.fp-ctl input { width: 64px; }
 .sv-ov { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 10px; color: var(--t2); margin-top: 2px; }
 .sv-out { display: inline-flex; align-items: center; gap: 3px; }
 .sv-out i { width: 7px; height: 7px; border-radius: 2px; }
@@ -691,6 +696,14 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bs-h { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .bs-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t); }
 .bs-k { font-family: var(--mono); font-size: 11px; color: var(--acc); white-space: nowrap; }
+.bs-b { font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px solid var(--warn); color: var(--warn); white-space: nowrap; }
+.bs-b.done { border-color: var(--ok, #22c55e); color: var(--ok, #22c55e); }
+.bc-left { color: var(--warn); font-size: 11px; }
+.bc-done { color: var(--ok, #22c55e); font-size: 11px; }
+.bc-save { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0 6px; flex-wrap: wrap; }
+.lf-g { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 12px; }
+.lf-f { border: 1px solid var(--b); border-radius: var(--r); padding: 8px; }
+.lf-h { font-weight: 600; margin-bottom: 4px; }
 .bs-alt { text-align: right; margin: 0; font-size: 10px; }
 .bs-io { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--t2); padding-left: 8px; }
 .bs-io > span:first-child { flex: 1; }
@@ -892,6 +905,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bb-mode, .bb-trip { font-size: 10px !important; width: auto !important; padding: 1px 3px !important; }
 .bb-trip { width: 46px !important; }
 .bb-route-load { margin-top: 2px; color: var(--acc); font-family: var(--mono); }
+.bb-route-load.heavy { color: var(--warn); }
 #bb-net { width: 380px; flex-shrink: 0; overflow: auto; border-left: 1px solid var(--b); padding: 10px 12px;
   font-size: 11px; color: var(--t2); line-height: 1.55; background: var(--p1, #0e1117); }
 .bb-net-t { font-size: 12px; font-weight: 600; color: var(--acc); display: flex; justify-content: space-between; }
@@ -1119,7 +1133,10 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
             <div class="bcard"><div class="blbl sh">&#x1F4CE; Shards</div><input type="number" id="sc-sh" placeholder="0" min="0" step="1"/><div style="font-size:10px;color:var(--t3);margin-top:2px">For its machines</div></div>
             <div class="bcard"><div class="blbl sl">&#x1F52E; Sloops</div><input type="number" id="sc-sl" placeholder="0" min="0" max="106" step="1"/><div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px"><span style="font-size:10px;color:var(--t3);white-space:nowrap">Max 106</span><div class="seg" id="sl-mode" title="Dive: fast somersloop placement, certified ≥95% of the best. Exact: the full integer search — slower on big plans, for comparing against the dive."><button type="button" data-mode="dive" class="on">Dive</button><button type="button" data-mode="exact">Exact</button></div></div></div>
             <div class="bcard" style="grid-column:1/-1">
-              <div><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Power cap (MW) <span id="geo-note" style="color:var(--t4)"></span></div><input type="number" id="sc-mp" placeholder="No limit" min="0" step="50"/></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Power cap (MW) <span id="geo-note" style="color:var(--t4)"></span></div><input type="number" id="sc-mp" placeholder="No limit" min="0" step="50"/></div>
+                <div title="The most it makes with at most this many machines (miners and extractors aside)"><div style="font-size:10px;color:var(--t3);margin-bottom:2px">Machine cap</div><input type="number" id="sc-mm" placeholder="No limit" min="0" step="10"/></div>
+              </div>
             </div>
           </div>
           <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--b)">
@@ -1145,7 +1162,8 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
     </div>
 
     <div id="sbb">
-      <button class="bsolve" id="bsolve">&#9654; Solve</button>
+      <div style="display:flex;gap:5px"><button class="bsolve" id="bsolve">&#9654; Solve</button>
+        <button class="bsm" id="bauto" title="Solve by itself a moment after each change">Auto</button></div>
       <div id="save-impact" style="display:none"></div>
       <div style="display:flex;gap:5px;margin-top:5px">
         <button class="bsm" style="flex:1" id="bsave">&#x1F4BE; Save</button>
@@ -1204,6 +1222,7 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       <span class="n-hint" id="dk-sub"></span><button class="wmc" id="dk-close" title="Close  (])">&times;</button></div>
     <div class="dk-pane ts" id="dk-alts" data-title="Alternates" data-sub="for this factory">
       <div id="new-alts"></div>
+      <div class="dk-sec" id="alts-all"></div>
       <div class="dk-sec" id="prune-box"></div>
     </div>
     <div class="dk-pane ts" id="dk-analysis" data-title="Analysis" data-sub="what limits this plan" style="display:none">
@@ -1242,7 +1261,8 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
     </div>
     <div id="bb-factories" class="bb-pane">
       <div class="bb-bar">
-        <button id="bb-plan" class="bsm" style="border-color:var(--acc);color:var(--acc)">Plan network</button>
+        <button id="bb-plan" class="bsm" style="border-color:var(--acc);color:var(--acc)" title="Same outputs, least ore and transport">Plan network</button>
+        <button id="bb-grow" class="bsm" style="border-color:var(--acc);color:var(--acc)" title="Raise every factory's goal together — none traded for another — then least ore and transport">⇧ Grow all goals</button>
         <span>Drag a factory's ⇄ onto another to add a route — train, truck, tractor or drone, and its round trip · click a factory's name to open it</span>
       </div>
       <div style="position:relative;flex:1;display:flex;min-height:0">

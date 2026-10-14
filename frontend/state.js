@@ -19,6 +19,7 @@ export const DEF_SC = () => ({
   power_shards_available: null,
   somersloops_available: null,
   max_power_mw: null,
+  max_machines: null,
   notes: '',
   minimize_new_alts: false,
   machines_first: false,     // fewest machines first, then least resources
@@ -41,6 +42,8 @@ export function resetSC() {
 
 // Solver result
 export let RESULT = null;
+// What the last save read has built (/api/build-progress), and which saved factory is open
+export const BUILT = { p: null, key: null };
 export function setResult(r) { RESULT = r; }
 
 // Solve request counter — incremented on each solve dispatch.
