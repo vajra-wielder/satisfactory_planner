@@ -634,6 +634,13 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .sp-h b { color: var(--acc); }
 .sp-d { overflow: auto; }
 .sp-svg { display: block; }
+#g-legend { position: absolute; left: 12px; top: 12px; z-index: 20; display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--t2);
+  background: rgba(21,25,35,.9); border: 1px solid var(--b2); border-radius: var(--rsm); padding: 4px 8px; }
+#g-legend:empty { display: none; }
+#g-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.g-heat { width: 70px; height: 7px; border-radius: 3px; background: linear-gradient(90deg, #3b82f6, #4fb3a9, #e6a23c, #ef4444); }
+.g-heat.clock { background: linear-gradient(90deg, #3b82f6, #4fb3a9 33%, #4ade80 50%, #e6a23c 66%, #ef4444); }
+#graph.tree-on #g-legend { display: none; }
 #save-impact { margin-top: 6px; font-size: 11px; line-height: 1.4; }
 #save-impact .bsm { width: 100%; margin-top: 4px; }
 #undo-note { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 3000; background: var(--p3); border: 1px solid var(--b2);
@@ -650,6 +657,7 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bs-alt { text-align: right; margin: 0; font-size: 10px; }
 .bs-io { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--t2); padding-left: 8px; }
 .bs-io > span:first-child { flex: 1; }
+.bs-c { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 4px; vertical-align: 1px; }
 .bs-io b { font-family: var(--mono); font-weight: 600; color: var(--t); }
 .bs-io.out { color: var(--t3); }
 .bs-sp { padding: 0 6px !important; }
@@ -1140,7 +1148,10 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
     <button class="gbt" id="btn-search"   title="Search graph  (Ctrl+F)" style="font-size:13px">&#x2315;</button>
     <button class="gbt on" id="btn-hubs"  title="Splitter / merger nodes" style="font-size:13px">&#x2442;</button>
     <button class="gbt" id="btn-minor"    title="Show small taps as full lines" style="font-size:13px">&#x22EF;</button>
+    <button class="gbt" id="btn-colorby"  title="Colour the machines by: machine, power draw, clock, space, alternates  (C)" style="font-size:12px">&#x25D0;</button>
+    <button class="gbt on" id="btn-moving" title="Belts that move — faster the more they carry; amber near a belt's limit, red over it or out of a resource used up" style="font-size:12px">&#x224B;</button>
   </div>
+  <div id="g-legend"></div>
 </div>
 
 

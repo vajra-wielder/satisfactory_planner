@@ -24,7 +24,8 @@
  * there is worked out, and belts — "4 x 120 into 5 x 80 + 40 + 20 + 20" — get
  * the splitters and mergers that make the exact rates, drawn (splits.js).
  */
-import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, TRANSPORT, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR } from './state.js';
+import { itemColor } from './bundles.js';
+import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, TRANSPORT, FLUIDS, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR } from './state.js';
 import { goalOf, setGoal, evalExpr } from './kv-panel.js';
 import { storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './supply-panel.js';
 import { saveProgress, fetchNeeds } from './api.js';
@@ -104,15 +105,19 @@ function levels(have, ok) {
 
 // The last solve: what each part's made at, by which recipes, and which inputs feed which outputs
 function planOf() {
-  const p = { rate: {}, by: {}, links: new Set() };
+  const p = { rate: {}, by: {}, links: new Set(), flow: {}, most: 0 };
   if (!RESULT?.flows?.length) return null;
   RESULT.flows.forEach(f => {
     Object.entries(f.outputs || {}).forEach(([o, v]) => {
       p.rate[o] = (p.rate[o] || 0) + v;
       (p.by[o] = p.by[o] || new Set()).add(f.recipe_key);
-      Object.keys(f.inputs || {}).forEach(i => p.links.add(i + '>' + o));
+      Object.entries(f.inputs || {}).forEach(([i, r]) => {
+        p.links.add(i + '>' + o);
+        p.flow[i + '>' + o] = (p.flow[i + '>' + o] || 0) + r;   // how much of i goes into making o
+      });
     });
   });
+  p.most = Math.max(1, ...Object.values(p.flow));
   return p;
 }
 
@@ -251,14 +256,17 @@ function draw() {
     const a = T.tiles[e.a], b = T.tiles[e.b];
     const x1 = a.x + TW, y1 = a.y + TH / 2, x2 = b.x, y2 = b.y + TH / 2, mx = (x1 + x2) / 2;
     const used = P?.links.has(e.a + '>' + e.b);
-    return `<path class="gt-l ${e.ghost ? 'gh' : ''} ${used ? 'pl' : ''} ${e.pick ? 'pk' : ''}" data-a="${e.a}" data-b="${e.b}" d="M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}"/>`;
+    // a plan's link: in its item's colour, as wide as what it carries
+    const look = used ? ` style="stroke:${itemColor(e.a, FLUIDS.has(e.a))};stroke-width:${(1.5 + 9 * Math.sqrt(P.flow[e.a + '>' + e.b] / P.most)).toFixed(1)}px"` : '';
+    return `<path class="gt-l ${e.ghost ? 'gh' : ''} ${used ? 'pl' : ''} ${e.pick ? 'pk' : ''}" data-a="${e.a}" data-b="${e.b}"${look} d="M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}"><title>${
+      used ? `${esc(itemName(e.a))} ${num(P.flow[e.a + '>' + e.b])}/min → ${esc(itemName(e.b))}` : ''}</title></path>`;
   }).join('');
   el.innerHTML = tiles.map(t => {
     const sup = T.have.has(t.item) ? SC.available_resources?.[t.item] : null;
     const made = P?.rate[t.item], idle = P && !t.ghost && !t.root && !made;
     const s = sug[t.item];
     return `<div class="gt-t ${t.ghost ? 'gh' : ''} ${t.root ? 'rt' : ''} ${idle ? 'idle' : ''} ${OPEN === t.item ? 'sel' : ''}" data-i="${t.item}"
-      style="left:${t.x}px;top:${t.y}px" title="${esc(itemName(t.item))}${t.ghost ? ' — not yet: click for what it needs' : idle ? ' — not in the plan' : ''}">
+      style="left:${t.x}px;top:${t.y}px;border-left:3px solid ${itemColor(t.item, FLUIDS.has(t.item))}" title="${esc(itemName(t.item))}${t.ghost ? ' — not yet: click for what it needs' : idle ? ' — not in the plan' : ''}">
       <span class="gt-n">${esc(itemName(t.item))}</span><span class="gt-m">${made ? `<span class="gt-s pl">${num(made)}/min</span>` : sup ? `<span class="gt-s">${num(sup)}/min</span>` : ''}${badge(t.item)}</span>
       ${s ? `<b class="gs" data-sug="${s.key}" data-for="${t.item}" title="Worth unlocking: ${esc(rname(RECIPES[s.key]))} — ${esc(gainText(s, false))}. Click to pick it">✨</b>` : ''}${t.ghost ? '' : cycleBadge(t.item)}</div>`;
   }).join('');

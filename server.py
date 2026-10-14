@@ -121,6 +121,7 @@ def _build_boot_bytes():
         "unlocks":      supply.UNLOCKS,
         "transport":    logistics.META["transport"],
         "fluids":       sorted(network.FLUIDS),
+        "machine_size": {m: v.get("size_m") for m, v in MACHINE_META.items() if v.get("size_m")},
     }, default=str).encode()
 
 # Cache the last solved scenario so /api/duals can re-use it without re-solving.

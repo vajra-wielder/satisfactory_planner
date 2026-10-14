@@ -25,7 +25,73 @@
  *   edge geometry rebuilt only on layout change
  */
 
-import { RESULT, mCol, MABBR, itemName, perMin } from './state.js';
+import { RESULT, mCol, MABBR, itemName, perMin, FLUIDS, TRANSPORT, PROGRESS, MACHINE_SIZE } from './state.js';
+import { itemColor } from './bundles.js';
+
+// ── Looks ─────────────────────────────────────────────────
+// Links wear their item's colour (the same everywhere in the planner) and
+// move like belts, faster the more they carry; a link near its belt's limit
+// glows amber, one over it (two belts needed) red, and the links out of a
+// resource the plan uses all of pulse. Machines are coloured by COLOR_BY.
+const REDUCED = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+let MOVING = !REDUCED;
+export const COLOR_MODES = [['machine', 'Machine'], ['power', 'Power draw'], ['clock', 'Clock'], ['space', 'Space'], ['alt', 'Alternates']];
+let COLOR_BY = 'machine';
+export const colorBy = () => COLOR_BY;
+export function setColorBy(m) { COLOR_BY = m; schedDraw(); }
+export function setMoving(on) { MOVING = on; if (on) loop(); else schedDraw(); }
+export const moving = () => MOVING;
+const itemCol = it => itemColor(it, FLUIDS.has(it));
+// cool → warm, for a share of the most
+function heat(t) {
+  t = Math.max(0, Math.min(1, t || 0));
+  const stops = [[59, 130, 246], [79, 179, 169], [230, 162, 60], [239, 68, 68]];
+  const k = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(k)), f = k - i;
+  return '#' + stops[i].map((c, j) => Math.round(c + (stops[i + 1][j] - c) * f).toString(16).padStart(2, '0')).join('');
+}
+const footprint = f => { const s = MACHINE_SIZE[f.machine]; return s ? s[0] * s[1] * (f.machines_final || 0) : 0; };
+let SCALE = null;    // the most of each measure in this plan, for heat
+function nodeColor(f) {
+  if (f.isGroup) return '#f59e0b';
+  if (COLOR_BY === 'machine') return mCol(f.machine);
+  if (!SCALE) {
+    const fl = RESULT?.flows || [];
+    SCALE = { power: Math.max(1, ...fl.map(x => x.power_mw || 0)), space: Math.max(1, ...fl.map(footprint)) };
+  }
+  if (COLOR_BY === 'power') return heat((f.power_mw || 0) / SCALE.power);
+  if (COLOR_BY === 'space') return heat(footprint(f) / SCALE.space);
+  if (COLOR_BY === 'alt') return /^Alt/.test(f.recipe_key || '') || f.display?.startsWith('Alternate') ? '#a855f7' : '#475569';
+  const c = f.clock_pct ?? 100;   // under: blue, full: green, over: amber → red
+  return c < 99.5 ? heat(0.33 * c / 100) : c <= 100.5 ? '#4ade80' : heat(0.66 + 0.34 * Math.min(1, (c - 100) / 150));
+}
+// a link against what one belt (or pipe) at your tier carries
+function beltOf(item) {
+  const fluid = FLUIDS.has(item), t = (fluid ? TRANSPORT.pipes : TRANSPORT.belts) || {};
+  return (fluid ? Math.max(0, ...Object.values(t)) : t[PROGRESS.belt]) || Infinity;
+}
+// resources the plan uses all of
+let BOUND = null;
+function bound() {
+  if (BOUND) return BOUND;
+  const used = {};
+  (RESULT?.flows || []).forEach(f => Object.entries(f.inputs || {}).forEach(([i, r]) => { used[i] = (used[i] || 0) + r; }));
+  const unl = new Set(RESULT?.unlimited_resources || []);
+  BOUND = new Set(Object.entries(RESULT?.source_nodes || {}).filter(([i, a]) => !unl.has(i) && a > 0 && (used[i] || 0) >= 0.99 * a).map(([i]) => i));
+  return BOUND;
+}
+let T0 = performance.now(), lastFrame = 0;
+function loop() {
+  if (!MOVING) return;
+  requestAnimationFrame(now => {
+    const g = document.getElementById('graph');
+    if (MOVING && EDGES.length && g && !g.classList.contains('tree-on') && document.visibilityState === 'visible' && now - lastFrame > 33) {
+      lastFrame = now; draw();
+    }
+    loop();
+  });
+}
+loop();
+
 
 // ── Canvas refs (lazy — resolved on first use, not at module parse time) ──────
 let CV = null, C = null, GE = null;
@@ -268,7 +334,7 @@ function collapseGroups(flows, groupOf, groups) {
 export function initLayout({ keepView = false } = {}) {
   if (!initCanvasRefs()) return;
   NODES = []; EDGES = []; NODEMAP = {}; BANDS = [];
-  SPATGRID = null;
+  SPATGRID = null; SCALE = null; BOUND = null;
   clearFocus();
 
   if (!RESULT?.flows?.length) {
@@ -546,7 +612,9 @@ export function initLayout({ keepView = false } = {}) {
   // minor = small share of the item's total flow → drawn as a short tap stub.
   function addEdge(src, tgt, item, rate, totalRate, color, dashed = false, minor = false) {
     if (!posMap[src] || !posMap[tgt]) return;
-    EDGES.push({ src, tgt, item, rate, totalRate, color, dashed, minor });
+    // surplus and byproduct links keep their warning colours; the rest wear their item's
+    if (color !== '#f59e0b' && color !== '#ef4444') color = itemCol(item);
+    EDGES.push({ src, tgt, item, rate, totalRate, color, dashed, minor, fromSrc: src.startsWith('SRC_') });
   }
   const colorOf = id => id.startsWith('SRC_') ? '#cbd5e1' : mCol(flowMap[id]?.machine);
   const takerStyle = (id, color) =>
@@ -599,8 +667,7 @@ export function initLayout({ keepView = false } = {}) {
       }
 
       const total = Math.max(need, made);
-      const main  = ss.reduce((a, b) => (b.rate > a.rate ? b : a));
-      const color = colorOf(main.id);
+      const color = itemCol(item);
       const right = Math.max(...ss.map(s => posMap[s.id].x + posMap[s.id].w));
       // Rate-weighted Y so the hub sits on the main line, not between side taps
       let wy = 0, ws = 0;
@@ -1080,15 +1147,38 @@ function drawEdge(e) {
   if (edgeIsStub(e)) { drawStub(e); return; }
   const alpha = edgeFocusAlpha(e);
   const lw    = edgeFocusWidth(e);
+  const path  = () => { C.beginPath(); C.moveTo(e._x1, e._y1); C.bezierCurveTo(e._cx1, e._cy1, e._cx2, e._cy2, e._x2, e._y2); };
+  const t     = (performance.now() - T0) / 1000;
 
   C.globalAlpha = alpha;
-  C.beginPath();
-  C.moveTo(e._x1, e._y1);
-  C.bezierCurveTo(e._cx1, e._cy1, e._cx2, e._cy2, e._x2, e._y2);
+  // near or over what one belt carries: a glow under it; a resource used up: a pulse
+  const load = e.rate / beltOf(e.item);
+  const hot  = e.fromSrc && bound().has(e.item);
+  if (load > 1 + 1e-6 || load >= 0.9 || hot) {
+    path();
+    C.strokeStyle = load > 1 + 1e-6 || hot ? '#ef4444' : '#f59e0b';
+    C.globalAlpha = alpha * (hot && MOVING ? 0.25 + 0.2 * Math.sin(t * 4) : 0.35);
+    C.lineWidth = lw + 5 / ZOOM;
+    C.stroke();
+    C.globalAlpha = alpha;
+  }
+  path();
   C.strokeStyle = e.color;
   C.lineWidth   = lw;
   C.setLineDash(e.dashed ? [5 / ZOOM, 3 / ZOOM] : []);
   C.stroke();
+  // items moving along it, faster the more it carries
+  if (MOVING && !e.dashed && alpha > 0.3) {
+    path();
+    C.setLineDash([2 / ZOOM, 14 / ZOOM]);
+    C.lineDashOffset = -t * (18 + 10 * Math.log2(1 + e.rate)) / ZOOM;
+    C.strokeStyle = 'rgba(255,255,255,0.55)';
+    C.lineWidth = lw * 1.3;
+    C.lineCap = 'round';
+    C.stroke();
+    C.lineCap = 'butt';
+    C.lineDashOffset = 0;
+  }
   C.setLineDash([]);
 
   // Arrow head
@@ -1225,7 +1315,7 @@ function drawNode(n) {
   if (type === 'hub')         { drawHub(n); C.globalAlpha = 1; return; }
 
   const f     = data;
-  const color = f.isGroup ? '#f59e0b' : mCol(f.machine);
+  const color = nodeColor(f);
   const isFoc = n.id === FOCUSED;
 
   // Clip

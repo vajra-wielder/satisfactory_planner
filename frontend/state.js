@@ -68,6 +68,8 @@ export let UNLOCKS = { schematics: {}, recipes: {}, machines: {} };
 export let TRANSPORT = { belts: {}, pipes: {} };
 // Fluids (pipes, not belts)
 export let FLUIDS = new Set();
+// Each machine's footprint and height, metres: [width, length, height]
+export let MACHINE_SIZE = {};
 export function setExtractors(b) {
   EXTRACTORS = b.extractors || {}; PURITY = b.purity || {};
   MINER_TIERS = b.miner_tiers || {}; MAX_SHARDS = b.max_shards ?? 3;
@@ -75,6 +77,7 @@ export function setExtractors(b) {
   if (b.unlocks) UNLOCKS = b.unlocks;
   if (b.transport) TRANSPORT = b.transport;
   if (b.fluids) FLUIDS = new Set(b.fluids);
+  if (b.machine_size) MACHINE_SIZE = b.machine_size;
 }
 /** The milestone or research that unlocks a recipe, if it's one you haven't done (null: you can use it). */
 export function lockedBy(key) {

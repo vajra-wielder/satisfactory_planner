@@ -246,8 +246,8 @@ export function parseSplit(text, ev) {
 }
 
 // ── Drawing: columns from the belts in to the belts out ──
-/** The design as SVG markup (fmt: a number as text). */
-export function splitSVG(g, fmt) {
+/** The design as SVG markup (fmt: a number as text; color: the belts', its item's). */
+export function splitSVG(g, fmt, color = null) {
   const CW = 96, RH = 40, PW = 58, PH = 22, S = 20;
   const depth = g.nodes.map(() => 0), into = g.nodes.map(() => []);
   g.edges.forEach(e => { if (!e.back) into[e.b].push(e.a); });
@@ -298,7 +298,7 @@ export function splitSVG(g, fmt) {
     }
     // a rate the box at either end already shows isn't written again
     const said = (A.kind === 'in' || B.kind === 'out') && Math.abs((A.kind === 'in' ? A.rate : B.rate) - e.rate) < 1e-6;
-    s += `<path class="${cls}" d="${d}"/>${said && !e.over ? '' : `<text class="sp-r${e.over ? ' over' : ''}" x="${lx}" y="${ly}" text-anchor="middle">${fmt(e.rate)}</text>`}`;
+    s += `<path class="${cls}" d="${d}"${color && !e.over && !e.back ? ` style="stroke:${color}"` : ''}/>${said && !e.over ? '' : `<text class="sp-r${e.over ? ' over' : ''}" x="${lx}" y="${ly}" text-anchor="middle">${fmt(e.rate)}</text>`}`;
   });
   g.nodes.forEach(n => {
     const [x, y] = xy(n.id);

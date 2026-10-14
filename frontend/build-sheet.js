@@ -10,6 +10,7 @@
  */
 import { RESULT, RECIPES, itemName, mCol, MABBR, TRANSPORT, FLUIDS, PROGRESS } from './state.js';
 import { design, splitSVG } from './splits.js';
+import { itemColor } from './bundles.js';
 
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const num = v => (Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : +v.toFixed(v < 10 ? 2 : 1)).toLocaleString();
@@ -69,7 +70,7 @@ export function linesHTML() {
     const c = mCol(f.machine), k = clocks(f);
     const io = (items, dir) => Object.entries(items || {}).filter(([, r]) => r > 1e-6).map(([it, r]) => {
       const cr = carrier(it, r);
-      return `<div class="bs-io ${dir}"><span>${dir === 'in' ? '←' : '→'} ${esc(itemName(it))} <b>${num(r)}</b>/min</span>
+      return `<div class="bs-io ${dir}"><span><i class="bs-c" style="background:${itemColor(it, FLUIDS.has(it))}"></i>${dir === 'in' ? '←' : '→'} ${esc(itemName(it))} <b>${num(r)}</b>/min</span>
         <span class="n-hint ${cr.over ? 'n-warn' : ''}">${cr.label}</span>
         ${dir === 'in' && f.machines_final > 1 ? `<button class="bsm bs-sp" data-line="${li}" data-item="${it}" title="The splitters and mergers that give each machine exactly its share">⑂</button>` : ''}</div>
         ${dir === 'in' ? `<div class="bs-d" data-for="${li}|${it}"></div>` : ''}`;
@@ -103,7 +104,7 @@ export function wireLines(el) {
     box.dataset.title = `${itemName(it)} ${num(rate)}/min → ${outs.length} × ${f.machine.replace(/_/g, ' ')}`;
     box.innerHTML = d?.graph ? `<div class="n-hint">${d.splitters} splitter${d.splitters === 1 ? '' : 's'} · ${d.mergers} merger${d.mergers === 1 ? '' : 's'} — each of the ${outs.length} machines gets exactly its share.
         A manifold (a splitter per machine along the belt) works too: they back up and take their share, only slower to fill.</div>
-      <div class="sp-d">${splitSVG(d.graph, num)}</div>` : `<p class="n-warn">${esc(d?.error || 'No design for these numbers.')}</p>`;
+      <div class="sp-d">${splitSVG(d.graph, num, itemColor(it, FLUIDS.has(it)))}</div>` : `<p class="n-warn">${esc(d?.error || 'No design for these numbers.')}</p>`;
   }));
 }
 

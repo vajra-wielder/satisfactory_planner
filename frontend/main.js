@@ -56,7 +56,7 @@ import { refreshNewAlts } from './new-alts.js';
 import {
   resize, initLayout, draw,
   fitAll, zoomBy, openSearch, initGraphEvents,
-  toggleHubs, toggleMinor,
+  toggleHubs, toggleMinor, COLOR_MODES, colorBy, setColorBy, setMoving, moving,
 } from './graph.js';
 
 
@@ -774,6 +774,30 @@ document.getElementById('btn-fit')     .addEventListener('click', fitAll);
 document.getElementById('btn-search')  .addEventListener('click', openSearch);
 document.getElementById('btn-hubs')    .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleHubs()));
 document.getElementById('btn-minor')   .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleMinor()));
+// What the machines are coloured by, and its key; belts moving or still (both remembered)
+function paintColorBy() {
+  const m = colorBy(), name = COLOR_MODES.find(([k]) => k === m)?.[1];
+  const scale = { power: ['least', 'most power'], space: ['least', 'most room'], clock: ['under', '100%', 'over'] }[m];
+  document.getElementById('btn-colorby').classList.toggle('on', m !== 'machine');
+  document.getElementById('g-legend').innerHTML = m === 'machine' ? '' : `<span>${name}</span>${m === 'alt'
+    ? '<i style="background:#a855f7"></i>alternate <i style="background:#475569"></i>standard'
+    : `<b class="g-heat ${m}"></b><span class="n-hint">${scale.join(' → ')}</span>`}`;
+}
+function cycleColorBy() {
+  const i = COLOR_MODES.findIndex(([k]) => k === colorBy());
+  setColorBy(COLOR_MODES[(i + 1) % COLOR_MODES.length][0]);
+  try { localStorage.setItem('colorBy', colorBy()); } catch { /* private window */ }
+  paintColorBy();
+}
+try { const c = localStorage.getItem('colorBy'); if (COLOR_MODES.some(([k]) => k === c)) setColorBy(c); } catch { /* private window */ }
+try { if (localStorage.getItem('moving') === '0') setMoving(false); } catch { /* private window */ }
+document.getElementById('btn-moving').classList.toggle('on', moving());
+paintColorBy();
+document.getElementById('btn-colorby').addEventListener('click', cycleColorBy);
+document.getElementById('btn-moving').addEventListener('click', e => {
+  setMoving(!moving()); e.currentTarget.classList.toggle('on', moving());
+  try { localStorage.setItem('moving', moving() ? '1' : '0'); } catch { /* private window */ }
+});
 
 // The right panel: each tab draws what it shows when it's shown
 initDock();
@@ -799,6 +823,7 @@ window.addEventListener('keydown', e => {
   const clear = !document.querySelector('.show:is(.far, [id$="-modal"], #nav-help, #nav-pal)');
   if (tab && clear) { toggleDock(tab); return; }
   if ((e.key === 't' || e.key === 'T') && !mod && !e.altKey && !inInput && clear) { showTree(!treeShown()); return; }
+  if ((e.key === 'c' || e.key === 'C') && !mod && !e.altKey && !inInput && clear && !treeShown()) { cycleColorBy(); return; }
   if (!mod) return;
   // Undo / redo this factory's edits (the notes box keeps its own)
   const z = e.key.toLowerCase();
