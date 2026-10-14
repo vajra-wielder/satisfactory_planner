@@ -203,9 +203,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   in the order you'd build it — its machines and clock (the even clock the
   plan uses, the least power, or all but one at 100%, the easiest to set),
   what goes in and out and the belt or pipe each needs at your tier (or how
-  many). ⑂ on an input draws the splitters and mergers that give every
-  machine exactly its share; click a drawing to see it large. The lines go
-  into Copy as a list too
+  many). ⑂ on an input says how the belt reaches the machines: a manifold
+  (easiest — a splitter in front of each, they fill up), or a balancer as a
+  split that repeats ("split 2 ways, four times over: 1 → 2 → 4 → 8 → 16
+  belts of 30/min, one per Smelter"), with the loop-back merger when the
+  count needs one, per belt when it takes several; Draw it shows the drawing
+  in its own window. The lines go into Copy as a list too
 - Limits point at fixes: in Analysis, a resource that limits the plan lists
   the nearest free nodes of it (no other factory mines them) — how far from
   this factory's nodes, what each gives at your miner, and about how much
