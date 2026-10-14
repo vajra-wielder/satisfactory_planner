@@ -3,7 +3,7 @@
  * Extracted from sidebar.js so sidebar.js only handles sidebar concerns.
  */
 
-import { linesHTML, linesText, wireLines } from './build-sheet.js';
+import { linesHTML, linesText, wireLines, openSplit } from './build-sheet.js';
 import { itemColor } from './bundles.js';
 import { pinned, delta, pinPlan, unpin, openCompare } from './compare.js';
 import { RESULT, RECIPES, itemName, perMin, PROGRESS, MINER_TIERS, FLUIDS } from './state.js';
@@ -244,7 +244,8 @@ export function renderSaved(saved, onLoad, onDelete, onRestore) {
   const bar = document.createElement('div');
   bar.className = 'sv-bar';
   bar.innerHTML = `<button class="bsm ${stale ? 'act' : ''}" id="sv-chain" ${stale ? '' : 'disabled'}
-      title="Solve every factory without a current plan, and everything that takes from them — sources first">↻ Re-solve out of date (${stale})</button>`;
+      title="Solve every factory without a current plan, and everything that takes from them — sources first">↻ Re-solve out of date (${stale})</button>
+    <button class="bsm" id="sv-spread" title="Share your shards and somersloops out across every factory, where they do the most">💎 Shards &amp; sloops</button>`;
   el.appendChild(bar);
   const gridBox = document.createElement('div');
   el.appendChild(gridBox);
@@ -365,3 +366,48 @@ document.addEventListener('click', e => {
   ({ pin: pinPlan, unpin, compare: openCompare })[b.dataset.rb]?.();
 });
 document.addEventListener('pin-changed', () => { _rbLastHTML = null; renderResultsBar(); });
+
+// ── Shards and sloops for every factory, where they do the most ──
+// Sloops where they raise a goal the most (as a share of it); shards where
+// they save the most machine space. Apply writes them into the factories and
+// re-solves them.
+function spreadHTML(d) {
+  const f = d.factories || [];
+  if (!f.length) return '<p class="n-hint">No factory maximises a goal yet — only those grow with more.</p>';
+  const pct = (a, b) => (b > 0 ? `+${(100 * (a - b) / b).toFixed(1)}%` : '');
+  const ch = (a, b) => (a === b ? `${a}` : `${a} → <b>${b}</b>`);
+  return `<table class="st-tab cmp"><tr><th>Factory</th><th style="text-align:right">Sloops</th><th style="text-align:right">Shards</th>
+      <th style="text-align:right">Goal</th><th style="text-align:right">Space saved</th></tr>
+    ${f.map(r => `<tr><td>${r.name}</td><td class="num">${ch(r.sloops_now, r.sloops ?? 0)}</td><td class="num">${ch(r.shards_now, r.shards ?? 0)}</td>
+      <td class="num cmp-up">${r.goal > r.goal0 + 1e-6 ? pct(r.goal, r.goal0) : ''}</td>
+      <td class="num cmp-up">${r.space0 - r.space > 0.05 ? `${(r.space0 - r.space).toFixed(1)} u` : ''}</td></tr>`).join('')}</table>
+    <p class="n-hint" style="margin-top:8px">Measured with machines in fractions; each factory's own solve then places them on whole machines.
+      Against no shards or sloops at all.</p>`;
+}
+function openSpread() {
+  const box = document.getElementById('sp-full-b');
+  const run = (sh, sl) => fetch('/api/spread', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sh == null ? {} : { shards: sh, sloops: sl }) }).then(r => r.json());
+  const draw = d => {
+    box.innerHTML = `<div class="sp-in">You have <input id="spr-sh" type="number" min="0" value="${d.shards}"/> power shards and
+        <input id="spr-sl" type="number" min="0" value="${d.sloops}"/> somersloops for machines
+        <button class="bsm" id="spr-go">Work it out</button></div>${spreadHTML(d)}
+      <div class="cmp-b"><button class="bsm act" id="spr-apply" ${(d.factories || []).length ? '' : 'disabled'}
+        title="Write these into the factories, then re-solve them in order">Use these and re-solve</button></div>`;
+    const go = () => { box.querySelector('#spr-go').textContent = 'Working…'; run(+box.querySelector('#spr-sh').value || 0, +box.querySelector('#spr-sl').value || 0).then(draw); };
+    box.querySelector('#spr-go').onclick = go;
+    box.querySelectorAll('.sp-in input').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') go(); }));
+    box.querySelector('#spr-apply').onclick = () => {
+      const apply = Object.fromEntries((d.factories || []).map(r => [r.key, { shards: r.shards ?? 0, sloops: r.sloops ?? 0 }]));
+      fetch('/api/spread', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apply }) })
+        .then(r => r.json()).then(res => {
+          document.dispatchEvent(new CustomEvent('factories-changed', { detail: { keys: res.changed || [] } }));
+          if (res.changed?.length) document.dispatchEvent(new CustomEvent('resolve-chain', { detail: { keys: res.changed } }));
+          box.querySelector('.cmp-b').innerHTML = `<span class="n-hint">${res.changed?.length ? `Saved into ${res.changed.length} — re-solving them.` : 'Nothing to change.'}</span>`;
+        });
+    };
+  };
+  openSplit('Shards and sloops, across your factories', '<p class="n-hint">Working it out…</p>');
+  run().then(draw);
+}
+document.addEventListener('click', e => { if (e.target.closest('#sv-spread')) openSpread(); });

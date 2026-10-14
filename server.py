@@ -2040,6 +2040,43 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, _solver_mod.needs(sc, ALL_RECIPES, item, rate))
             return
 
+        if path == "/api/spread":
+            # shards and somersloops for the machines of every factory, shared
+            # out where they add the most — or ({apply}) written into them
+            b = self._read_obj()
+            if isinstance(b.get("apply"), dict):
+                changed = []
+                with _save_lock:
+                    for key, data in _scenario_files():
+                        a2 = b["apply"].get(key)
+                        if not isinstance(a2, dict):
+                            continue
+                        sh, sl = int(_num(a2.get("shards"), 0, 0)), int(_num(a2.get("sloops"), 0, 0))
+                        if (int(data.get("power_shards_available") or 0), int(data.get("somersloops_available") or 0)) != (sh, sl):
+                            data["power_shards_available"], data["somersloops_available"] = sh, sl
+                            _write_factory(key, data)
+                            changed.append(key)
+                self._json(200, {"changed": changed})
+                return
+            claims = _claims(_scenario_files())
+            scs, rows = {}, []
+            for key, data in _scenario_files():
+                try:
+                    sc = _build_scenario(data)
+                except Exception:
+                    continue
+                if not sc.objective:
+                    continue           # only maximised goals grow with more
+                scs[key] = _with_owed(sc, _owed(key, claims, sc))
+                rows.append({"key": key, "name": data.get("name", key),
+                             "shards_now": int(data.get("power_shards_available") or 0),
+                             "sloops_now": int(data.get("somersloops_available") or 0)})
+            sh = int(_num(b.get("shards"), sum(r["shards_now"] for r in rows), 0))
+            sl = int(_num(b.get("sloops"), sum(r["sloops_now"] for r in rows), 0))
+            got = _solver_mod.spread_budget(scs, ALL_RECIPES, sh, sl) if scs else {}
+            self._json(200, {"shards": sh, "sloops": sl, "factories": [{**r, **got.get(r["key"], {})} for r in rows]})
+            return
+
         if path == "/api/whatif":
             # a slider: this factory with one supply or goal changed — the goal's
             # ceiling (fractional machines), fast enough to follow a drag

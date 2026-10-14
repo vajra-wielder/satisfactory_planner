@@ -193,3 +193,39 @@ class WorthUnlocking(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Spread(unittest.TestCase):
+    """Shards and sloops shared out across factories, and the what-if slider."""
+    def setUp(self):
+        import server
+        self.server = server
+        self.mk = lambda ore, goal: server._build_scenario(server._clean_scenario(
+            {"name": goal, "resource_nodes": [{"resource": "Iron_Ore", "extractor": "fixed", "rate": ore}], "objective": {goal: 1}}))
+
+    def test_budget_is_shared_out_whole(self):
+        scs = {"a": self.mk(480, "Iron_Plate"), "b": self.mk(480, "Reinforced_Iron_Plate")}
+        got = solver.spread_budget(scs, self.server.ALL_RECIPES, 30, 10)
+        self.assertLessEqual(sum(g["shards"] for g in got.values()), 30)
+        self.assertLessEqual(sum(g["sloops"] for g in got.values()), 10)
+        self.assertGreater(sum(g["sloops"] for g in got.values()), 0)
+        for g in got.values():
+            self.assertGreaterEqual(g["goal"], g["goal0"] - 1e-6)            # never worse
+            self.assertLessEqual(g["space"], g["space0"] + 1e-6)
+        # each sloop went where it raised a goal the most: moving the last one over doesn't help
+        a, b = got["a"], got["b"]
+        if a["sloops"] and b["sloops"] < 10:
+            one = solver.spread_budget({"b": scs["b"]}, self.server.ALL_RECIPES, 0, b["sloops"] + 1)["b"]
+            gain_b = (one["goal"] - b["goal"]) / b["goal0"]
+            less = solver.spread_budget({"a": scs["a"]}, self.server.ALL_RECIPES, 0, a["sloops"] - 1)["a"]
+            loss_a = (a["goal"] - less["goal"]) / a["goal0"]
+            self.assertGreaterEqual(loss_a + 1e-6, gain_b)
+
+    def test_whatif_follows_supply(self):
+        sc = self.mk(480, "Iron_Plate")
+        lo = solver.whatif(sc, self.server.ALL_RECIPES)
+        hi = solver.whatif(dataclasses.replace(sc, available_resources={"Iron_Ore": 960.0}), self.server.ALL_RECIPES)
+        self.assertTrue(lo["ok"] and hi["ok"])
+        self.assertAlmostEqual(hi["items"]["Iron_Plate"], 2 * lo["items"]["Iron_Plate"], places=3)
+        bad = solver.whatif(dataclasses.replace(sc, must_produce={"Iron_Plate": 10000.0}), self.server.ALL_RECIPES)
+        self.assertFalse(bad["ok"])

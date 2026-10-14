@@ -180,6 +180,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   count on each; a click or 1 / 2 / 3 / 4 opens one, again closes it; the
   wheel over the rail steps through them; `]` opens or closes the panel.
   Issues opens by itself when a solve falls short
+- Your factories (Ctrl+O): each card shows what it makes for its goals, its
+  power, and whether its plan is current, out of date or short. 💎 Shards &
+  sloops shares out the ones you have across every factory: sloops where they
+  raise a goal the most (as a share of it), shards where they save the most
+  machine space — measured with machines in fractions, where that split is
+  the best — then writes them in and re-solves them
 - Far off, for what you rarely change: Your factories (the name in the top
   bar, or Ctrl+O — open, new, history, backups) and Unlocks (Ctrl+U —
   machines, miner, the alternates you've unlocked in the game, read a save),
@@ -187,6 +193,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - The Blackboard for planning factories together
 
 ### From plan to building
+- What if (Analysis): a slider for each resource and each fixed goal — drag
+  one and the goal follows as you drag (a fast solve with machines in
+  fractions); Use it puts the number in the factory and solves
+- Floor plan (📐 on the build sheet): each line's machines at their real
+  footprint, rows folding past 120 m with belt lanes between, the size and
+  the 8 m foundations it takes — a guide to the room, not a layout
 - Build sheet (Build cost, under the materials): every line the plan runs,
   in the order you'd build it — its machines and clock (the even clock the
   plan uses, the least power, or all but one at 100%, the easiest to set),
@@ -251,7 +263,10 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   make, the power grid's geothermal, the grid's balance — on average and with
   every geyser at its low (½×) and its high (1½×) — and which factories their
   cap holds back.
-- Map: whose nodes are whose, what your save already mines, the pure nodes
+- Map: the network on the game map — each factory where its nodes are, each
+  route between them (trains with ties, trucks and tractors dashed, drones
+  bowed) as thick as what it carries, labelled with the vehicles the network
+  plan needs; click a factory to open it. Whose nodes are whose, what your save already mines, the pure nodes
   still free. ⚡ Geothermal: click geysers to put a geothermal generator on
   them for the power grid (100 / 200 / 400 MW by purity), or add the ones your
   save has. Geysers belong to the grid, not to a factory.
@@ -291,6 +306,18 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Expandable recipe details
 - Flow-rate visualization
 - Source, sink, surplus, and error tracking
+- Every item has one colour, the same everywhere (graph links, tree tiles and
+  links, the build sheet, split drawings, the Blackboard's bands)
+- Belts that move (≋): items run along each link, faster the more it carries;
+  a link near what one belt at your tier carries glows amber, one over it red,
+  and the links out of a resource the plan uses all of pulse
+- Colour by (◐ or C): the machines by machine, power draw, clock (under,
+  100%, over), space, or alternate vs standard — with a key
+- 📌 Pin (or P) on the results bar keeps the plan; every solve after shows
+  under each number how it moved (green better, amber worse), and Compare
+  lays the two side by side — goals, power, machines, space, each resource,
+  machines by kind, the recipes only one runs — with Back to the pinned
+  (undoable)
 
 ### Scenario System
 - Save scenarios

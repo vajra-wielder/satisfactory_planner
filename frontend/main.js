@@ -624,6 +624,13 @@ function paintImpact() {
   document.getElementById('save-resolve')?.addEventListener('click', () => handleSave(true));
 }
 
+// Other factories written from elsewhere (shards and sloops shared out): the
+// open one follows, unless it has changes of its own
+document.addEventListener('factories-changed', e => {
+  if (LOADED_KEY && e.detail.keys.includes(LOADED_KEY)) { readUI(); if (!isDirty()) openScenario(LOADED_KEY); }
+  loadSaved(); refreshOutputs();
+});
+
 // The pinned plan's inputs, back (Compare → Back to the pinned): an undoable edit, then solved
 document.addEventListener('restore-sc', e => {
   readUI(); remember();

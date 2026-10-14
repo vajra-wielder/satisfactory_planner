@@ -1284,6 +1284,62 @@ def _fractional_ceiling(scenario: Scenario, usable: Dict[str, Recipe]) -> Option
     return lp.value(lp.goal) + 0.0
 
 
+def spread_budget(scenarios: Dict[str, Scenario], all_recipes: Dict[str, Recipe],
+                  shards: int, sloops: int, steps: int = 30) -> dict:
+    """Share a number of somersloops and power shards out across factories
+    where they do the most. Sloops raise a goal: each goes where it raises one
+    the most, as a share of that goal without any. Shards don't (machines are
+    unlimited) — they save machines: each goes where it saves the most machine
+    space, with every goal held at its best. Both measured on the relaxation
+    (machines, shards, sloops fractional), where each is concave in its budget,
+    so handing out equal chunks greedily is the best split. Sloops first, then
+    shards on top. Returns {key: {shards, sloops, goal0, goal, space0, space}}."""
+    prep = {}
+    for k, sc in scenarios.items():
+        u = _with_unlimited(sc)
+        prep[k] = (u, prune_recipes(u, all_recipes)[0])
+
+    def measure(k, sh, sl):
+        u, us = prep[k]
+        lp = _Model(_dc_replace(u, power_shards_available=int(sh), somersloops_available=int(sl)), us, integer=False)
+        if lp.run(lp.goal, True, _STAGE_TIME_S[0]) is None:
+            return 0.0, 0.0
+        g = lp.value(lp.goal)
+        lp.ct(g - abs(g) * 1e-7 - 1e-9, lp.inf, lp.goal)
+        if lp.run(lp.space, False, _STAGE_TIME_S[0]) is None:
+            return g, 0.0
+        return g, lp.value(lp.space)
+
+    base = {k: measure(k, 0, 0) for k in scenarios}
+    keys = [k for k in scenarios if base[k][0] > 1e-9]
+    have = {k: [0, 0] for k in scenarios}
+    now = dict(base)
+    # sloops: a share of the goal gained; shards: machine space saved
+    better = [lambda k, m: (m[0] - now[k][0]) / base[k][0], lambda k, m: now[k][1] - m[1]]
+    for slot, total, worth in ((1, sloops, better[0]), (0, shards, better[1])):
+        left = max(0, int(total))
+        chunk = max(1, math.ceil(left / steps))
+        def step(k):
+            n = min(chunk, left)
+            a = list(have[k]); a[slot] += n
+            m = measure(k, *a)
+            return worth(k, m), m, n
+        nxt = {k: step(k) for k in keys}
+        while left > 0 and keys:
+            k = max(keys, key=lambda x: nxt[x][0])
+            g, m, n = nxt[k]
+            if g <= 1e-9:
+                break
+            have[k][slot] += n; left -= n; now[k] = m
+            if left > 0:
+                nxt[k] = step(k)
+                for x in keys:      # a smaller last chunk: what the others gain from it, afresh
+                    if x != k and nxt[x][2] > left:
+                        nxt[x] = step(x)
+    return {k: {"shards": have[k][0], "sloops": have[k][1], "goal0": round(base[k][0], 4), "goal": round(now[k][0], 4),
+                "space0": round(base[k][1], 2), "space": round(now[k][1], 2)} for k in scenarios}
+
+
 def whatif(scenario: Scenario, all_recipes: Dict[str, Recipe]) -> dict:
     """A quick answer for a slider: the goal with machines, shards and sloops
     fractional (the ceiling — whole machines land a little under it), each

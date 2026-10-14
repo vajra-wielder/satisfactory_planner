@@ -81,6 +81,18 @@ try {
     await page.keyboard.press('Escape');
   });
 
+  await step('shards and sloops across the factories: where they do the most, then written in', async () => {
+    await page.keyboard.press('Control+o'); await page.waitForSelector('#sv-spread');
+    await page.click('#sv-spread'); await page.waitForSelector('#spr-sh');
+    await page.fill('#spr-sh', '12'); await page.fill('#spr-sl', '4'); await page.click('#spr-go');
+    await page.waitForFunction(() => /→/.test(document.getElementById('sp-full-b')?.innerText || ''));
+    assert.match(await page.locator('#sp-full-b').innerText(), /Plates[\s\S]*\+\d/);
+    await page.click('#spr-apply'); await page.waitForFunction(() => /Saved into/.test(document.getElementById('sp-full-b')?.innerText || ''));
+    const p = await api('/api/scenarios/plates');
+    assert.ok((p.somersloops_available || 0) + (p.power_shards_available || 0) > 0, 'written into the factory');
+    await page.keyboard.press('Escape');
+  });
+
   if (errors.length) { failed++; console.log('FAIL page errors:\n     ' + errors.join('\n     ')); }
   await browser.close();
   console.log(failed ? `\n${failed} failed` : '\nall passed');
