@@ -10,10 +10,9 @@
  */
 import { SC, RESULT, RECIPES, PROGRESS, keyOf, setResult, resetSC, setAllItems, setRecipes, buildItemDisplay, setExtractors, nextSolveSeq, solveSeq, itemName, fetchBoot, fetchScenarios, fetchScenario, saveScenario, deleteScenario, solveScenario } from './state.js';
 import { toggleSec, addKv, fillUI, readUI, setUnlockedSaver, setUnlockedAlts, renderMachines, updMachBadge, addNode, addFrom, addLeftovers, addStorage, pickOnMap, spreadShards, minerOf, refreshOutputs, applyCut, onResult, setStorage, shortfalls, KVS, renderKv, syncKv } from './sidebar.js';
-import { startChain, watchChain, onChain, chainHTML, pinned, pinPlan, unpin, openCompare, openWarn, closeWarn, renderResultsBar, renderBuildCost, toggleBC, setBuildSelf, renderSaved, renderIssues } from './ui.js';
+import { startChain, watchChain, onChain, chainHTML, pinned, pinPlan, unpin, openCompare, openWarn, closeWarn, renderResultsBar, renderBuildCost, toggleBC, setBuildSelf, renderSaved, renderIssues, openAnalysis, closeAnalysis, showAnalysis } from './ui.js';
 import { uploadSave, changesHTML, wireChanges, openUnlockedModal, refreshNewAlts } from './unlocks.js';
 import { initTree, renderTree, showTree, treeShown, openSearch as openFind } from './goal-tree.js';
-import { openAnalysis, closeAnalysis, showAnalysis } from './analysis.js';
 import { initDock, onDockTab, openDock, toggleDock, dockTab, setBadge, initNav, openPalette, openHelp, initBlackboard, openBlackboard, closeBlackboard, goBlackboard } from './nav.js';
 import { resize, initLayout, draw, fitAll, zoomBy, openSearch, initGraphEvents, toggleHubs, toggleMinor, COLOR_MODES, colorBy, setColorBy } from './graph.js';
 

@@ -66,7 +66,7 @@ export function setRecipes(obj) { RECIPES = obj; }
 export let EXTRACTORS = {}, PURITY = {}, MINER_TIERS = {}, MAX_SHARDS = 3;
 // Shared unlocks, for every factory: miner tier, machines, belt/pipe tier
 export const PROGRESS = { miner: 'Mk3', machines: null, belt: 'Mk5', pipe: 'Mk2', schematics: null };
-// What unlocks each recipe and machine (data/game_classes.json, its unlocks): milestones (tier + sub-tier), MAM research
+// What unlocks each recipe and machine (data/game.json): milestones (tier + sub-tier), MAM research
 export let UNLOCKS = { schematics: {}, recipes: {}, machines: {} };
 // Belt and pipe tiers: /min each
 export let TRANSPORT = { belts: {}, pipes: {} };
@@ -234,8 +234,8 @@ export function setStored(key, item, rate) {
     body: JSON.stringify({ key, item, rate }) }).then(r => r.json());
 }
 
-// ── The world map's nodes (data/map_nodes.json), what your save mines, the
-// map picture's settings — map-picker.js draws them, and loads when first drawn
+// ── The world map's nodes (data/game.json), what your save mines, the
+// map picture's settings — blackboard.js draws them, and loads when first needed
 export const MAPD = { all: null, by: {}, bounds: null, save: new Set(), saveInfo: null, img: null };
 let _mapP = null;
 export const mapNode = id => MAPD.by[id];

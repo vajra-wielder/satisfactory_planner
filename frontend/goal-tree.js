@@ -28,7 +28,7 @@ import { itemColor, parseSplit, design, splitSVG, feedPattern } from './geometry
 import { RECIPES, ALL_ITEMS, itemName, SC, RESULT, PROGRESS, TRANSPORT, FLUIDS, UNLOCKED_ALTS, lockedBy, unlockName, UNLOCKS, mCol, MABBR, saveProgress, fetchNeeds } from './state.js';
 import { goalOf, setGoal, evalExpr, storageOf, setStorage, sourcesOf, bringIn, pickOnMap } from './sidebar.js';
 import { gainText } from './unlocks.js';
-import { openSplit } from './build-sheet.js';
+import { openSplit } from './ui.js';
 
 const $ = id => document.getElementById(id);
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

@@ -27,7 +27,6 @@ from solver import (
 )
 import network
 import supply
-import savefile
 
 ALL_RECIPES  = load_recipes()
 MACHINE_META = load_machine_meta()
@@ -1324,7 +1323,7 @@ def _backup_restore(raw: bytes) -> dict:
 
 
 # ── Your save and your map ───────────────────────────────────────────────────
-# Nodes a game save already mines (savefile.py) and a map picture to draw the
+# Nodes a game save already mines (supply.py) and a map picture to draw the
 # nodes on — both yours, kept in data/ (git-ignored).
 SAVE_NODES_PATH = HERE / "data" / "save_nodes.json"
 MAP_IMAGE_DIR = HERE / "data"
@@ -1925,12 +1924,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/map-nodes":
-            body = supply.MAP_PATH.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_tagged("map", '"map-%x"' % supply.GAME_PATH.stat().st_mtime_ns,
+                              lambda: json.dumps(supply.GAME["map"], separators=(",", ":")).encode(), "application/json")
             return
 
         if path == "/api/factory-outputs":
@@ -2096,25 +2091,25 @@ class Handler(BaseHTTPRequestHandler):
             # The raw .sav: mark the nodes it already mines
             length = int(self.headers.get("Content-Length", 0))
             try:
-                sv = savefile.read(self.rfile.read(length))
+                sv = supply.read(self.rfile.read(length))
             except Exception as e:
                 self._json(400, {"error": str(e)})
                 return
             known = supply.map_nodes()
             import time as _t
-            rk = savefile.recipe_keys()
+            rk = supply.recipe_keys()
             stock: dict = {}
             for c, n in sv["stock"].items():
-                k = savefile.item_key(c, ALL_ITEMS)
+                k = supply.item_key(c, ALL_ITEMS)
                 if k and n > 0:
                     stock[k] = stock.get(k, 0) + n
             out = {"file": self.headers.get("X-File-Name", ""), "when": int(_t.time()),
                    "nodes": [i for i in sv["nodes"] if i in known],
                    "unknown": len([i for i in sv["nodes"] if i not in known]),
-                   "unlocks": savefile.unlocks(sv["recipes"]) if sv["recipes"] else None,
+                   "unlocks": supply.unlocks(sv["recipes"]) if sv["recipes"] else None,
                    # one short row per machine: [machine, recipe, x, y]
-                   "machines": [[savefile.MACHINES[b["c"]], rk.get(b["r"]), b["x"], b["y"]]
-                                for b in sv["machines"] if b["c"] in savefile.MACHINES],
+                   "machines": [[supply.MACHINES[b["c"]], rk.get(b["r"]), b["x"], b["y"]]
+                                for b in sv["machines"] if b["c"] in supply.MACHINES],
                    "stock": stock}
             SAVE_NODES_PATH.write_text(json.dumps(out), encoding="utf-8")
             self._json(200, {**{k: v for k, v in out.items() if k not in ("machines", "stock")},

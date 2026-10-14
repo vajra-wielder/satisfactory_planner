@@ -1,5 +1,5 @@
 // The browser tests, in one run: each section on a planner of its own (a
-// throwaway folder, its own port — tests/serve_temp.py), all in one browser,
+// throwaway folder, its own port — SERVE below), all in one browser,
 // a few at a time. Your scenarios, plans and unlocks are never touched.
 // Needs Playwright; skips without it.
 //   node tests/e2e.mjs              every section
@@ -17,15 +17,31 @@ let playwright;
 try { playwright = require('playwright'); } catch { console.log('skip: Playwright not installed'); process.exit(0); }
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUITES = {};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// The planner on a throwaway folder: your scenarios, plans, board and unlocks are never touched
+const SERVE = `
+import shutil, sys, tempfile
+from pathlib import Path
+import server, solver, supply
+d = Path(tempfile.mkdtemp(prefix="planner-test-")); (d / ".data").mkdir()
+server.SCENARIOS_DIR = solver.SCENARIOS_DIR = d
+server.RESULTS_DIR, server.HISTORY_DIR, server.BACKUP_DIR = d / ".results", d / ".history", d / ".backups"
+server.BOARD_PATH, server.UNLOCKED_PATH = d / ".data" / "board.yaml", d / ".data" / "unlocked_alts.yaml"
+server.SAVE_NODES_PATH, server.MAP_SETTINGS_PATH = d / ".data" / "save_nodes.json", d / ".data" / "map_image.json"
+server.MAP_IMAGE_DIR, server.GAME_MAP_URL = d / ".data", None          # no map picture in the tests
+supply.PROGRESS_PATH = d / ".data" / "progress.yaml"
+supply.save_progress({"machines": ["Smelter", "Constructor", "Assembler", "Foundry", "Coal_Generator"]})
+try:
+    server.run(int(sys.argv[1]))
+finally:
+    shutil.rmtree(d, ignore_errors=True)
+`;
 
 // ── sidebar ──────────────────────────────────────────────
-// The solver page in a real browser, on a throwaway planner (tests/serve_temp.py):
+// The solver page in a real browser, on a throwaway planner:
 // every kind of input goes in, is saved, reloaded and saved again unchanged;
 // then the outputs — results bar, build cost, graph, analysis — and a power plant.
-SUITES.sidebar = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.sidebar = async ({ B, api, chromium, stop, log }) => {
 
   async function solveAndSave(key, sc) {
     await api(`/api/scenarios/${key}`, sc);
@@ -43,7 +59,6 @@ SUITES.sidebar = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     const base = { enabled_machines: [], alternate_recipes_enabled: [], unlimited_resources: [] };
     await solveAndSave('iron', { ...base, name: 'iron', resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 480 }],
       objective: { Iron_Plate: 1 } });
@@ -205,11 +220,8 @@ SUITES.sidebar = async ({ B, chromium, stop, log }) => {
 };
 
 // ── blackboard ──────────────────────────────────────────────
-// The Blackboard in a real browser, on a throwaway planner (tests/serve_temp.py):
-SUITES.blackboard = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+// The Blackboard in a real browser, on a throwaway planner:
+SUITES.blackboard = async ({ B, api, chromium, stop, log }) => {
 
   async function solveAndSave(key, sc) {
     await api(`/api/scenarios/${key}`, sc);
@@ -225,7 +237,6 @@ SUITES.blackboard = async ({ B, chromium, stop, log }) => {
   const check = (name, fn) => checks.push([name, fn]);
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     const base = { enabled_machines: [], alternate_recipes_enabled: [], unlimited_resources: [] };
     // iron makes plates, screws and rods, sends three of them to frames and stores rods
     await solveAndSave('iron', { ...base, name: 'iron', resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 480 }],
@@ -368,10 +379,7 @@ SUITES.blackboard = async ({ B, chromium, stop, log }) => {
 // Getting around, in a real browser on a throwaway planner: the Go-to palette,
 // stepping through the systems with keys and the wheel, factories one after
 // another, the shortcuts sheet, Esc, and the maps' keys and detail levels.
-SUITES.nav = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.nav = async ({ B, api, chromium, stop, log }) => {
 
   let failed = 0;
   const step = async (name, fn) => {
@@ -379,7 +387,6 @@ SUITES.nav = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     for (const n of ['Alpha', 'Bravo', 'Charlie'])
       await api(`/api/scenarios/${n.toLowerCase()}`, { name: n, resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 60 }], objective: { Iron_Plate: 1 } });
 
@@ -556,10 +563,7 @@ SUITES.nav = async ({ B, chromium, stop, log }) => {
 // Unused node supply, in a real browser on a throwaway planner: a factory that
 // mines more than its plan uses shows "+N unused" on its nodes; another factory
 // picking nodes brings some of it over as an import, and leaves the rest.
-SUITES.spare = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.spare = async ({ B, api, chromium, stop, log }) => {
   async function solveAndSave(key, sc) {
     await api(`/api/scenarios/${key}`, sc);
     const { job_id } = await api('/api/solve', { ...sc, solve_styles: [], base_scenario: sc });
@@ -572,7 +576,6 @@ SUITES.spare = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     const nodes = (await api('/api/map-nodes')).nodes.filter(n => n.r === 'Iron_Ore' && !n.w && n.p === 'pure').slice(0, 2);
     const sc = { name: 'Iron intermediate', enabled_machines: [], alternate_recipes_enabled: [], unlimited_resources: [],
       resource_nodes: [{ resource: 'Iron_Ore', extractor: 'Miner', nodes: nodes.map(n => n.id) }],
@@ -690,10 +693,7 @@ SUITES.spare = async ({ B, chromium, stop, log }) => {
 // Typing into the sidebar's boxes, in a real browser on a throwaway planner:
 // an item typed (not picked from the list) stays when you click away, add a
 // row or save, and is saved as the item; a misspelt one stays, marked; the
-SUITES.typing = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.typing = async ({ B, api, chromium, stop, log }) => {
 
   let failed = 0;
   const step = async (name, fn) => {
@@ -701,7 +701,6 @@ SUITES.typing = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     const src = { name: 'iron', enabled_machines: [], alternate_recipes_enabled: [], unlimited_resources: [],
       resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 480 }], objective: { Iron_Plate: 1 } };
     await api('/api/scenarios/iron', src);
@@ -875,10 +874,7 @@ SUITES.typing = async ({ B, chromium, stop, log }) => {
 // A factory whose goals can't all be met, in a real browser on a throwaway
 // planner: the solve says why (what's short, how much each goal can be),
 // offers fixes, and one click on a fix makes it work.
-SUITES.infeasible = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.infeasible = async ({ B, api, chromium, stop, log }) => {
 
   let failed = 0;
   const step = async (name, fn) => {
@@ -886,7 +882,6 @@ SUITES.infeasible = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     await api('/api/progress', { machines: ['Smelter', 'Constructor', 'Assembler', 'Manufacturer', 'Refinery'] });
     await api('/api/scenarios/connectors', { name: 'Connectors', alternate_recipes_enabled: [], unlimited_resources: [],
       resource_nodes: [{ resource: 'Caterium_Ore', extractor: 'fixed', rate: 300 }, { resource: 'Copper_Ore', extractor: 'fixed', rate: 600 },
@@ -936,10 +931,7 @@ SUITES.infeasible = async ({ B, chromium, stop, log }) => {
 // New alternates, in a real browser on a throwaway planner: after a solve the
 // sidebar lists the alternates you haven't unlocked that the best plan would
 // use, in unlock order with what each adds; tick and solve, untick and solve.
-SUITES.newalts = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.newalts = async ({ B, api, chromium, stop, log }) => {
 
   let failed = 0;
   const step = async (name, fn) => {
@@ -947,7 +939,6 @@ SUITES.newalts = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     await api('/api/scenarios/plates', { name: 'Plates', alternate_recipes_enabled: [], unlimited_resources: [],
       resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 480 }, { resource: 'Copper_Ore', extractor: 'fixed', rate: 240 }],
       objective: { Iron_Plate: 1 } });
@@ -1061,10 +1052,7 @@ SUITES.newalts = async ({ B, chromium, stop, log }) => {
 // The goal tree, in a real browser on a throwaway planner: resources grow
 // into columns of what they can become; a tile sets its goal and storage;
 // what's next says what a part needs and takes a supply for it; the tier
-SUITES.tree = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.tree = async ({ B, api, chromium, stop, log }) => {
 
   let failed = 0;
   const step = async (name, fn) => {
@@ -1075,7 +1063,6 @@ SUITES.tree = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     const fixed = (resource, rate) => ({ resource, extractor: 'fixed', rate });
     await api('/api/scenarios/tree', { name: 'Tree', alternate_recipes_enabled: [], unlimited_resources: [],
       resource_nodes: [fixed('Iron_Ore', 480), fixed('Coal', 240), fixed('Caterium_Ore', 120), fixed('Sulfur', 120)] });
@@ -1245,10 +1232,7 @@ SUITES.tree = async ({ B, chromium, stop, log }) => {
 // From plan to building, in a real browser on a throwaway planner: the build
 // sheet (lines in build order, clocks, belts, a split per input, large on a
 // click), and Analysis's limit with the nearest free nodes — Add & solve.
-SUITES.build = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.build = async ({ B, api, chromium, stop, log }) => {
 
   let failed = 0;
   const step = async (name, fn) => {
@@ -1256,7 +1240,6 @@ SUITES.build = async ({ B, chromium, stop, log }) => {
   };
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     // two normal iron nodes side by side: ore is what limits plates
     const iron = (await api('/api/map-nodes')).nodes.filter(n => n.r === 'Iron_Ore' && !n.w).slice(0, 2).map(n => n.id);
     await api('/api/scenarios/plates', { name: 'Plates', resource_nodes: [{ resource: 'Iron_Ore', extractor: 'Miner', nodes: iron }],
@@ -1341,10 +1324,7 @@ SUITES.build = async ({ B, chromium, stop, log }) => {
 // Solving by itself, a machine cap, a save's machines on the build sheet,
 // alternates ranked across factories, heavy routes, growing every goal and a
 // stacked floor plan — in a real browser on a throwaway planner.
-SUITES.improve = async ({ B, chromium, stop, log }) => {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+SUITES.improve = async ({ B, api, chromium, stop, log }) => {
 
   let failed = 0;
   const step = async (name, fn) => {
@@ -1372,7 +1352,6 @@ SUITES.improve = async ({ B, chromium, stop, log }) => {
   }
 
   try {
-    for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 100) throw new Error('server did not start'); await sleep(100); } }
     const all = (await api('/api/map-nodes')).nodes;
     const iron = all.filter(n => n.r === 'Iron_Ore' && !n.w).slice(0, 2);
     await api('/api/scenarios/plates', { name: 'Plates', resource_nodes: [{ resource: 'Iron_Ore', extractor: 'Miner', nodes: iron.map(n => n.id) }],
@@ -1480,14 +1459,17 @@ const pick = process.argv.slice(2), names = pick.length ? pick : Object.keys(SUI
 const shared = await playwright.chromium.launch();
 async function run(name) {
   const port = await freePort(), B = `http://127.0.0.1:${port}`, lines = [];
-  const srv = spawn('python', ['-m', 'tests.serve_temp', String(port)], { cwd: ROOT, stdio: 'ignore' });
+  const srv = spawn('python', ['-c', SERVE, String(port)], { cwd: ROOT, stdio: 'ignore' });
+  const api = (p, body) => fetch(B + p, body === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+  for (let i = 0; ; i++) { try { await fetch(B + '/api/progress'); break; } catch { if (i > 150) throw new Error('server did not start'); await sleep(100); } }
   const pages = [];
   // the section's own "browser": pages in the shared one, closed when it's done
   const chromium = { launch: async () => ({
     newPage: async o => { const c = await shared.newContext(o); const p = await c.newPage(); pages.push(c); return p; },
     close: async () => { await Promise.all(pages.map(c => c.close().catch(() => {}))); } }) };
   const t0 = Date.now();
-  const code = await new Promise(res => SUITES[name]({ B, chromium, stop: res, log: (...a) => lines.push(a.join(' ')) })
+  const code = await new Promise(res => SUITES[name]({ B, api, chromium, stop: res, log: (...a) => lines.push(a.join(' ')) })
     .catch(e => { lines.push('FAIL ' + (e.stack || e)); res(1); }));
   srv.kill();
   await Promise.all(pages.map(c => c.close().catch(() => {})));

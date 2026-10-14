@@ -13,8 +13,8 @@ import { SC, ALL_ITEMS, itemName, setScenario, PROGRESS, RESULT, keyOf, EXTRACTO
 import { renderMachines, updMachBadge } from './unlocks.js';
 export { setUnlockedSaver, setUnlockedAlts, renderMachines, updMachBadge } from './unlocks.js';
 
-// the map picker's code loads the first time it opens
-const openMapPicker = opts => import('./map-picker.js').then(m => m.openMapPicker(opts));
+// the map picker's code (in blackboard.js) loads the first time it opens
+const openMapPicker = opts => import('./blackboard.js').then(m => m.openMapPicker(opts));
 
 // ══════════════════════════════════════════════════════════
 // SECTION COLLAPSE
@@ -490,7 +490,7 @@ export function addKv(name) {
 /**
  * The supply — what a factory is built on, and what it sends on.
  *
- * Resources: the nodes it mines. Pick them on the map (map-picker.js) — each
+ * Resources: the nodes it mines. Pick them on the map (blackboard.js draws it) — each
  * node's purity is known, and one marked as mined by another factory can't be
  * taken twice — or type them in (resource, extractor, purity, how many).
  * Power shards on the extractors decide how much comes out: each takes an

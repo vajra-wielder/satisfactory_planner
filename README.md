@@ -174,8 +174,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   which it has done; one click makes them match
 - Solves use only the recipes they unlock (alternates still come from hard
   drives); the goal tree grows to match. Which milestone or research unlocks
-  each recipe and machine is in data/game_classes.json, built by
-  tools/gen_unlocks.py from SatisfactoryTools' open 1.0 game data
+  each recipe and machine is in data/game.json, built by
+  python supply.py unlocks from SatisfactoryTools' open 1.0 game data
 
 ### Layout — by how often you go there
 - Left: what goes in — resources, goals, solve settings, notes; Solve and
@@ -405,11 +405,11 @@ satisfactory-planner/
 ├── server.py             HTTP server and API: scenarios, solves, plan cache, claims,
 │                         owed outputs, re-solve chain, history, save files, Blackboard
 ├── solver.py             the optimiser (OR-Tools: SCIP + GLOP)
-├── supply.py             nodes, extractors, shards, imports → supply; shared unlocks
+├── supply.py             nodes, extractors, shards, imports → supply; shared unlocks;
+│                         a game save (nodes mined, unlocks, machines built, storage);
+│                         python supply.py unlocks <data1.0.json> rebuilds the unlocks
 ├── network.py            several factories together: each from outside (what it takes
 │                         in and sends out), and planning them as one network
-├── savefile.py           a game save: the nodes it mines, what it has unlocked, the
-│                         machines it has built and what its storage holds
 ├── index.html            the page (and its styles)
 ├── frontend/
 │   ├── main.js           wiring, solve (and solving by itself), save/open, undo
@@ -417,28 +417,25 @@ satisfactory-planner/
 │   ├── nav.js            getting around (go to anything, the systems, shortcuts),
 │   │                     the right panel; loads the Blackboard when it first opens
 │   ├── sidebar.js        the left panel: goals, constraints, the supply
-│   ├── ui.js             results bar, build cost, warnings, saved factories,
-│   │                     comparing two plans, the re-solve chain
+│   ├── ui.js             results bar, build cost and the build sheet (lines, clocks,
+│   │                     belts, splits, floors), Analysis (limits, what-if sliders),
+│   │                     saved factories, comparing two plans, the re-solve chain
 │   ├── unlocks.js        Unlocks, the Alternates tab, reading a save
-│   ├── analysis.js       what limits the plan, where to lift it, what-if sliders
-│   ├── build-sheet.js    the build sheet: each line, its clocks, belts, splits; floors
 │   ├── goal-tree.js      the Tree view: what your resources can become, goals on it
 │   ├── graph.js          the production graph
 │   ├── geometry.js       belt splits, and the bands between factories
-│   ├── blackboard.js     logistics between factories (loaded when first opened)
-│   └── map-picker.js     the world map: picking nodes, the Blackboard map (loaded when
-│                         first drawn)
+│   └── blackboard.js     logistics between factories, and the world map (picking
+│                         nodes, the Blackboard's map) — loaded when first opened
 ├── data/
 │   ├── recipes_complete.yaml   recipes and machines (1.0)
-│   ├── map_nodes.json          every resource node, well satellite and geyser
-│   ├── game_classes.json       game class names, for reading saves, and what
+│   ├── game.json               the map (every node, well satellite and geyser), the
+│   │                           game's class names for reading saves, and what
 │   │                           milestone or MAM research unlocks each recipe and machine
 │   └── unlocked_alts.yaml      your unlocked alternates
 │   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*,
 │    and map_game.avif, the game's map, fetched once)
 ├── scenarios/            your factories (.results: cached plans; .history: earlier versions)
 ├── backups/              your backups (git-ignored)
-├── tools/gen_unlocks.py  builds the unlocks in data/game_classes.json from the game data
 └── tests/                test_*.py (python), geometry.test.mjs (node), e2e.mjs (browser)
 ```
 
@@ -480,7 +477,7 @@ python -m tests.stress                      # every scenario over a sloop/shard 
 python -m tests.stress -j 1                 # one at a time, for per-case times
 ```
 
-The browser tests run the planner on a throwaway folder (tests/serve_temp.py);
+The browser tests run the planner on a throwaway folder (each section its own);
 your scenarios, plans and unlocks are never touched.
 
 ---

@@ -5,7 +5,7 @@ import glob
 import unittest
 
 import solver
-from tests.checks import check
+from tests.stress import check
 
 RECIPES, META = solver.load_recipes(), solver.load_machine_meta()
 
