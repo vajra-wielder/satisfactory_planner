@@ -311,9 +311,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Source, sink, surplus, and error tracking
 - Every item has one colour, the same everywhere (graph links, tree tiles and
   links, the build sheet, split drawings, the Blackboard's bands)
-- Belts that move (≋): items run along each link, faster the more it carries;
-  a link near what one belt at your tier carries glows amber, one over it red,
-  and the links out of a resource the plan uses all of pulse
+- A link near what one belt at your tier carries glows amber, one over it
+  red, as do the links out of a resource the plan uses all of. Nothing
+  animates: the graph only draws when something changes
 - Colour by (◐ or C): the machines by machine, power draw, clock (under,
   100%, over), space, or alternate vs standard — with a key
 - 📌 Pin (or P) on the results bar keeps the plan; every solve after shows

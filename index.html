@@ -37,7 +37,7 @@
   --r:        10px;
   --rsm:      6px;
   --rlg:      14px;
-  --sb-dur:   220ms;
+  --sb-dur:   0ms;     /* panels open and close at once: no waiting on a slide */
   --sb-ease:  cubic-bezier(.4,0,.2,1);
 }
 
@@ -1193,7 +1193,6 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
     <button class="gbt on" id="btn-hubs"  title="Splitter / merger nodes" style="font-size:13px">&#x2442;</button>
     <button class="gbt" id="btn-minor"    title="Show small taps as full lines" style="font-size:13px">&#x22EF;</button>
     <button class="gbt" id="btn-colorby"  title="Colour the machines by: machine, power draw, clock, space, alternates  (C)" style="font-size:12px">&#x25D0;</button>
-    <button class="gbt on" id="btn-moving" title="Belts that move — faster the more they carry; amber near a belt's limit, red over it or out of a resource used up" style="font-size:12px">&#x224B;</button>
   </div>
   <div id="g-legend"></div>
 </div>

@@ -29,18 +29,14 @@ import { RESULT, mCol, MABBR, itemName, perMin, FLUIDS, TRANSPORT, PROGRESS, MAC
 import { itemColor } from './bundles.js';
 
 // ── Looks ─────────────────────────────────────────────────
-// Links wear their item's colour (the same everywhere in the planner) and
-// move like belts, faster the more they carry; a link near its belt's limit
-// glows amber, one over it (two belts needed) red, and the links out of a
-// resource the plan uses all of pulse. Machines are coloured by COLOR_BY.
-const REDUCED = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-let MOVING = !REDUCED;
+// Links wear their item's colour (the same everywhere in the planner); a link
+// near its belt's limit glows amber, one over it (two belts needed) red, as do
+// the links out of a resource the plan uses all of. Machines are coloured by
+// COLOR_BY. Nothing animates: the graph draws only when something changes.
 export const COLOR_MODES = [['machine', 'Machine'], ['power', 'Power draw'], ['clock', 'Clock'], ['space', 'Space'], ['alt', 'Alternates']];
 let COLOR_BY = 'machine';
 export const colorBy = () => COLOR_BY;
 export function setColorBy(m) { COLOR_BY = m; schedDraw(); }
-export function setMoving(on) { MOVING = on; if (on) loop(); else schedDraw(); }
-export const moving = () => MOVING;
 const itemCol = it => itemColor(it, FLUIDS.has(it));
 // cool → warm, for a share of the most
 function heat(t) {
@@ -79,18 +75,6 @@ function bound() {
   BOUND = new Set(Object.entries(RESULT?.source_nodes || {}).filter(([i, a]) => !unl.has(i) && a > 0 && (used[i] || 0) >= 0.99 * a).map(([i]) => i));
   return BOUND;
 }
-let T0 = performance.now(), lastFrame = 0;
-function loop() {
-  if (!MOVING) return;
-  requestAnimationFrame(now => {
-    const g = document.getElementById('graph');
-    if (MOVING && EDGES.length && g && !g.classList.contains('tree-on') && document.visibilityState === 'visible' && now - lastFrame > 33) {
-      lastFrame = now; draw();
-    }
-    loop();
-  });
-}
-loop();
 
 
 // ── Canvas refs (lazy — resolved on first use, not at module parse time) ──────
@@ -126,6 +110,7 @@ let BANDCLICK = null;      // {band, x, y} — band header pressed, toggles on r
 
 // ── Animation ────────────────────────────────────────────
 let animFrame = null;
+let DOTS = null;    // the dot grid's tile, at this spacing
 function schedDraw() {
   if (animFrame) return;
   animFrame = requestAnimationFrame(() => { animFrame = null; draw(); });
@@ -184,6 +169,7 @@ export function resize() {
   CV.style.width  = rect.width  + 'px';
   CV.style.height = rect.height + 'px';
   C.scale(dpr, dpr);
+  if (dpr !== lastDpr) DOTS = null;   // its tile is drawn for the screen's pixels
   lastDpr = dpr;
   schedDraw();
 }
@@ -1093,14 +1079,25 @@ function _draw() {
   C.fillStyle = '#0c0e13';
   C.fillRect(0, 0, W, H);
 
-  // Dot grid
-  const gs = 24 * ZOOM, dotR = 0.75;
-  const ox = ((PAN.x % gs) + gs) % gs, oy = ((PAN.y % gs) + gs) % gs;
-  C.fillStyle = 'rgba(39,45,61,0.75)';
-  for (let gx = ox; gx < W; gx += gs)
-    for (let gy = oy; gy < H; gy += gs) {
-      C.beginPath(); C.arc(gx, gy, dotR, 0, Math.PI * 2); C.fill();
+  // Dot grid: one tile, repeated (a dot each was tens of thousands of arcs a
+  // frame zoomed out); too dense to see below 8 px apart, so left out
+  const gs = 24 * ZOOM;
+  if (gs >= 8) {
+    const key = Math.round(gs * 4) / 4;
+    if (!DOTS || DOTS.key !== key) {
+      const t = document.createElement('canvas'), n = Math.max(1, Math.round(key * lastDpr));
+      t.width = t.height = n;
+      const tc = t.getContext('2d');
+      tc.fillStyle = 'rgba(39,45,61,0.75)';
+      tc.beginPath(); tc.arc(0.75 * lastDpr, 0.75 * lastDpr, 0.75 * lastDpr, 0, Math.PI * 2); tc.fill();
+      DOTS = { key, pat: C.createPattern(t, 'repeat') };
+      DOTS.pat.setTransform?.(new DOMMatrix().scale(1 / lastDpr));
     }
+    const ox = ((PAN.x % key) + key) % key, oy = ((PAN.y % key) + key) % key;
+    C.save(); C.translate(ox - key, oy - key);
+    C.fillStyle = DOTS.pat; C.fillRect(0, 0, W + 2 * key, H + 2 * key);
+    C.restore();
+  }
 
   if (!NODES.length) return;
 
@@ -1148,7 +1145,6 @@ function drawEdge(e) {
   const alpha = edgeFocusAlpha(e);
   const lw    = edgeFocusWidth(e);
   const path  = () => { C.beginPath(); C.moveTo(e._x1, e._y1); C.bezierCurveTo(e._cx1, e._cy1, e._cx2, e._cy2, e._x2, e._y2); };
-  const t     = (performance.now() - T0) / 1000;
 
   C.globalAlpha = alpha;
   // near or over what one belt carries: a glow under it; a resource used up: a pulse
@@ -1157,7 +1153,7 @@ function drawEdge(e) {
   if (load > 1 + 1e-6 || load >= 0.9 || hot) {
     path();
     C.strokeStyle = load > 1 + 1e-6 || hot ? '#ef4444' : '#f59e0b';
-    C.globalAlpha = alpha * (hot && MOVING ? 0.25 + 0.2 * Math.sin(t * 4) : 0.35);
+    C.globalAlpha = alpha * 0.35;
     C.lineWidth = lw + 5 / ZOOM;
     C.stroke();
     C.globalAlpha = alpha;
@@ -1167,18 +1163,6 @@ function drawEdge(e) {
   C.lineWidth   = lw;
   C.setLineDash(e.dashed ? [5 / ZOOM, 3 / ZOOM] : []);
   C.stroke();
-  // items moving along it, faster the more it carries
-  if (MOVING && !e.dashed && alpha > 0.3) {
-    path();
-    C.setLineDash([2 / ZOOM, 14 / ZOOM]);
-    C.lineDashOffset = -t * (18 + 10 * Math.log2(1 + e.rate)) / ZOOM;
-    C.strokeStyle = 'rgba(255,255,255,0.55)';
-    C.lineWidth = lw * 1.3;
-    C.lineCap = 'round';
-    C.stroke();
-    C.lineCap = 'butt';
-    C.lineDashOffset = 0;
-  }
   C.setLineDash([]);
 
   // Arrow head

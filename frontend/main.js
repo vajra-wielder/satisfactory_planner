@@ -57,7 +57,7 @@ import { refreshNewAlts } from './new-alts.js';
 import {
   resize, initLayout, draw,
   fitAll, zoomBy, openSearch, initGraphEvents,
-  toggleHubs, toggleMinor, COLOR_MODES, colorBy, setColorBy, setMoving, moving,
+  toggleHubs, toggleMinor, COLOR_MODES, colorBy, setColorBy,
 } from './graph.js';
 
 
@@ -260,7 +260,7 @@ let sidebarOpen = true;
 function toggleSidebar() {
   sidebarOpen = !sidebarOpen;
   document.getElementById('app').classList.toggle('sb-collapsed', !sidebarOpen);
-  setTimeout(() => { resize(); draw(); }, 250);
+  resize(); draw();          // at once: the panel doesn't slide
 }
 
 function showPlan() { if (!sidebarOpen) toggleSidebar(); }
@@ -797,7 +797,7 @@ document.getElementById('btn-fit')     .addEventListener('click', fitAll);
 document.getElementById('btn-search')  .addEventListener('click', openSearch);
 document.getElementById('btn-hubs')    .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleHubs()));
 document.getElementById('btn-minor')   .addEventListener('click', e => e.currentTarget.classList.toggle('on', toggleMinor()));
-// What the machines are coloured by, and its key; belts moving or still (both remembered)
+// What the machines are coloured by, and its key (remembered)
 function paintColorBy() {
   const m = colorBy(), name = COLOR_MODES.find(([k]) => k === m)?.[1];
   const scale = { power: ['least', 'most power'], space: ['least', 'most room'], clock: ['under', '100%', 'over'] }[m];
@@ -813,14 +813,9 @@ function cycleColorBy() {
   paintColorBy();
 }
 try { const c = localStorage.getItem('colorBy'); if (COLOR_MODES.some(([k]) => k === c)) setColorBy(c); } catch { /* private window */ }
-try { if (localStorage.getItem('moving') === '0') setMoving(false); } catch { /* private window */ }
-document.getElementById('btn-moving').classList.toggle('on', moving());
 paintColorBy();
 document.getElementById('btn-colorby').addEventListener('click', cycleColorBy);
-document.getElementById('btn-moving').addEventListener('click', e => {
-  setMoving(!moving()); e.currentTarget.classList.toggle('on', moving());
-  try { localStorage.setItem('moving', moving() ? '1' : '0'); } catch { /* private window */ }
-});
+
 
 // The right panel: each tab draws what it shows when it's shown
 initDock();
