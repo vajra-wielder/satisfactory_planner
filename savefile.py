@@ -188,16 +188,14 @@ def _objects(b: bytes):
                 continue
         return None
 
-    out, starts, i = [], [m.start() for m in _HEAD.finditer(b)], 0
-    while i < len(starts):
-        t = toc(starts[i])
+    # the next level is looked for after the last one found, never inside it
+    out, m = [], _HEAD.search(b)
+    while m:
+        t = toc(m.start())
         got = t and data(t[1], len(t[0]))
         if got:
-            out += list(zip(t[0], got[0]))
-            while i < len(starts) and starts[i] < got[1]:
-                i += 1
-            continue
-        i += 1
+            out += zip(t[0], got[0])
+        m = _HEAD.search(b, got[1] if got else m.start() + 1)
     return out
 
 

@@ -742,12 +742,16 @@ def _build_progress() -> dict:
                 for it, a in per.items():
                     f_out["materials_left"][it] = f_out["materials_left"].get(it, 0) + a * left
     import math
+    # each machine against only the lines that run its recipe (a generator: its kind)
+    by: dict = {}
+    for li, ln in enumerate(lines):
+        by.setdefault(("r", ln["r"]), []).append(li)
+        by.setdefault(("m", ln["m"]), []).append(li)
     pairs = []
     for bi, b in enumerate(sv["machines"]):
-        for li, ln in enumerate(lines):
-            if (b["r"] and ln["r"] == b["r"]) or (not b["r"] and ln["m"] == b["m"]):
-                d = min((math.hypot(b["x"] - x, b["y"] - y) for x, y in ln["pts"]), default=1e9)
-                pairs.append((d, bi, li))
+        for li in by.get(("r", b["r"]) if b["r"] else ("m", b["m"]), ()):
+            d = min((math.hypot(b["x"] - x, b["y"] - y) for x, y in lines[li]["pts"]), default=1e9)
+            pairs.append((d, bi, li))
     pairs.sort()
     used = set()
     for d, bi, li in pairs:
@@ -769,6 +773,7 @@ def _build_progress() -> dict:
     return {"read": True, "file": sv.get("file", ""), "when": sv.get("when"), "factories": out,
             "spare": len(sv["machines"]) - len(used), "stock": sv.get("stock") or {}}
 
+_alts_all = [None, None]   # [stamp of the files it was worked out from, the answer]
 _whatif_claims = [0.0, {}]   # [when, claims]: one read of the factories per few seconds of dragging
 _save_lock = threading.Lock()   # claim check + write as one step, so two saves can't both take the same
 
@@ -1530,6 +1535,8 @@ def _build_scenario(b: dict) -> Scenario:
 
 # ── MIME types ────────────────────────────────────────────────────────────────
 
+_static_cache: dict = {}   # path → (tag, raw, gzipped)
+
 _MIME = {
     ".html": "text/html; charset=utf-8",
     ".js":   "application/javascript; charset=utf-8",
@@ -1591,11 +1598,42 @@ class Handler(BaseHTTPRequestHandler):
         return SCENARIOS_DIR / f"{name}.yaml"
 
     def _serve_file(self, fpath: Path):
-        if not fpath.exists() or not fpath.is_file():
+        # Compressed once per version of the file and kept; the browser keeps
+        # it too and asks again with its tag — unchanged, it gets a bare 304
+        try:
+            st = fpath.stat()
+        except OSError:
+            st = None
+        if st is None or not fpath.is_file():
             self._json(404, {"error": f"Not found: {fpath.name}"})
             return
-        ctype = _MIME.get(fpath.suffix.lower(), "application/octet-stream")
-        self._send(200, fpath.read_bytes(), ctype)
+        self._send_tagged(fpath, f'"{st.st_mtime_ns:x}-{st.st_size:x}"', fpath.read_bytes,
+                          _MIME.get(fpath.suffix.lower(), "application/octet-stream"))
+
+    def _send_tagged(self, key, tag, raw, ctype):
+        """Something that changes rarely: 304 when the browser has this tag,
+        else the body (raw() — read only when it's needed), compressed once."""
+        if self.headers.get("If-None-Match") == tag:
+            self.send_response(304)
+            self.send_header("ETag", tag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        hit = _static_cache.get(key)
+        if not hit or hit[0] != tag:
+            b = raw()
+            hit = _static_cache[key] = (tag, b, gzip.compress(b, compresslevel=9, mtime=0))
+        gz = "gzip" in self.headers.get("Accept-Encoding", "")
+        body = hit[2] if gz else hit[1]
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", tag)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
 
     # ── CORS preflight ────────────────────────────────────────────────────────
 
@@ -1649,7 +1687,8 @@ class Handler(BaseHTTPRequestHandler):
         # ── API routes ────────────────────────────────────────────────────────
 
         if path == "/api/boot":
-            self._send(200, _build_boot_bytes())
+            b = _build_boot_bytes()
+            self._send_tagged("boot", '"%s"' % hashlib.sha1(b).hexdigest()[:16], lambda: b, "application/json")
             return
 
         if path == "/api/scenarios":
@@ -1722,6 +1761,13 @@ class Handler(BaseHTTPRequestHandler):
             if job is None:
                 self._json(404, {"error": "Unknown job"})
                 return
+            # ?wait: answer when it's done (up to 20 s), not on the next poll
+            if job["status"] == "pending" and "wait" in qs:
+                end = time.time() + 20
+                while job["status"] == "pending" and time.time() < end:
+                    time.sleep(0.005)
+                    with _jobs_lock:
+                        job = _jobs.get(job_id) or job
             if job["status"] == "pending":
                 self._json(200, {"status": "pending"})
                 return
@@ -1819,8 +1865,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/save-nodes":
-            sv = _save_nodes()
-            self._json(200, {**sv, "changes": _unlock_changes(sv.get("unlocks"))})
+            sv = _save_nodes()      # the machines and storage stay here: /api/build-progress uses them
+            self._json(200, {**{k: v for k, v in sv.items() if k not in ("machines", "stock")},
+                             "built": len(sv.get("machines") or []), "changes": _unlock_changes(sv.get("unlocks"))})
             return
 
         if path == "/api/map-settings":
@@ -1844,14 +1891,22 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/alts-everywhere":
-            # every alternate you haven't unlocked, by what it adds to your saved factories
+            # every alternate you haven't unlocked, by what it adds to your saved factories —
+            # worked out again only when a factory, the unlocks or progress change
+            stamp = tuple(sorted((p.name, p.stat().st_mtime_ns) for p in SCENARIOS_DIR.glob("*.yaml"))) + tuple(
+                p.stat().st_mtime_ns if p.exists() else 0 for p in (UNLOCKED_PATH, supply.PROGRESS_PATH))
+            if _alts_all[0] == stamp:
+                self._json(200, _alts_all[1])
+                return
             claims = _claims(_scenario_files())
             scs = {}
             for key, data in _scenario_files():
                 s = _build_scenario(data)
                 scs[key] = _with_owed(s, _owed(key, claims, s))
             names = {k: d.get("name", k) for k, d in _scenario_files()}
-            self._json(200, {"alts": _solver_mod.alts_everywhere(scs, ALL_RECIPES), "names": names})
+            out = {"alts": _solver_mod.alts_everywhere(scs, ALL_RECIPES), "names": names}
+            _alts_all[:] = [stamp, out]
+            self._json(200, out)
             return
 
         if path == "/api/build-progress":

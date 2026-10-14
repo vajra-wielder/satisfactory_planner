@@ -42,6 +42,25 @@ class API(_Temp):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"null")
 
+    def test_unchanged_files_answer_304(self):
+        import gzip
+        for path in ("/frontend/main.js", "/api/boot"):
+            req = urllib.request.Request(self.base + path, headers={"Accept-Encoding": "gzip"})
+            with urllib.request.urlopen(req) as r:
+                tag, body = r.headers["ETag"], gzip.decompress(r.read())
+            self.assertTrue(tag and body)
+            req = urllib.request.Request(self.base + path, headers={"If-None-Match": tag})
+            with self.assertRaises(urllib.error.HTTPError) as e:   # urllib raises on a 304
+                urllib.request.urlopen(req)
+            self.assertEqual(e.exception.code, 304)
+
+    def test_solve_answers_when_done(self):
+        sc = {"name": "w", "available_resources": {"Iron_Ore": 60}, "objective": {"Iron_Ingot": 1}}
+        code, d = self.call("POST", "/api/solve", {**sc, "solve_styles": [], "base_scenario": sc})
+        code, r = self.call("GET", f"/api/solve/{d['job_id']}?wait=1")      # no polling: the plan itself
+        self.assertEqual((code, r["status"]), (200, "done"))
+        self.assertAlmostEqual(r["result"]["objective_value"], 60, places=3)
+
     def test_storage_set_from_elsewhere(self):
         self.save("depot", to_storage=[{"item": "Iron_Plate", "rate": 5}, {"item": "Wire", "rate": 3}])
         code, d = self.call("POST", "/api/storage", {"key": "depot", "item": "Iron_Plate", "rate": 9})

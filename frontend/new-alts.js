@@ -11,7 +11,7 @@
  */
 import { SC, RESULT, RECIPES, mCol, MABBR, UNLOCKED_ALTS, setUnlockedAlts } from './state.js';
 import { saveUnlockedAlts, fetchUnlockedAlts } from './api.js';
-import { setBadge } from './dock.js';
+import { setBadge, dockTab } from './dock.js';
 
 const $ = id => document.getElementById(id);
 const name = k => (RECIPES[k]?.display || k).replace(/^Alternate:\s*/i, '');
@@ -31,7 +31,7 @@ export function gainText(g, html = true) {
     .filter(Boolean).join(html ? '<span class="na-dot"> · </span>' : ' · ');
 }
 
-let seq = 0;
+let seq = 0, later = 0;
 /** Ask for the last solve's suggestions, then draw them. */
 export function refreshNewAlts(onChange) {
   const el = $('new-alts');
@@ -48,12 +48,16 @@ export function refreshNewAlts(onChange) {
   if (res.suggest) { draw(onChange); return; }
   const mine = ++seq;
   el.innerHTML = '<div class="na-head"><b>New alternates</b><span class="n-hint">checking…</span></div>';
-  fetch('/api/suggest-alts').then(r => r.json()).then(d => {
+  // the tab not open: asked once the solves settle, not after each one while you edit
+  clearTimeout(later);
+  if (dockTab() !== 'alts') { later = setTimeout(() => mine === seq && ask(), 1200); return; }
+  ask();
+  function ask() { fetch('/api/suggest-alts').then(r => r.json()).then(d => {
     if (mine !== seq || res !== RESULT) return;      // a newer solve took over
     res.suggest = d;
     draw(onChange);
     document.dispatchEvent(new Event('suggest-ready'));
-  }).catch(() => { el.innerHTML = ''; });
+  }).catch(() => { el.innerHTML = ''; }); }
 }
 
 function draw(onChange) {
@@ -122,16 +126,13 @@ function draw(onChange) {
 // Every alternate you haven't unlocked, by what it adds to all your saved
 // factories as they are — each on its own, so the first is the hard drive
 // worth most across the lot
-// (the saved factories: asked again at most every 10 s, or when unlocks change)
-let ALL_SEQ = 0, ALL_OPEN = false, ALL = null, ALL_AT = 0;
-document.addEventListener('unlocks-changed', () => { ALL_AT = 0; });
+// (the server keeps the answer until a factory, the unlocks or progress change)
+let ALL_SEQ = 0, ALL_OPEN = false;
 function drawEverywhere() {
   const el = $('alts-all');
-  if (!el) return;
+  if (!el || dockTab() !== 'alts') return;     // drawn when the tab is open
   const mine = ++ALL_SEQ;
-  const got = ALL && Date.now() - ALL_AT < 10000 ? Promise.resolve(ALL)
-    : fetch('/api/alts-everywhere').then(r => r.json()).then(d => { ALL = d; ALL_AT = Date.now(); return d; });
-  got.then(d => {
+  fetch('/api/alts-everywhere').then(r => r.json()).then(d => {
     if (mine !== ALL_SEQ) return;
     const list = d.alts || [];
     const nm = k => d.names?.[k] || k;

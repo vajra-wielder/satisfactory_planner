@@ -570,7 +570,7 @@ function autoSolve() {
     if (!goals || solveKey() === SOLVED_K) return;
     if (solving) { AUTO_AGAIN = true; return; }
     handleSolve('auto');
-  }, 350);
+  }, 100);
 }
 function paintAuto() {
   const b = document.getElementById('bauto');
