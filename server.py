@@ -1415,14 +1415,52 @@ def _own_map() -> dict:
 
 def _map_settings() -> dict:
     """The picture under the map: yours (nudged as you set it) or else the
-    game's (exactly on the map's edges)."""
+    game's (exactly on the map's edges); levels: the smaller copies of it."""
     own = _own_map()
     if own["ext"]:
-        return {**own, "source": "own", "game": _game_map_path().exists() and "ready" or _game_map["state"]}
+        return {**own, "source": "own", "game": _game_map_path().exists() and "ready" or _game_map["state"],
+                **_map_tiles(_map_source())}
     game = _ensure_game_map()
     if game != "ready":
-        return {**own, "source": None, "game": game, "game_error": _game_map["error"]}
-    return {**own, "ext": "avif", "dx": 0.0, "dy": 0.0, "scale": 1.0, "source": "game", "game": game}
+        return {**own, "source": None, "game": game, "game_error": _game_map["error"], "tiles": 0}
+    return {**own, "ext": "avif", "dx": 0.0, "dy": 0.0, "scale": 1.0, "source": "game", "game": game,
+            **_map_tiles(_game_map_path())}
+
+# The picture is big (the game's: 8192 × 8192 — seconds to decode), so the map
+# shows it as tiles, like an online map: level 0 the whole picture in one
+# 2048-pixel tile, level 1 in 2 × 2, level 2 in 4 × 4 — only those in view are
+# loaded, at the level the zoom needs. The browser cuts them once from the
+# full picture (no image library needed here); they're kept in
+# data/map_tiles/<picture>/ and stale once the picture is newer.
+_TILE_LEVELS = 3
+
+def _map_source():
+    """The picture on the map now (yours, else the game's), or None."""
+    own = _own_map()
+    f = MAP_IMAGE_DIR / f"map_image.{own['ext']}" if own["ext"] else _game_map_path()
+    return f if f.exists() else None
+
+def _tile_path(src: Path, z: int, x: int, y: int):
+    """A tile of the picture, if it's there and not older than the picture."""
+    for p in (MAP_IMAGE_DIR / "map_tiles" / src.stem).glob(f"{z}-{x}-{y}.*"):
+        if p.suffix[1:] in ("webp", "jpg") and p.stat().st_mtime_ns >= src.stat().st_mtime_ns:
+            return p
+    return None
+
+def _map_tiles(src) -> dict:
+    """{tiles: how many levels are complete, tiles_v: when the last was made}."""
+    n, v = 0, 0
+    while src and n < _TILE_LEVELS:
+        side = 2 ** n
+        ps = [_tile_path(src, n, x, y) for x in range(side) for y in range(side)]
+        if not all(ps):
+            break
+        v = max([v] + [p.stat().st_mtime_ns for p in ps])
+        n += 1
+    return {"tiles": n, "tiles_v": v // 1_000_000}
+
+def _drop_map_tiles(stem: str) -> None:
+    shutil.rmtree(MAP_IMAGE_DIR / "map_tiles" / stem, ignore_errors=True)
 
 
 # ── Async solve job store ─────────────────────────────────────────────────────
@@ -1610,20 +1648,24 @@ class Handler(BaseHTTPRequestHandler):
         self._send_tagged(fpath, f'"{st.st_mtime_ns:x}-{st.st_size:x}"', fpath.read_bytes,
                           _MIME.get(fpath.suffix.lower(), "application/octet-stream"))
 
-    def _send_tagged(self, key, tag, raw, ctype):
+    def _send_tagged(self, key, tag, raw, ctype, compress=True):
         """Something that changes rarely: 304 when the browser has this tag,
-        else the body (raw() — read only when it's needed), compressed once."""
+        else the body (raw() — read only when it's needed), compressed once.
+        compress=False (a picture, compressed already): sent as it is, not kept."""
         if self.headers.get("If-None-Match") == tag:
             self.send_response(304)
             self.send_header("ETag", tag)
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             return
-        hit = _static_cache.get(key)
-        if not hit or hit[0] != tag:
-            b = raw()
-            hit = _static_cache[key] = (tag, b, gzip.compress(b, compresslevel=9, mtime=0))
-        gz = "gzip" in self.headers.get("Accept-Encoding", "")
+        if compress:
+            hit = _static_cache.get(key)
+            if not hit or hit[0] != tag:
+                b = raw()
+                hit = _static_cache[key] = (tag, b, gzip.compress(b, compresslevel=9, mtime=0))
+        else:
+            hit = (tag, raw(), None)
+        gz = compress and "gzip" in self.headers.get("Accept-Encoding", "")
         body = hit[2] if gz else hit[1]
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -1881,19 +1923,25 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/map-image":
-            st = _map_settings()
-            f = (MAP_IMAGE_DIR / f"map_image.{st['ext']}" if st["source"] == "own"
-                 else _game_map_path() if st["source"] == "game" else None)
-            if not f or not f.exists():
+            f = _map_source()
+            if not f:
                 self._json(404, {"error": "No map image"})
                 return
-            body = f.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", _IMAGE_CTYPE[st["ext"]])
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(body)
+            st = f.stat()
+            self._send_tagged(None, f'"{st.st_mtime_ns:x}-{st.st_size:x}"', f.read_bytes,
+                              _IMAGE_CTYPE[f.suffix[1:]], compress=False)
+            return
+
+        if path == "/api/map-tile":       # ?z, x, y: one tile of the picture (see _map_tiles)
+            f = _map_source()
+            z, x, y = (int(_num((qs.get(k) or ["-1"])[0], -1)) for k in "zxy")
+            t = f and 0 <= z < _TILE_LEVELS and 0 <= x < 2 ** z and 0 <= y < 2 ** z and _tile_path(f, z, x, y)
+            if not t:
+                self._json(404, {"error": "No such tile"})
+                return
+            st = t.stat()
+            self._send_tagged(None, f'"{st.st_mtime_ns:x}-{st.st_size:x}"', t.read_bytes,
+                              _IMAGE_CTYPE[t.suffix[1:]], compress=False)
             return
 
         if path == "/api/alts-everywhere":
@@ -2133,12 +2181,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "PNG, JPEG or WebP only"})
                 return
             length = int(self.headers.get("Content-Length", 0))
+            _drop_map_tiles("map_image")
             for old in MAP_IMAGE_DIR.glob("map_image.*"):
                 if old.suffix != ".json":
                     old.unlink()
             (MAP_IMAGE_DIR / f"map_image.{_IMAGE_TYPES[ctype]}").write_bytes(self.rfile.read(length))
             MAP_SETTINGS_PATH.write_text(json.dumps({**_own_map(), "ext": _IMAGE_TYPES[ctype]}), encoding="utf-8")
             self._json(200, _map_settings())
+            return
+
+        if path == "/api/map-tile":   # ?z, x, y: a tile of the picture on now, cut in the browser
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+            length = int(self.headers.get("Content-Length", 0))
+            q = parse_qs(urlparse(self.path).query)
+            z, x, y = (int(_num((q.get(k) or ["-1"])[0], -1)) for k in "zxy")
+            f = _map_source()
+            if not (f and 0 <= z < _TILE_LEVELS and 0 <= x < 2 ** z and 0 <= y < 2 ** z
+                    and ctype in ("image/webp", "image/jpeg") and 0 < length <= 4 << 20):
+                self._json(400, {"error": "A tile: z 0–2, x and y in range, WebP or JPEG up to 4 MB"})
+                return
+            d = MAP_IMAGE_DIR / "map_tiles" / f.stem
+            d.mkdir(parents=True, exist_ok=True)
+            for old in d.glob(f"{z}-{x}-{y}.*"):
+                old.unlink()
+            tmp = d / f"{z}-{x}-{y}.tmp"
+            tmp.write_bytes(self.rfile.read(length))
+            os.replace(tmp, d / f"{z}-{x}-{y}.{_IMAGE_TYPES[ctype]}")
+            self._json(200, {"ok": True})
             return
 
         if path == "/api/map-game":   # try fetching the game's map again
@@ -2346,6 +2415,7 @@ class Handler(BaseHTTPRequestHandler):
     def _delete(self):
         path = urlparse(self.path).path.rstrip("/")
         if path == "/api/map-image":   # your own picture goes: back to the game's map
+            _drop_map_tiles("map_image")
             for old in MAP_IMAGE_DIR.glob("map_image.*"):
                 if old.suffix != ".json":
                     old.unlink()

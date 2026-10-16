@@ -385,7 +385,8 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 #bb-map { display: flex; flex-direction: column; }
 .mp-map { flex: 1; position: relative; background: #0a0c10; cursor: grab; overflow: hidden; }
 .mp-map svg { display: block; position: absolute; left: 0; top: 0; }
-.mp-bg { position: absolute; max-width: none; pointer-events: none; user-select: none; image-rendering: auto; }
+.mp-bg { position: absolute; pointer-events: none; user-select: none; }
+.mp-bg img { max-width: none; image-rendering: auto; }
 .mp-zoom { position: absolute; right: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
 .mp-zoom .bsm { width: 28px; height: 26px; padding: 0; font-size: 14px; background: var(--p2); }
 .mp-level { position: absolute; left: 10px; bottom: 8px; font-size: 10px; color: var(--t3); pointer-events: none; text-shadow: 0 0 3px #000; }

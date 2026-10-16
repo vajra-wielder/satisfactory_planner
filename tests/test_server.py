@@ -635,6 +635,43 @@ class API(_Temp):
         with urllib.request.urlopen(self.base + "/api/map-image") as r:
             self.assertEqual((r.headers["Content-Type"], r.read()), ("image/avif", b"avif"))
 
+    def test_map_tiles(self):
+        # the picture as tiles, cut in the browser: kept, counted level by level, and
+        # stale once the picture is newer
+        import os
+        import server
+        pic = server.MAP_IMAGE_DIR / "map_game.avif"
+        pic.write_bytes(b"avif")
+        self.assertEqual(self.call("GET", "/api/map-settings")[1]["tiles"], 0)
+        post = lambda z, x, y, ctype="image/webp": self.call("POST", f"/api/map-tile?z={z}&x={x}&y={y}", raw=b"w%d%d%d" % (z, x, y), ctype=ctype)
+        self.assertEqual(post(0, 0, 0)[0], 200)
+        self.assertEqual(self.call("GET", "/api/map-settings")[1]["tiles"], 1)
+        for x in range(2):
+            for y in range(2):
+                post(1, x, y)
+        self.assertEqual(self.call("GET", "/api/map-settings")[1]["tiles"], 2)
+        with urllib.request.urlopen(self.base + "/api/map-tile?z=1&x=1&y=0") as r:
+            self.assertEqual((r.headers["Content-Type"], r.read()), ("image/webp", b"w110"))
+            tag = r.headers["ETag"]
+        with self.assertRaises(urllib.error.HTTPError) as e:     # unchanged: a 304, nothing sent
+            urllib.request.urlopen(urllib.request.Request(self.base + "/api/map-tile?z=1&x=1&y=0", headers={"If-None-Match": tag}))
+        self.assertEqual(e.exception.code, 304)
+        # out of range, or not a picture: refused
+        self.assertEqual(post(3, 0, 0)[0], 400)
+        self.assertEqual(post(1, 2, 0)[0], 400)
+        self.assertEqual(post(0, 0, 0, "text/plain")[0], 400)
+        self.assertEqual(self.call("GET", "/api/map-tile?z=2&x=0&y=0")[0], 404)
+        # a newer picture: its old tiles don't count
+        t = pic.stat().st_mtime_ns + 10 ** 9
+        os.utime(pic, ns=(t, t))
+        self.assertEqual(self.call("GET", "/api/map-settings")[1]["tiles"], 0)
+        # your own picture: its tiles go with it
+        self.call("POST", "/api/map-image", raw=b"png", ctype="image/png")
+        post(0, 0, 0)
+        self.assertTrue((server.MAP_IMAGE_DIR / "map_tiles" / "map_image").exists())
+        self.call("DELETE", "/api/map-image")
+        self.assertFalse((server.MAP_IMAGE_DIR / "map_tiles" / "map_image").exists())
+
     def test_map_settings_stay_numbers(self):
         _, st = self.call("POST", "/api/map-settings", {"dx": "abc", "scale": -1, "opacity": 7})
         self.assertEqual((st["dx"], st["scale"], st["opacity"]), (0.0, 0.05, 1.0))

@@ -64,7 +64,12 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - The map is drawn on the game's own map picture (fetched once into data/ the
   first time you open a map — the in-game map from the open-source
   satisfactorymap project, lined up with the map's edges), or on your own
-  picture (nudge it to line up). From afar the nodes are dots; zoom in, or
+  picture (nudge it to line up). The picture is shown as tiles, like an online
+  map — the whole map in one, then 2 × 2 and 4 × 4 — only those in view, at
+  the sharpness the zoom needs, so it's there in a fraction of a second (the
+  full 8192 × 8192 picture takes seconds to decode). The browser cuts them in
+  the background the first time, level by level as each is ready, and they're
+  kept in data/map_tiles/. From afar the nodes are dots; zoom in, or
   pick one or two resources, and each shows its purity (P / N / I); zoom in
   further for its name and who mines it. A factory that has nodes opens
   the map on them. Zoom with the wheel, + / −,
@@ -433,7 +438,7 @@ satisfactory-planner/
 │   │                           milestone or MAM research unlocks each recipe and machine
 │   └── unlocked_alts.yaml      your unlocked alternates
 │   (yours, not in git: progress.yaml, blackboard.yaml, save_nodes.json, map_image.*,
-│    and map_game.avif, the game's map, fetched once)
+│    map_game.avif, the game's map, fetched once, and map_tiles/, cut from it)
 ├── scenarios/            your factories (.results: cached plans; .history: earlier versions)
 ├── backups/              your backups (git-ignored)
 └── tests/                test_*.py (python), geometry.test.mjs (node), e2e.mjs (browser)

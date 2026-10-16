@@ -719,6 +719,49 @@ function applyNet() {
  * your own map picture to draw them on (it's lined up with the in-game map's
  * edges; nudge it if it's off).
  */
+
+// The full picture takes seconds to decode, so once it's here the browser cuts
+// it into the tiles the map shows from then on (server.py, _map_tiles): decoded
+// once, each tile cropped and scaled off the main thread, kept by the server
+let TILES_FOR = null;          // the picture being cut (a new one is cut afresh)
+// (in a worker: nothing of it runs on the page's own thread)
+const TILE_WORKER = `onmessage = async ({ data: { src, origin } }) => {
+  try {
+    const big = await createImageBitmap(await (await fetch(origin + src)).blob()), w = big.width, h = big.height;
+    for (let z = 0; z < 3 && (z === 0 || w / 2 ** z >= 1600); z++) {
+      const n = 2 ** z, tw = w / n, th = h / n, out = Math.min(2048, Math.round(tw));
+      for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) {
+        const bmp = await createImageBitmap(big, Math.round(x * tw), Math.round(y * th), Math.round(tw), Math.round(th),
+          { resizeWidth: out, resizeHeight: Math.round(out * th / tw), resizeQuality: 'high' });
+        const c = new OffscreenCanvas(bmp.width, bmp.height);
+        c.getContext('2d').drawImage(bmp, 0, 0); bmp.close();
+        let b = await c.convertToBlob({ type: 'image/webp', quality: 0.85 });
+        if (b.type !== 'image/webp') b = await c.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+        await fetch(origin + '/api/map-tile?z=' + z + '&x=' + x + '&y=' + y, { method: 'POST', headers: { 'Content-Type': b.type }, body: b });
+      }
+      postMessage({ level: z });          // a level done: the map can show it
+    }
+    big.close();
+    postMessage({ ok: true });
+  } catch (e) { postMessage({ ok: false, error: String(e) }); }
+};`;
+const canTile = () => !!(window.Worker && window.OffscreenCanvas && window.createImageBitmap);
+function makeTiles(src) {
+  if (TILES_FOR === src || !canTile()) return;
+  TILES_FOR = src;
+  const url = URL.createObjectURL(new Blob([TILE_WORKER], { type: 'text/javascript' }));
+  const wk = new Worker(url);
+  wk.onmessage = async ({ data }) => {
+    if ('level' in data) {           // show what's there so far
+      MAPD.img = { ...MAPD.img, ...await (await fetch('/api/map-settings')).json() };
+      document.dispatchEvent(new Event('map-picture'));
+      return;
+    }
+    wk.terminate(); URL.revokeObjectURL(url);
+    if (!data.ok) { console.warn('map tiles:', data.error); TILES_FOR = null; }
+  };
+  wk.postMessage({ src, origin: location.origin });
+}
 const fmtM = v => (Math.abs(v - Math.round(v)) < 1e-3 ? Math.round(v) : +v.toFixed(1)).toLocaleString();
 const COLORS = {
   Iron_Ore: '#9aa6b8', Copper_Ore: '#e07a3f', Limestone: '#d9cfb0', Coal: '#5b5f6b', Caterium_Ore: '#e8c547',
@@ -761,7 +804,7 @@ function makeMap(el, M) {
   const off = new AbortController(), on = { signal: off.signal };
   el._mapOff = off;
   el.classList.add('mp-map');
-  el.innerHTML = `<img class="mp-bg" alt="" draggable="false"><svg></svg><div class="mp-tip"></div>
+  el.innerHTML = `<div class="mp-bg"></div><svg></svg><div class="mp-tip"></div>
     <div class="mp-zoom"><button class="bsm" data-z="in" title="Zoom in (+)">+</button><button class="bsm" data-z="out" title="Zoom out (−)">−</button>
       <button class="bsm" data-z="fit" title="The whole map (0)">⤢</button></div>
     <div class="mp-level"></div>`;
@@ -791,13 +834,58 @@ function makeMap(el, M) {
   const inSave = n => MAPD.save.has(n.id) && !M.taken?.[n.id] && !M.owner?.[n.id];
   M.shows = (n, spare = spareIds()) => M.only === 'spare' ? spare.has(n.id) : M.only === 'save' ? inSave(n) : M.filter.has(n.r);
 
+  // The picture as tiles (or, until they're made, the full picture): the whole
+  // map's tile always underneath, so nothing goes blank while a closer one loads
+  const tileOf = new Map();
+  function tile(key, src, css) {
+    let im = tileOf.get(key);
+    if (!im) {
+      im = new Image(); im.alt = ''; im.draggable = false; im.decoding = 'async';
+      im.style.cssText = `position:absolute;${css}`; im.src = src;
+      tileOf.set(key, im); bg.appendChild(im);
+    }
+    return im;
+  }
   function drawPicture() {
     if (!MAPD.img?.ext) { bg.style.display = 'none'; return; }
     // yours nudged by dx, dy, scale; the game's exactly on the map's edges
     const bw = (MAPD.bounds.x[1] - MAPD.bounds.x[0]) * MAPD.img.scale, bh = (MAPD.bounds.y[1] - MAPD.bounds.y[0]) * MAPD.img.scale;
     const cx = (MAPD.bounds.x[0] + MAPD.bounds.x[1]) / 2 + MAPD.img.dx, cy = (MAPD.bounds.y[0] + MAPD.bounds.y[1]) / 2 + MAPD.img.dy;
+    const L = MAPD.img.tiles || 0, keep = new Set();
     const src = `/api/map-image?v=${MAPD.img.v || 0}&s=${MAPD.img.source || ''}`;
-    if (bg.getAttribute('src') !== src) bg.setAttribute('src', src);
+    if (!L && canTile()) {
+      // no tiles yet (the first time, or a new picture): cut in the background,
+      // shown level by level — the full picture would hold the page up for seconds
+      makeTiles(src);
+    } else if (!L) {      // a browser that can't cut them: the full picture
+      tile('full:' + src, src, 'left:0;top:0;width:100%;height:100%');
+      keep.add('full:' + src);
+    } else {
+      // the level whose tiles are sharp at this zoom (each 2048 across), and those in view
+      const px = bw * M.view.scale * (window.devicePixelRatio || 1);
+      let z = 0;
+      while (z < L - 1 && 2048 * 2 ** z < px * 0.9) z++;
+      const v = MAPD.img.tiles_v || 0;
+      const want = (zz, x, y) => {
+        const n = 2 ** zz, k = `${zz}-${x}-${y}`;
+        tile(k, `/api/map-tile?z=${zz}&x=${x}&y=${y}&v=${v}`, `left:${100 * x / n}%;top:${100 * y / n}%;width:${100 / n + 0.01}%;height:${100 / n + 0.01}%;z-index:${zz}`);
+        keep.add(k);
+      };
+      want(0, 0, 0);
+      if (z > 0) {
+        const n = 2 ** z, left = sx(cx - bw / 2), top = sy(cy - bh / 2), W = bw * M.view.scale, H = bh * M.view.scale;
+        const x0 = Math.max(0, Math.floor(-left / W * n)), x1 = Math.min(n - 1, Math.floor((el.clientWidth - left) / W * n));
+        const y0 = Math.max(0, Math.floor(-top / H * n)), y1 = Math.min(n - 1, Math.floor((el.clientHeight - top) / H * n));
+        for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) want(z, x, y);
+      }
+    }
+    // what's out of view goes; the full picture once the whole-map tile is in
+    const base = tileOf.get('0-0-0');
+    tileOf.forEach((im, k) => {
+      if (keep.has(k) || (k.startsWith('full:') && base && !base.complete)) return;
+      im.remove(); tileOf.delete(k);
+    });
+    if (base && !base.complete) base.addEventListener('load', () => drawPicture(), { once: true });
     Object.assign(bg.style, { display: 'block', left: `${sx(cx - bw / 2)}px`, top: `${sy(cy - bh / 2)}px`,
       width: `${bw * M.view.scale}px`, height: `${bh * M.view.scale}px`, opacity: MAPD.img.opacity });
   }
