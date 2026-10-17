@@ -507,9 +507,10 @@ def _network_sites(keys) -> list:
     for key in keys:
         data, result = _factory_plan(key)
         sc = _build_scenario(data)
-        held, own, drawn = {}, {}, {}
+        held, own, drawn, made = {}, {}, {}, {}
         if result:
             held = {k: v for k, v in (result.get("sink_nodes") or {}).items() if v > 1e-6}
+            made = dict(held)          # all it makes now — kept here, or shipped on
             # What the other factories in this network take from it is theirs —
             # the network routes it — so it isn't also held here (its plan's
             # output counts it once already)
@@ -529,7 +530,7 @@ def _network_sites(keys) -> list:
         else:
             held = {**{k: float(v) for k, v in sc.min_produce.items()},
                     **{k: float(v) for k, v in sc.must_produce.items()}}
-        sites.append({"key": key, "name": data.get("name", key), "scenario": sc, "held": held,
+        sites.append({"key": key, "name": data.get("name", key), "scenario": sc, "held": held, "made": made,
                       "own": own, "own_draw": {k: v for k, v in drawn.items() if v > 1e-6},
                       "solved": result is not None})
     return sites

@@ -105,6 +105,9 @@ class _Net:
 
         # Per factory and item: net (made + brought − sent) ≥ what must stay
         self.net: Dict[tuple, Dict[object, float]] = {}
+        # what it makes of an item, whether it keeps it or ships it on (its goals
+        # count this: a modular factory makes its goal to send it out)
+        self.made: Dict[tuple, Dict[object, float]] = {}
         self.draw: Dict[tuple, object] = {}
         self.near: Dict[tuple, object] = {}       # (factory, resource) → what it takes from nodes nearby
         nearby = nearby or {}
@@ -122,6 +125,7 @@ class _Net:
                     c = r.outputs.get(it, 0.0) - r.inputs.get(it, 0.0)
                     if c:
                         expr[q[(k, rk)]] = c
+                self.made[(k, it)] = dict(expr)
                 for (_, a, b, i2, v, _c) in arcs:
                     if i2 == it and b == k:
                         expr[v] = expr.get(v, 0.0) + 1.0
@@ -165,16 +169,20 @@ class _Net:
             ct.SetCoefficient(v, c)
 
     def goal_of(self, k: str) -> Dict[object, float]:
-        """Factory k's weighted goal: what it makes of its goal items, net."""
+        """Factory k's weighted goal: what it makes of its goal items (kept or shipped)."""
         g: Dict[object, float] = {}
         for it, w in self.by[k]["scenario"].objective.items():
-            for v, c in self.net.get((k, it), {}).items():
+            for v, c in self.made.get((k, it), {}).items():
                 g[v] = g.get(v, 0.0) + w * c
         return g
 
 
+def _made_now(x: dict) -> dict:
+    """What its plan makes now, shipped or kept (held is what it keeps)."""
+    return x.get("made") or x["held"]
+
 def _now_goal(x: dict) -> float:
-    return sum(w * x["held"].get(it, 0.0) for it, w in x["scenario"].objective.items())
+    return sum(w * _made_now(x).get(it, 0.0) for it, w in x["scenario"].objective.items())
 
 
 def _grow(m: "_Net", sites: List[dict], floor=None) -> Optional[float]:
@@ -185,21 +193,21 @@ def _grow(m: "_Net", sites: List[dict], floor=None) -> Optional[float]:
     its own. Returns t, or None when nothing has a goal to grow.
     floor: {(factory, item): /min} — instead of t, each goal item at least that
     (comparing an option: no goal below what it is anyway)."""
-    items = [(x["key"], it, x["held"][it]) for x in sites for it in x["scenario"].objective
-             if x["held"].get(it, 0.0) > 1e-9]
+    items = [(x["key"], it, _made_now(x)[it]) for x in sites for it in x["scenario"].objective
+             if _made_now(x).get(it, 0.0) > 1e-9]
     if not items:
         return None
     if floor is not None:
         for k, it, now in items:
             lo = floor.get((k, it), 0.0) * (1 - 1e-5)
             if lo > 0:
-                m.ct_ge(m.net.get((k, it), {}), lo)
+                m.ct_ge(m.made.get((k, it), {}), lo)
         best = 1.0
     else:
         t = m.s.NumVar(0, m.s.infinity(), "")
         for k, it, now in items:
             ct = m.s.Constraint(0, m.s.infinity())          # made − t·now ≥ 0
-            for v, c in m.net.get((k, it), {}).items():
+            for v, c in m.made.get((k, it), {}).items():
                 ct.SetCoefficient(v, c)
             ct.SetCoefficient(t, -now)
         if not m.run({t: 1.0}, maximize=True):
@@ -208,7 +216,7 @@ def _grow(m: "_Net", sites: List[dict], floor=None) -> Optional[float]:
         t.SetLb(best * (1 - 1e-5))
     share: Dict[object, float] = {}
     for k, it, now in items:
-        for v, c in m.net.get((k, it), {}).items():
+        for v, c in m.made.get((k, it), {}).items():
             share[v] = share.get(v, 0.0) + c / now
     if m.run(share, maximize=True):
         m.lock({v: -c for v, c in share.items()}, -m.value(share))
@@ -303,8 +311,8 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
         sc = m.by[k]["scenario"]
         goal = None
         if sc.objective:
-            items = {it: round(m.value(m.net.get((k, it), {})), 3) for it in sc.objective}
-            goal = {it: {"now": round(m.by[k]["held"].get(it, 0.0), 3), "then": v} for it, v in items.items()}
+            items = {it: round(m.value(m.made.get((k, it), {})), 3) for it in sc.objective}
+            goal = {it: {"now": round(_made_now(m.by[k]).get(it, 0.0), 3), "then": v} for it, v in items.items()}
         out["factories"].append({"key": k, "name": m.by[k]["name"], "recipes": moved, "resources": res, "goal": goal,
                                  "nearby": near})
     for ri, rt in enumerate(routes):
@@ -339,7 +347,7 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
             for v, c in h.net.get((x["key"], it), {}).items():
                 goal[v] = goal.get(v, 0.0) + w * c
         if goal and h.run(goal, maximize=True):
-            now = sum(w * x["held"].get(it, 0.0) for it, w in sc.objective.items())
+            now = _now_goal(x)
             most = h.value(goal)
             if len(sc.objective) == 1:        # one goal item: say it in items per minute
                 w = next(iter(sc.objective.values())) or 1.0
@@ -469,11 +477,13 @@ def compare_trades(sites: List[dict], routes: List[dict], recipes: Dict[str, Rec
     nearby (what it takes from free nodes nearby, when offered)."""
     declared = {tuple(d) for d in declared}
     probe = _Net(sites, routes, recipes)
-    # a trade worth trying: something the receiving factory's plan makes or uses today
+    # a trade worth trying: something the receiving factory's plan makes or uses
+    # today — or the sending factory's own goal, made to be shipped on
     touch = {x["key"]: {it for rk in x["own"] if rk in recipes for it in (*recipes[rk].inputs, *recipes[rk].outputs)}
              for x in sites}
+    goals = {x["key"]: set(x["scenario"].objective) for x in sites}
     cands = sorted({(a, b, it) for (_, a, b, it, _, _) in probe.arcs
-                    if (a, b, it) not in declared and it in touch.get(b, ())})
+                    if (a, b, it) not in declared and (it in touch.get(b, ()) or it in goals.get(a, ()))})
 
     def run(allow, floor=None):
         g = plan_network(sites, routes, recipes, grow=True, allow=allow, nearby=nearby, headroom=False, floor=floor)

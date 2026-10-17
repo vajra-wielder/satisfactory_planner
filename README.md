@@ -292,7 +292,8 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   each factory's goal from now to then. Apply writes it in like any plan.
 - ⚖ Compare trades: "bring Quickwire in for the computers, or send the Plastic
   over?" — every item one factory on a route could send the other that its
-  plan makes or uses today, each tried on its own on top of what they already
+  plan makes or uses today, and every factory's own goals (made to be shipped
+  on: a goal counts all a factory makes of it, kept or sent), each tried on its own on top of what they already
   send: how much more of each goal it gives (every goal kept at least where it
   is anyway — none is bought by cutting another), what it frees with the goals
   held where they are, and the trains, trucks or drones it takes. Ranked best

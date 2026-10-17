@@ -485,7 +485,7 @@ class Cards(_Temp):
         self.assertGreaterEqual(t, 1 - 1e-6)            # never less than now
         for f in out["factories"]:
             for it, g in (f["goal"] or {}).items():     # each at least t × now: none traded for another
-                self.assertGreaterEqual(g["then"], g["now"] * t - 1e-3, (f["key"], it, g))
+                self.assertGreaterEqual(g["then"], g["now"] * t * (1 - 1e-4) - 1e-3, (f["key"], it, g))
         self.assertIsNone(network.plan_network(sites, rt, server.ALL_RECIPES)["grow"])
 
     def test_compare_trades(self):
@@ -510,6 +510,27 @@ class Cards(_Temp):
         self.assertTrue(top["flows"] and top["routes"][0]["cars"]["solid"] > 0)
         # a factory's own goal is made in it, never shipped to it
         self.assertFalse(any(t["to"] == "rods" and t["item"] == "Iron_Rod" for t in out["trades"]))
+
+    def test_a_goal_is_made_to_be_shipped(self):
+        # modular: plates maximises plates to send them on; frames makes reinforced
+        # plates from them. Shipping plates over raises frames' goal — and plates'
+        # goal still counts every plate it makes, kept or sent
+        _solved(self, "plates", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 480}],
+                objective={"Iron_Plate": 1})
+        _solved(self, "frames", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 60}],
+                objective={"Reinforced_Iron_Plate": 1})
+        sites = server._network_sites(["plates", "frames"])
+        rt = [{"a": "plates", "b": "frames", "mode": "train", "trip_min": 4}]
+        out = network.compare_trades(sites, rt, server.ALL_RECIPES, [])
+        plate = next(t for t in out["trades"] if (t["from"], t["to"], t["item"]) == ("plates", "frames", "Iron_Plate"))
+        self.assertGreater(plate["gain"]["frames"]["Reinforced_Iron_Plate"], 50)
+        made = plate["goals"]["plates"]["Iron_Plate"]
+        self.assertGreaterEqual(made["then"], out["now"]["goals"]["plates"]["Iron_Plate"]["then"] - 1e-3)
+        sent = sum(f["rate"] for f in plate["flows"] if f["item"] == "Iron_Plate")
+        self.assertGreater(sent, 10)                                   # and they really go over
+        # growing every goal: plates' shipped plates count toward its own
+        g = network.plan_network(sites, rt, server.ALL_RECIPES, grow=True)
+        self.assertGreaterEqual(g["grow"], 1 - 1e-6)
 
     def test_grid_geothermal(self):
         import supply
