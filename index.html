@@ -420,8 +420,10 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .mp-rt-lbl rect { fill: rgba(12,14,19,.88); stroke: #3a4258; }
 .mp-rt-lbl text { font: 600 10px var(--mono); fill: var(--t); }
 .mp-hub { cursor: pointer; }
-.mp-hub rect { stroke: #0c0e13; stroke-width: 2.5; }
+.mp-hub rect { stroke: #0c0e13; }
 .mp-hub-n { font: 600 12px var(--font); fill: #fff; paint-order: stroke; stroke: #0c0e13; stroke-width: 3.5px; }
+.mp-hub rect { stroke-width: 1.5; }
+.mp-hub.afar .mp-hub-n { font-size: 10px; stroke-width: 3px; }
 .mp-sel { fill: rgba(245,158,11,.1); stroke: var(--acc); stroke-dasharray: 4 3; }
 .mp-sel.out { fill: rgba(217,97,111,.1); stroke: #d9616f; }
 .mp-tip { position: absolute; display: none; pointer-events: none; background: var(--p2); border: 1px solid var(--b2); border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--t); white-space: nowrap; }

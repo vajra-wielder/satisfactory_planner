@@ -1791,6 +1791,8 @@ class Handler(BaseHTTPRequestHandler):
                         out["_last_solve"] = {"result": _owed_fields(entry["result"], owed, data),
                                               "styles": entry.get("styles") or []}
                         _set_dual_cache(_build_scenario(data), entry["result"])
+                    else:   # made before a change (to it, or to the planner): shown while it's solved afresh
+                        out["_stale_solve"] = {"result": entry["result"], "styles": entry.get("styles") or []}
                 except Exception:
                     pass
             self._json(200, out)

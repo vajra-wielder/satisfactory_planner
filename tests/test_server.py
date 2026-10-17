@@ -553,6 +553,21 @@ class API(_Temp):
         self.assertEqual((code, r["status"]), (200, "done"))
         self.assertAlmostEqual(r["result"]["objective_value"], 60, places=3)
 
+    def test_an_out_of_date_plan_still_comes_along(self):
+        # a plan made before a change opens with the factory, to be solved afresh
+        d, res = _solved(self, "old", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 60}],
+                         objective={"Iron_Ingot": 1})
+        got = self.call("GET", "/api/scenarios/old")[1]
+        self.assertIn("_last_solve", got)
+        self.assertNotIn("_stale_solve", got)
+        key = server._result_key("old")
+        entry = server._cache_read(key)
+        server._cache_write(key, {**entry, "base_sig": "made-by-an-older-planner", "sig": "x"})
+        server._mem_cache.clear()
+        got = self.call("GET", "/api/scenarios/old")[1]
+        self.assertNotIn("_last_solve", got)
+        self.assertAlmostEqual(got["_stale_solve"]["result"]["objective_value"], res["objective_value"])
+
     def test_storage_set_from_elsewhere(self):
         self.save("depot", to_storage=[{"item": "Iron_Plate", "rate": 5}, {"item": "Wire", "rate": 3}])
         code, d = self.call("POST", "/api/storage", {"key": "depot", "item": "Iron_Plate", "rate": 9})

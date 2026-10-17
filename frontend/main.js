@@ -428,7 +428,8 @@ function handleReset() {
 // Load a saved scenario (and its cached plan, when it matches) into the solver
 function openScenario(key) {
   return fetchScenario(key).then(data => {
-    const { _last_solve: last, pinboard: _oldPinboard, ...scenario } = data;
+    const { _last_solve: fresh, _stale_solve: stale, pinboard: _oldPinboard, ...scenario } = data;
+    const last = fresh || stale;
     LOADED_KEY = key; LOADED_NAME = scenario.name; setBuildSelf(key, scenario.name);
     scenario.enabled_machines = [...(PROGRESS.machines || [])];   // shared
     Object.assign(SC, scenario);
@@ -451,11 +452,16 @@ function openScenario(key) {
     forget();
     unpin();                                // a pin is of one factory's plans
     updateSummaries();
-    showTree(!RESULT?.flows?.length);       // no plan yet: what its resources can become
+    // The factory's plan, as it was last solved — solved afresh when that's out
+    // of date or there's none yet; only a factory with no goals opens on the tree
+    const goals = ['objective', 'must_produce', 'min_produce'].some(k => Object.keys(SC[k] || {}).length);
+    const resolve = !fresh && goals;
+    showTree(!RESULT?.flows?.length && !resolve);
     updateIssuesBadge(RESULT);
     renderResultsBar();
     renderBuildCost();
     initLayout();
+    if (resolve) handleSolve('open');
   });
 }
 

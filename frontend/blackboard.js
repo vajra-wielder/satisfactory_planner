@@ -941,10 +941,12 @@ function makeMap(el, M) {
         const lx = (x1 + 2 * mx + x2) / 4, ly = (y1 + 2 * my + y2) / 4;
         if (r.label) labels += `<g class="mp-rt-lbl"><rect x="${lx - r.label.length * 3.1 - 6}" y="${ly - 9}" width="${r.label.length * 6.2 + 12}" height="17" rx="8"/><text x="${lx}" y="${ly + 3.5}" text-anchor="middle">${r.label}</text></g>`;
       });
+      // small from afar, so the nodes round them stay in sight; full size up close
+      const rel = M.view.scale / (M.fitScale || M.view.scale), r = rel >= 4.5 ? 8 : rel >= 2 ? 6 : 4;
       hubs.forEach(h => {
         const x = sx(h.x), y = sy(h.y);
-        labels += `<g class="mp-hub" data-hub="${h.key}"><rect x="${x - 9}" y="${y - 9}" width="18" height="18" rx="4" style="fill:${h.color}"/>
-          <text class="mp-hub-n" x="${x + 13}" y="${y + 4}">${h.name}</text></g>`;
+        labels += `<g class="mp-hub${rel < 2 ? ' afar' : ''}" data-hub="${h.key}"><rect x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="${r / 2.5}" style="fill:${h.color}"/>
+          <text class="mp-hub-n" x="${x + r + 4}" y="${y + 4}">${h.name}</text></g>`;
       });
     }
     const wells = {}, spare = spareIds(), vis = [];
