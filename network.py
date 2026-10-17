@@ -72,7 +72,10 @@ def _unit_cost(item: str, route: dict) -> Optional[float]:
 class _Net:
     """One LP of the network. held: per factory, outputs it must still make."""
 
-    def __init__(self, sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], free_goal=None):
+    def __init__(self, sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], free_goal=None,
+                 allow=None, nearby=None):
+        """allow: the (from, to, item) that may cross (None: anything a route can
+        carry); nearby: {factory: {resource: /min}} more it could mine nearby."""
         self.s = s = pywraplp.Solver.CreateSolver("GLOP")
         inf = s.infinity()
         self.keys = keys = [x["key"] for x in sites]
@@ -94,6 +97,8 @@ class _Net:
                 dsc = by[dst]["scenario"]
                 own_goals = set(dsc.objective) | set(dsc.must_produce) | set(dsc.min_produce)
                 for it in sorted((have & use) - own_goals):
+                    if allow is not None and (src, dst, it) not in allow:
+                        continue
                     c = _unit_cost(it, rt)
                     if c is not None:
                         arcs.append((ri, src, dst, it, s.NumVar(0, inf, ""), c))
@@ -101,6 +106,8 @@ class _Net:
         # Per factory and item: net (made + brought − sent) ≥ what must stay
         self.net: Dict[tuple, Dict[object, float]] = {}
         self.draw: Dict[tuple, object] = {}
+        self.near: Dict[tuple, object] = {}       # (factory, resource) → what it takes from nodes nearby
+        nearby = nearby or {}
         for k in keys:
             sc = by[k]["scenario"]
             unlimited = set(sc.unlimited_resources)
@@ -108,7 +115,7 @@ class _Net:
             if k == free_goal or (isinstance(free_goal, set) and k in free_goal):   # its goal items are what's being maximised
                 held = {it: r for it, r in held.items() if it not in sc.objective}
             items = {it for r in allowed[k].values() for it in (*r.inputs, *r.outputs)} \
-                | set(sc.available_resources) | set(by[k]["held"])
+                | set(sc.available_resources) | set(by[k]["held"]) | set(nearby.get(k) or {})
             for it in items:
                 expr: Dict[object, float] = {}
                 for rk, r in allowed[k].items():
@@ -130,6 +137,10 @@ class _Net:
                 elif supply > 0 and (it in NODE or it not in makeable):
                     u = self.draw[(k, it)] = s.NumVar(0, supply, "")   # from its own supply
                     ct.SetCoefficient(u, 1.0)
+                cap = float((nearby.get(k) or {}).get(it, 0.0) or 0.0)
+                if cap > 0 and it not in unlimited:
+                    u = self.near[(k, it)] = s.NumVar(0, cap, "")      # from free nodes nearby
+                    ct.SetCoefficient(u, 1.0)
 
     def run(self, obj: Dict[object, float], maximize: bool = False) -> bool:
         o = self.s.Objective()
@@ -140,12 +151,18 @@ class _Net:
         return self.s.Solve() in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
 
     def lock(self, obj: Dict[object, float], value: float) -> None:
-        ct = self.s.Constraint(-self.s.infinity(), value + abs(value) * 1e-6 + 1e-9)
+        # held a little loose: a stage after must still find the last one's optimum
+        ct = self.s.Constraint(-self.s.infinity(), value + abs(value) * 1e-5 + 1e-6)
         for v, c in obj.items():
             ct.SetCoefficient(v, ct.GetCoefficient(v) + c)
 
     def value(self, obj: Dict[object, float]) -> float:
         return sum(c * v.solution_value() for v, c in obj.items())
+
+    def ct_ge(self, expr: Dict[object, float], lo: float) -> None:
+        ct = self.s.Constraint(lo, self.s.infinity())
+        for v, c in expr.items():
+            ct.SetCoefficient(v, c)
 
     def goal_of(self, k: str) -> Dict[object, float]:
         """Factory k's weighted goal: what it makes of its goal items, net."""
@@ -160,45 +177,63 @@ def _now_goal(x: dict) -> float:
     return sum(w * x["held"].get(it, 0.0) for it, w in x["scenario"].objective.items())
 
 
-def _grow(m: "_Net", sites: List[dict]) -> Optional[float]:
-    """Raise every goal together: the largest t with each factory that has a
-    goal making at least t × what it makes now (so none is traded for
-    another), then — t held — the most of every goal on top, each as a share
-    of its own. Returns t, or None when nothing has a goal to grow."""
-    grow = [x for x in sites if x["scenario"].objective and _now_goal(x) > 1e-9]
-    if not grow:
+def _grow(m: "_Net", sites: List[dict], floor=None) -> Optional[float]:
+    """Raise every goal together: the largest t with each goal item of every
+    factory (each on its own — a factory after Power and Computers keeps its
+    Computers) made at least t × what it makes now, so none is traded for
+    another; then — t held — the most of every one on top, each as a share of
+    its own. Returns t, or None when nothing has a goal to grow.
+    floor: {(factory, item): /min} — instead of t, each goal item at least that
+    (comparing an option: no goal below what it is anyway)."""
+    items = [(x["key"], it, x["held"][it]) for x in sites for it in x["scenario"].objective
+             if x["held"].get(it, 0.0) > 1e-9]
+    if not items:
         return None
-    t = m.s.NumVar(0, m.s.infinity(), "")
-    for x in grow:
-        ct = m.s.Constraint(0, m.s.infinity())          # goal − t·now ≥ 0
-        for v, c in m.goal_of(x["key"]).items():
-            ct.SetCoefficient(v, c)
-        ct.SetCoefficient(t, -_now_goal(x))
-    if not m.run({t: 1.0}, maximize=True):
-        return None
-    best = t.solution_value()
-    t.SetLb(best * (1 - 1e-6))
+    if floor is not None:
+        for k, it, now in items:
+            lo = floor.get((k, it), 0.0) * (1 - 1e-5)
+            if lo > 0:
+                m.ct_ge(m.net.get((k, it), {}), lo)
+        best = 1.0
+    else:
+        t = m.s.NumVar(0, m.s.infinity(), "")
+        for k, it, now in items:
+            ct = m.s.Constraint(0, m.s.infinity())          # made − t·now ≥ 0
+            for v, c in m.net.get((k, it), {}).items():
+                ct.SetCoefficient(v, c)
+            ct.SetCoefficient(t, -now)
+        if not m.run({t: 1.0}, maximize=True):
+            return None
+        best = t.solution_value()
+        t.SetLb(best * (1 - 1e-5))
     share: Dict[object, float] = {}
-    for x in grow:
-        for v, c in m.goal_of(x["key"]).items():
-            share[v] = share.get(v, 0.0) + c / _now_goal(x)
-    m.run(share, maximize=True)
-    m.lock({v: -c for v, c in share.items()}, -m.value(share))
+    for k, it, now in items:
+        for v, c in m.net.get((k, it), {}).items():
+            share[v] = share.get(v, 0.0) + c / now
+    if m.run(share, maximize=True):
+        m.lock({v: -c for v, c in share.items()}, -m.value(share))
     return best
 
 
-def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], grow: bool = False) -> dict:
+def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], grow: bool = False,
+                 allow=None, nearby=None, headroom: bool = True, floor=None) -> dict:
     """sites: [{key, name, scenario: Scenario, held: {item: rate},
     own: {recipe: machine-equivalents}, own_draw: {item: rate}}];
     routes: [{a, b, mode, trip_min}]. grow: raise every goal together first
-    (see _grow) — the factories' goals, not only their current outputs."""
+    (see _grow) — the factories' goals, not only their current outputs.
+    allow: only these (from, to, item) may cross; nearby: {factory: {resource:
+    /min}} it could also mine from free nodes nearby (each counted as a
+    resource, like its own); headroom: also each goal's most on its own."""
     goals = {x["key"] for x in sites if x["scenario"].objective} if grow else None
-    m = _Net(sites, routes, recipes, free_goal=goals)
-    t = _grow(m, sites) if grow else None
+    m = _Net(sites, routes, recipes, free_goal=goals, allow=allow, nearby=nearby)
+    t = _grow(m, sites, floor) if grow else None
     if grow and t is None:
         return {"ok": False, "error": "No factory here has a goal it makes yet — solve them first."}
     supply = {key: float(m.by[key[0]]["scenario"].available_resources[key[1]]) for key in m.draw}
-    res_obj = {u: 100.0 / supply[key] / max(1, len(m.draw)) for key, u in m.draw.items()}
+    n_res = max(1, len(m.draw) + len(m.near))
+    res_obj = {u: 100.0 / supply[key] / n_res for key, u in m.draw.items()}
+    for key, u in m.near.items():      # a node nearby costs like its own: a share of what's there
+        res_obj[u] = 100.0 / max(1e-9, u.ub()) / n_res
     if not m.run(res_obj):
         return {"ok": False, "error": "The network can't make every factory's current outputs."}
     score = m.value(res_obj)
@@ -222,7 +257,8 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
     move_obj = {L: 1.0 for L in busy.values()}
     for (_, _, _, _, v, c) in m.arcs:
         move_obj[v] = move_obj.get(v, 0.0) + 1e-3 * c
-    m.run(move_obj)
+    if not m.run(move_obj):
+        return {"ok": False, "error": "The network plan didn't settle (numerics) — try again with fewer routes."}
     m.lock(move_obj, m.value(move_obj))
     # Least change from each solved factory's own plan: |q − own| per recipe
     change: Dict[object, float] = {}
@@ -239,11 +275,11 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
                 ct.SetCoefficient(d, 1.0)
                 ct.SetCoefficient(q, -sign)
             change[d] = 1.0
-    if change:
-        m.run(change)
+    if change and m.run(change):
         m.lock(change, m.value(change))
-    m.run({m.q[(k, rk)]: float(machine_space(META, r.machine))
-           for k in m.keys for rk, r in m.allowed[k].items()})
+    if not m.run({m.q[(k, rk)]: float(machine_space(META, r.machine))
+                  for k in m.keys for rk, r in m.allowed[k].items()}):
+        m.run(move_obj)                   # (a failed solve leaves no plan: the last one back)
 
     out = {"ok": True, "resource_score": round(score, 3), "factories": [], "routes": [],
            "grow": None if t is None else round(t, 4)}
@@ -263,12 +299,14 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
         res = {it: {"supply": round(supply[(kk, it)], 3), "used": round(u.solution_value(), 3),
                     "before": round(m.by[k]["own_draw"].get(it, 0.0), 3)}
                for (kk, it), u in m.draw.items() if kk == k}
+        near = {it: round(u.solution_value(), 3) for (kk, it), u in m.near.items() if kk == k and u.solution_value() > _SHOW}
         sc = m.by[k]["scenario"]
         goal = None
         if sc.objective:
             items = {it: round(m.value(m.net.get((k, it), {})), 3) for it in sc.objective}
             goal = {it: {"now": round(m.by[k]["held"].get(it, 0.0), 3), "then": v} for it, v in items.items()}
-        out["factories"].append({"key": k, "name": m.by[k]["name"], "recipes": moved, "resources": res, "goal": goal})
+        out["factories"].append({"key": k, "name": m.by[k]["name"], "recipes": moved, "resources": res, "goal": goal,
+                                 "nearby": near})
     for ri, rt in enumerate(routes):
         items, each = [], {}
         for (r2, a, b, it, v, c) in m.arcs:
@@ -291,7 +329,7 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
 
     # Headroom: each goal factory's most, with every other factory held
     out["headroom"] = {}
-    for x in sites:
+    for x in (sites if headroom else []):
         sc = x["scenario"]
         if not sc.objective:
             continue
@@ -397,3 +435,101 @@ def drawn(result: dict) -> Dict[str, float]:
         for it, q in (f.get("outputs") or {}).items():
             out[it] = out.get(it, 0.0) - q
     return {k: v for k, v in out.items() if v > 1e-6}
+
+
+# ── Comparing trades ─────────────────────────────────────────────────────────
+# "Should Rex Roar bring in Quickwire for its computers, or send its Plastic
+# over to the factory that makes it?" Each trade a route could carry is tried
+# on its own, on top of what the factories already send each other: how much
+# every goal could rise together (grow), and — goals held where they are —
+# what each factory then needs of its resources, against now (what it frees).
+# All of them together is the network plan. Ranked by the rise, then by what
+# it frees.
+
+def _summary(g: dict, h: dict) -> dict:
+    flows = [{"from": i["from"], "to": i["to"], "item": i["item"], "rate": i["rate"]}
+             for rt in (g.get("routes") or []) for i in rt["items"]]
+    cars = [{"a": rt["a"], "b": rt["b"], "mode": rt["mode"], "trip_min": rt["trip_min"],
+             "cars": rt["cars"], "load": rt["load"]} for rt in (g.get("routes") or []) if rt["items"]]
+    return {"ok": bool(g.get("ok") and h.get("ok")), "grow": g.get("grow"), "flows": flows, "routes": cars,
+            "goals": {f["key"]: f.get("goal") for f in g.get("factories", []) if f.get("goal")},
+            "nearby": {f["key"]: f["nearby"] for f in g.get("factories", []) if f.get("nearby")},
+            "used": {f["key"]: {it: x["used"] for it, x in f["resources"].items()} for f in h.get("factories", [])},
+            "score_held": h.get("resource_score"),
+            "held_nearby": {f["key"]: f["nearby"] for f in h.get("factories", []) if f.get("nearby")},
+            "error": g.get("error") or h.get("error")}
+
+
+def compare_trades(sites: List[dict], routes: List[dict], recipes: Dict[str, Recipe], declared,
+                   nearby=None, most: int = 40) -> dict:
+    """declared: the (from, to, item) the factories already send each other.
+    {now, all, trades: [{from, to, item, …summary}]}, each summary: grow (every
+    goal × this), goals {factory: {item: {now, then}}}, freed {factory:
+    {resource: /min less than now, goals held}}, routes (the vehicles busy),
+    nearby (what it takes from free nodes nearby, when offered)."""
+    declared = {tuple(d) for d in declared}
+    probe = _Net(sites, routes, recipes)
+    # a trade worth trying: something the receiving factory's plan makes or uses today
+    touch = {x["key"]: {it for rk in x["own"] if rk in recipes for it in (*recipes[rk].inputs, *recipes[rk].outputs)}
+             for x in sites}
+    cands = sorted({(a, b, it) for (_, a, b, it, _, _) in probe.arcs
+                    if (a, b, it) not in declared and it in touch.get(b, ())})
+
+    def run(allow, floor=None):
+        g = plan_network(sites, routes, recipes, grow=True, allow=allow, nearby=nearby, headroom=False, floor=floor)
+        h = plan_network(sites, routes, recipes, grow=False, allow=allow, nearby=nearby, headroom=False)
+        return _summary(g, h)
+
+    now = run(set(declared))
+    # an option keeps every goal at least where it is now; what it adds is on top
+    floor = {(k, it): g["then"] for k, gs in now["goals"].items() for it, g in gs.items()}
+    best = run(None, floor)
+    import threading
+    out: Dict[tuple, dict] = {}
+    def work(cs):
+        for c in cs:
+            out[c] = run(set(declared) | {c}, floor)
+    ts = [threading.Thread(target=work, args=(cands[i::4],)) for i in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    # against the network as it is (the same model, today's trades only) — not
+    # the saved plans, whose whole machines make every option look like a gain
+    def compare(sm):
+        f = {}
+        for k, used in sm["used"].items():
+            base = now["used"].get(k, {})
+            # a real saving, not the slack the later stages may shift (past 2%)
+            d = {it: round(base.get(it, 0.0) - v, 3) for it, v in used.items()
+                 if base.get(it, 0.0) - v > max(1.0, 0.02 * base.get(it, 0.0))}
+            if d:
+                f[k] = d
+        sm["freed"] = f
+        gain, pct = {}, []
+        for k, gs in sm["goals"].items():
+            for it, g in gs.items():
+                b = now["goals"].get(k, {}).get(it, {}).get("then", g["now"])
+                p = (g["then"] - b) / b if b > 1e-9 else 0.0
+                pct.append(p)
+                if abs(p) > 1e-4:
+                    gain.setdefault(k, {})[it] = round(100 * p, 2)
+        sm["gain"] = gain                      # {factory: {goal item: % against now}}
+        sm["score"] = round(100 * sum(pct) / len(pct), 3) if pct else 0.0   # the mean, %
+        # what it frees: the network's resource score (each resource as a share of
+        # its supply, averaged), goals held, against now — % less
+        b0, b1 = now.get("score_held"), sm.get("score_held")
+        sm["frees"] = round(100 * (b0 - b1) / b0, 3) if b0 and b1 is not None else 0.0
+        return sm
+    compare(now)
+    compare(best)
+    trades, quiet = [], []
+    for (a, b, it), sm in out.items():
+        if not sm["ok"]:
+            continue
+        compare(sm)
+        (trades if sm["score"] > 0.05 or sm["frees"] > 0.25 else quiet).append({"from": a, "to": b, "item": it, **sm})
+    trades.sort(key=lambda t: (-t["score"], -t["frees"]))
+    return {"now": now, "all": best, "trades": trades[:most], "tried": len(cands),
+            "no_effect": sorted({(q["from"], q["to"], q["item"]) for q in quiet})}

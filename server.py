@@ -534,6 +534,34 @@ def _network_sites(keys) -> list:
                       "solved": result is not None})
     return sites
 
+def _nearby(keys, files: dict, km: float):
+    """Free nodes within km of each factory's own nodes, as more it could mine:
+    ({key: {resource: /min at its miner, 100%}}, {key: {resource: [node ids, nearest first]}}).
+    Free: no saved factory mines it. Nodes and oil only (wells and geysers aside)."""
+    nodes = supply.map_nodes()
+    taken = {i for d in files.values() for r in d.get("resource_nodes") or [] for i in r.get("nodes") or []}
+    import math
+    caps, ids = {}, {}
+    for k in keys:
+        d = files[k]
+        pts = [(nodes[i]["x"], nodes[i]["y"]) for r in d.get("resource_nodes") or [] for i in r.get("nodes") or [] if i in nodes]
+        if not pts:
+            continue
+        miner = supply.miner_of(d)
+        near = []
+        for i, n in nodes.items():
+            if i in taken or n.get("w") or n["r"] in ("Geyser", "Water", "Nitrogen_Gas"):
+                continue
+            dist = min(math.hypot(n["x"] - x, n["y"] - y) for x, y in pts)
+            if dist <= km * 1000:
+                near.append((dist, i, n))
+        for dist, i, n in sorted(near):
+            ex = "Oil_Extractor" if n["r"] == "Crude_Oil" else "Miner"
+            rate = supply.node_rate({"resource": n["r"], "extractor": ex, "nodes": [i]}, miner)
+            caps.setdefault(k, {})[n["r"]] = round(caps.get(k, {}).get(n["r"], 0.0) + rate, 3)
+            ids.setdefault(k, {}).setdefault(n["r"], []).append(i)
+    return caps, ids
+
 def _saved_factories(stale_ok: bool = False):
     """([(key, scenario data, plan or None)], claims) for every saved scenario."""
     files = _scenario_files()
@@ -2028,6 +2056,34 @@ class Handler(BaseHTTPRequestHandler):
                 sites = _network_sites(keys)
                 out = network.plan_network(sites, routes, ALL_RECIPES, grow=bool(b.get("grow")))
                 out["unsolved"] = [s["name"] for s in sites if not s["solved"]]
+                self._json(200, out)
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._json(500, {"error": str(e)})
+            return
+
+        if path == "/api/trades":
+            # what each trade between factories on a route is worth (network.compare_trades)
+            b = self._read_obj()
+            have = {k for k, _ in _scenario_files()}
+            routes = [{"a": r["a"], "b": r["b"], "mode": r.get("mode") if r.get("mode") in network.VEHICLES else "train",
+                       "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
+                      for r in (b.get("routes") if isinstance(b.get("routes"), list) else [])
+                      if isinstance(r, dict) and r.get("a") in have and r.get("b") in have and r["a"] != r["b"]]
+            keys = sorted({k for r in routes for k in (r["a"], r["b"])})
+            if not routes:
+                self._json(200, {"ok": False, "error": "Join two factories with a route first."})
+                return
+            try:
+                files = dict(_scenario_files())
+                declared = [(f["factory"], k, f["item"]) for k in keys for f in files[k].get("from_factories") or []
+                            if f.get("factory") in keys and f.get("item")]
+                km = _num(b.get("nearby_km"), 0.0, 0.0)
+                near, ids = _nearby(keys, files, km) if km > 0 else ({}, {})
+                sites = _network_sites(keys)
+                out = network.compare_trades(sites, routes, ALL_RECIPES, declared, nearby=near)
+                out.update(ok=True, nearby_nodes=ids, names={k: files[k].get("name", k) for k in keys},
+                           unsolved=[x["name"] for x in sites if not x["solved"]])
                 self._json(200, out)
             except Exception as e:
                 import traceback; traceback.print_exc()

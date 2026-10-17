@@ -290,6 +290,16 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   the largest share every goal can rise by at once (none traded for another),
   then the most of each on top, then least resources and transport as above —
   each factory's goal from now to then. Apply writes it in like any plan.
+- ⚖ Compare trades: "bring Quickwire in for the computers, or send the Plastic
+  over?" — every item one factory on a route could send the other that its
+  plan makes or uses today, each tried on its own on top of what they already
+  send: how much more of each goal it gives (every goal kept at least where it
+  is anyway — none is bought by cutting another), what it frees with the goals
+  held where they are, and the trains, trucks or drones it takes. Ranked best
+  first; All of them together is the network plan; Apply writes one into the
+  factories' imports and re-solves them. "+ free nodes within N km" counts the
+  free nodes that close to each factory as more it could mine — and says which
+  it would, per factory
 - Heavy routes: past one train (8 cars), 6 trucks or tractors, or 4 drones,
   a route's load turns amber — the vehicles counted for the imports you set
   too, before any network plan — saying what most of it is and, when the

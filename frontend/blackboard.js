@@ -116,6 +116,7 @@ export function initBlackboard({ onOpenFactory: open }) {
     b.addEventListener('click', () => showTab(b.dataset.tab)));
   $('bb-plan').addEventListener('click', () => planNetwork(false));
   $('bb-grow').addEventListener('click', () => planNetwork(true));
+  $('bb-trades').addEventListener('click', compareTrades);
   document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
     FLOW_SRC = b.dataset.src;
     document.querySelectorAll('#bb-flow-src button').forEach(x => x.classList.toggle('on', x === b));
@@ -666,13 +667,17 @@ function mapNetwork() {
 // its imports, the alternates it now runs are switched on; then re-solve them
 // in order, so each gets its exact build.
 function applyNet() {
-  const name = k => factory(k)?.name || k;
   const flows = NET.routes.flatMap(rt => rt.items.map(i => ({ from: i.from, to: i.to, item: i.item, rate: i.rate })));
   const alts = {};
   NET.factories.forEach(f => {
     const a = Object.keys(f.recipes.added).filter(k => RECIPES[k]?.alternate);
     if (a.length) alts[f.key] = a;
   });
+  applyFlows(flows, alts);
+}
+// Write what crosses into the factories' imports (and switch on alternates), then re-solve them in order
+function applyFlows(flows, alts = {}) {
+  const name = k => factory(k)?.name || k;
   const lines = [];
   flows.forEach(f => lines.push(`${name(f.to)} takes ${fmt(f.rate)}/min ${itemName(f.item)} from ${name(f.from)}`));
   Object.entries(alts).forEach(([k, a]) => lines.push(`${name(k)} switches on ${a.map(recipeName).join(', ')}`));
@@ -692,6 +697,72 @@ function applyNet() {
         if (!st.running) { off(); openBlackboard(); }
       });
     });
+}
+
+
+// ══════════════════════════════════════════════════════════
+// COMPARING TRADES
+// ══════════════════════════════════════════════════════════
+// "Bring Quickwire in, or send the Plastic over?" — each thing one factory on a
+// route could send another, tried on its own on top of what they already send
+// (network.compare_trades): how much more of each goal (none goes down for it),
+// what it frees with the goals held, and the vehicles it keeps busy. All of
+// them together is the network plan. Free nodes nearby can count as more to mine.
+let TRADES = null;
+function compareTrades() {
+  const panel = $('bb-net');
+  panel.style.display = '';
+  if (!LAYOUT.routes.length) { panel.innerHTML = '<p class="bb-hint">Add a route first: drag a factory\'s ⇄ onto another.</p>'; return; }
+  panel.innerHTML = '<p class="bb-hint">Trying each trade on its own…</p>';
+  fetch('/api/trades', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ routes: LAYOUT.routes, nearby_km: +$('bb-near-km').value || 0 }) })
+    .then(r => r.json()).then(d => { TRADES = d; renderTrades(); })
+    .catch(e => { panel.innerHTML = `<p class="bb-warn">Comparing failed: ${e.message}</p>`; });
+}
+function renderTrades() {
+  const panel = $('bb-net'), d = TRADES;
+  if (!d?.ok) { panel.innerHTML = `<p class="bb-warn">${d?.error || 'Nothing to compare.'}</p>`; return; }
+  const nm = k => d.names?.[k] || k;
+  const pc = v => `${v > 0 ? '+' : ''}${Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1)}%`;
+  const gains = t => Object.entries(t.gain || {}).flatMap(([k, gs]) => Object.entries(gs).map(([it, p]) =>
+    `<span class="tr-g">${pc(p)}</span> ${itemName(it)} <span class="n-hint">at ${nm(k)}</span>`)).join(' · ');
+  const freed = t => Object.entries(t.freed || {}).flatMap(([k, fr]) => Object.entries(fr).map(([it, v]) =>
+    `${fmt(v)}/min ${itemName(it)} <span class="n-hint">at ${nm(k)}</span>`)).join(' · ');
+  const moves = t => (t.routes || []).map(r => vehicles({ ...r, cars: r.cars }).short).join(' · ');
+  // what it takes from free nodes nearby, per factory, biggest first (the node counts on hover)
+  const near = t => Object.entries(t.nearby || {}).map(([k, res]) => `<div class="bb-net-b"><b>Near ${nm(k)}</b>: ${
+    Object.entries(res).sort((a, b) => b[1] - a[1]).map(([it, v]) => {
+      const n = (d.nearby_nodes?.[k]?.[it] || []).length;
+      return `<span title="of ${n} free node${n === 1 ? '' : 's'} nearby">${itemName(it)} ${fmt(Math.round(v))}</span>`;
+    }).join(' · ')}</div>`).join('');
+  // the shipments, largest first: a few, then how many more
+  const shipments = (fl, most = 5) => {
+    const f = [...(fl || [])].sort((a, b) => b.rate - a.rate);
+    return f.slice(0, most).map(x => `${itemName(x.item)} ${fmt(Math.round(x.rate))}/min ${nm(x.from)} → ${nm(x.to)}`).join(' · ')
+      + (f.length > most ? ` <span class="n-hint">+${f.length - most} smaller</span>` : '');
+  };
+  const row = (t, i) => `<div class="tr-row">
+      <div class="tr-h"><span>${i + 1}. ${itemName(t.item)}: ${nm(t.from)} → ${nm(t.to)}</span>
+        <button class="bsm" data-tr="${i}" title="Write this into the factories' imports, then re-solve them">Apply</button></div>
+      ${t.score > 0.05 ? `<div>${gains(t)}</div>` : ''}
+      ${t.frees > 0.25 ? `<div><span class="tr-f">frees ${t.frees.toFixed(1)}%</span>${freed(t) ? `: ${freed(t)}` : ''} <span class="n-hint">goals held</span></div>` : ''}
+      <div class="n-hint">${(t.flows || []).filter(f => f.item === t.item).map(f => `${fmt(f.rate)}/min`).join(', ')}${moves(t) ? ` · ${moves(t)}` : ''}</div>
+    </div>`;
+  const all = d.all, nowNear = near(d.now);
+  panel.innerHTML = `<div class="bb-net-t">Compare trades <span class="bb-x" id="bb-net-close" title="Close">✕</span></div>
+    <p class="bb-hint">Each on its own, on top of what the factories send each other now — no goal goes down for it.
+      ${d.tried} tried${d.unsolved?.length ? `; not solved, so held at their declared outputs: ${d.unsolved.join(', ')}` : ''}.</p>
+    ${nowNear ? `<div class="bb-hint" style="margin-top:4px">From free nodes nearby, as things are — mined in every option below:</div>${nowNear}` : ''}
+    <div class="tr-row"><div class="tr-h"><span>All of them together</span><button class="bsm act" id="tr-all" title="The network plan: write it in, then re-solve">Apply</button></div>
+      ${all.score > 0.05 ? `<div>${gains(all)}</div>` : ''}${all.frees > 0.25 ? `<div><span class="tr-f">frees ${all.frees.toFixed(1)}%</span>${freed(all) ? `: ${freed(all)}` : ''}</div>` : ''}
+      <div class="n-hint">${shipments(all.flows) || 'nothing more to send'}</div></div>
+    ${d.trades.length ? d.trades.map(row).join('') : '<p class="bb-hint">No single trade adds to a goal or frees anything.</p>'}
+    ${d.no_effect?.length ? `<details class="bb-hint" style="margin-top:8px"><summary>${d.no_effect.length} change nothing</summary>
+      ${d.no_effect.map(([a, b, it]) => `${itemName(it)} ${nm(a)} → ${nm(b)}`).join(' · ')}</details>` : ''}
+    <div id="bb-chain"></div>`;
+  $('bb-net-close').addEventListener('click', () => { panel.style.display = 'none'; });
+  $('tr-all').addEventListener('click', () => applyFlows(all.flows || []));
+  panel.querySelectorAll('[data-tr]').forEach(b => b.addEventListener('click', () => applyFlows(d.trades[+b.dataset.tr].flows || [])));
 }
 
 

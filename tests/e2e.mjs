@@ -1452,6 +1452,58 @@ SUITES.improve = async ({ B, api, chromium, stop, log }) => {
   }
 };
 
+
+// ── trades ──────────────────────────────────────────────
+// Compare trades: a mine with iron to spare, a rod factory short of it — each
+// thing one could send the other, tried on its own; the best first, Apply.
+SUITES.trades = async ({ B, api, chromium, stop, log }) => {
+  let failed = 0;
+  const step = async (name, fn) => {
+    try { await fn(); log(`ok  ${name}`); } catch (e) { failed++; log(`FAIL ${name}\n     ${e.message.split('\n').slice(0, 6).join('\n     ')}`); }
+  };
+  const solveAndSave = async (key, sc) => {
+    await api(`/api/scenarios/${key}`, sc);
+    const { job_id } = await api('/api/solve', { ...sc, solve_styles: [], base_scenario: sc });
+    return api(`/api/solve/${job_id}?wait=1`);
+  };
+  try {
+    await solveAndSave('mine', { name: 'Mine', resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 600 }], must_produce: { Iron_Plate: 100 } });
+    await solveAndSave('rods', { name: 'Rods', resource_nodes: [{ resource: 'Iron_Ore', extractor: 'fixed', rate: 60 }], objective: { Iron_Rod: 1 } });
+    await api('/api/blackboard', { positions: {}, routes: [{ a: 'mine', b: 'rods', mode: 'train', trip_min: 4 }] });
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+    const errors = [];
+    page.on('pageerror', e => errors.push(String(e)));
+    await page.goto(B + '/');
+    await page.waitForFunction(() => document.querySelector('#bsolve'));
+    await sleep(600);
+    await page.click('#btn-blackboard'); await page.waitForSelector('#bb-trades');
+    await step('each trade on its own: the best first, what it adds, what it takes to move', async () => {
+      await page.click('#bb-trades');
+      await page.waitForFunction(() => /All of them together/.test(document.getElementById('bb-net')?.innerText || ''), null, { timeout: 60000 });
+      const first = await page.locator('#bb-net .tr-row').nth(1).innerText();
+      assert.match(first, /^1\. Iron (Ore|Ingot): Mine → Rods/, first);
+      assert.match(first, /\+\d+% Iron Rod at Rods/);
+      assert.match(first, /\d+\/min · .*(car|train)/);
+      assert.match(await page.locator('#bb-net').innerText(), /tried/);
+    });
+    await step('Apply writes it into the factories and re-solves them', async () => {
+      page.once('dialog', dl => dl.accept());
+      await page.locator('#bb-net [data-tr="0"]').click();
+      await page.waitForFunction(() => /done|Re-solv|solved/i.test(document.getElementById('bb-chain')?.innerText || ''), null, { timeout: 60000 });
+      const rods = await api('/api/scenarios/rods');
+      assert.ok((rods.from_factories || []).some(f => f.factory === 'mine' && /Iron_(Ore|Ingot)/.test(f.item) && f.rate > 0), JSON.stringify(rods.from_factories));
+    });
+    if (errors.length) { failed++; log('FAIL page errors:\n     ' + errors.join('\n     ')); }
+    await browser.close();
+    log(failed ? `\n${failed} failed` : '\nall passed');
+    stop(failed ? 1 : 0);
+  } catch (e) {
+    log('FAIL', e.stack || e);
+    stop(1);
+  }
+};
+
 // ── The run ──────────────────────────────────────────────────────────────────
 const freePort = () => new Promise(res => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
 const AT_ONCE = Math.max(1, Math.min(3, (await import('node:os')).cpus().length - 1));

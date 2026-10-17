@@ -488,6 +488,29 @@ class Cards(_Temp):
                 self.assertGreaterEqual(g["then"], g["now"] * t - 1e-3, (f["key"], it, g))
         self.assertIsNone(network.plan_network(sites, rt, server.ALL_RECIPES)["grow"])
 
+    def test_compare_trades(self):
+        # a mine with iron to spare beside a rod factory short of it: shipping it the
+        # ore (or ingots) raises its rods, and no goal anywhere goes down for it
+        _solved(self, "mine", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 600}],
+                must_produce={"Iron_Plate": 100})
+        _solved(self, "rods", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 60}],
+                objective={"Iron_Rod": 1})
+        sites = server._network_sites(["mine", "rods"])
+        rt = [{"a": "mine", "b": "rods", "mode": "train", "trip_min": 4}]
+        out = network.compare_trades(sites, rt, server.ALL_RECIPES, [])
+        top = out["trades"][0]
+        self.assertEqual((top["from"], top["to"]), ("mine", "rods"))
+        self.assertIn(top["item"], {"Iron_Ore", "Iron_Ingot"})
+        self.assertGreater(top["gain"]["rods"]["Iron_Rod"], 100)                # more than double
+        for t in out["trades"]:                       # nothing bought by cutting a goal
+            for k, gs in t["goals"].items():
+                for it, g in gs.items():
+                    self.assertGreaterEqual(g["then"], out["now"]["goals"][k][it]["then"] - 1e-3)
+        self.assertGreaterEqual(out["all"]["score"], top["score"] - 1e-6)      # all together: at least the best one
+        self.assertTrue(top["flows"] and top["routes"][0]["cars"]["solid"] > 0)
+        # a factory's own goal is made in it, never shipped to it
+        self.assertFalse(any(t["to"] == "rods" and t["item"] == "Iron_Rod" for t in out["trades"]))
+
     def test_grid_geothermal(self):
         import supply
         m = supply.map_nodes()
