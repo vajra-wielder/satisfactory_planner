@@ -355,8 +355,26 @@ def _load_board() -> dict:
     except Exception:
         return {}
 
+def _paths(raw, have=None) -> list:
+    """Paths [{stops, loop, mode, trip_min}] from what came in — [{a, b, …}]
+    is a path of two stops. A stop twice in a row, or unknown (have), goes;
+    under two stops left, the path goes."""
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict):
+            continue
+        st = r.get("stops") if isinstance(r.get("stops"), list) else [r.get("a"), r.get("b")]
+        st = [str(k) for k in st if isinstance(k, str) and _valid_key(k) and (have is None or k in have)]
+        st = [k for i, k in enumerate(st) if k not in st[:i]]          # each factory once on a path
+        if len(st) < 2:
+            continue
+        out.append({"stops": st, "loop": bool(r.get("loop")) and len(st) > 2,
+                    "mode": r.get("mode") if r.get("mode") in network.VEHICLES else "train",   # belts: trains now
+                    "trip_min": _num(r.get("trip_min"), 4.0, 0.1)})
+    return out
+
 def _clean_board(layout) -> dict:
-    """Card positions {key: {x, y}} and routes [{a, b, mode, trip_min}], nothing else."""
+    """Card positions {key: {x, y}} and paths [{stops, loop, mode, trip_min}], nothing else."""
     layout = layout if isinstance(layout, dict) else {}
     pos = layout.get("positions") if isinstance(layout.get("positions"), dict) else {}
     routes = layout.get("routes") if isinstance(layout.get("routes"), list) else []
@@ -367,11 +385,7 @@ def _clean_board(layout) -> dict:
         "geysers": sorted({g for g in geysers if isinstance(g, str) and known.get(g, {}).get("r") == "Geyser"}),
         "positions": {k: {"x": _num(v.get("x"), 0.0, 0.0), "y": _num(v.get("y"), 0.0, 0.0)}
                       for k, v in pos.items() if _valid_key(str(k)) and isinstance(v, dict)},
-        "routes": [{"a": r["a"], "b": r["b"],
-                    "mode": r.get("mode") if r.get("mode") in network.VEHICLES else "train",   # belts: trains now
-                    "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
-                   for r in routes if isinstance(r, dict) and _valid_key(str(r.get("a", "")))
-                   and _valid_key(str(r.get("b", ""))) and r.get("a") != r.get("b")],
+        "routes": _paths(routes),
     }
 
 def _save_board(layout: dict) -> None:
@@ -934,9 +948,7 @@ def _rename(old: str, new: str, new_name: str) -> None:
         if old in pos:
             pos[new] = pos.pop(old)
         for r in board.get("routes") or []:
-            for end in ("a", "b"):
-                if r.get(end) == old:
-                    r[end] = new
+            r["stops"] = [new if k == old else k for k in network.stops(r)]
         _save_board(board)
     for src, dst in zip(_cache_paths(_result_key(old_name)), _cache_paths(_result_key(new_name))):
         if src.exists() and not dst.exists():
@@ -2048,11 +2060,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/network":
             b = self._read_obj()
             have = {k for k, _ in _scenario_files()}
-            routes = [{"a": r["a"], "b": r["b"], "mode": r.get("mode") if r.get("mode") in network.VEHICLES else "train",
-                       "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
-                      for r in (b.get("routes") if isinstance(b.get("routes"), list) else [])
-                      if isinstance(r, dict) and r.get("a") in have and r.get("b") in have and r["a"] != r["b"]]
-            keys = sorted({k for r in routes for k in (r["a"], r["b"])})
+            routes = _paths(b.get("routes"), have)
+            keys = sorted({k for r in routes for k in r["stops"]})
             try:
                 sites = _network_sites(keys)
                 out = network.plan_network(sites, routes, ALL_RECIPES)
@@ -2067,13 +2076,10 @@ class Handler(BaseHTTPRequestHandler):
             # what each trade between factories on a route is worth (network.compare_trades)
             b = self._read_obj()
             have = {k for k, _ in _scenario_files()}
-            routes = [{"a": r["a"], "b": r["b"], "mode": r.get("mode") if r.get("mode") in network.VEHICLES else "train",
-                       "trip_min": _num(r.get("trip_min"), 4.0, 0.1)}
-                      for r in (b.get("routes") if isinstance(b.get("routes"), list) else [])
-                      if isinstance(r, dict) and r.get("a") in have and r.get("b") in have and r["a"] != r["b"]]
-            keys = sorted({k for r in routes for k in (r["a"], r["b"])})
+            routes = _paths(b.get("routes"), have)
+            keys = sorted({k for r in routes for k in r["stops"]})
             if not routes:
-                self._json(200, {"ok": False, "error": "Join two factories with a route first."})
+                self._json(200, {"ok": False, "error": "Join two factories with a path first."})
                 return
             try:
                 files = dict(_scenario_files())
@@ -2473,6 +2479,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _delete(self):
         path = urlparse(self.path).path.rstrip("/")
+        if path == "/api/save-nodes":
+            # forget nodes the save marks (ids; none: every one) — its machines and storage stay
+            b = self._read_obj()
+            sv = _save_nodes()
+            ids = b.get("ids")
+            drop = set(sv.get("nodes") or []) if ids is None else {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+            sv["nodes"] = [i for i in sv.get("nodes") or [] if i not in drop]
+            if SAVE_NODES_PATH.exists():
+                SAVE_NODES_PATH.write_text(json.dumps(sv), encoding="utf-8")
+            self._json(200, {"nodes": sv["nodes"], "forgot": len(drop)})
+            return
         if path == "/api/map-image":   # your own picture goes: back to the game's map
             _drop_map_tiles("map_image")
             for old in MAP_IMAGE_DIR.glob("map_image.*"):

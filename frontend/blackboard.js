@@ -7,7 +7,7 @@
  * how much of its outputs others take ("From factories" in each scenario —
  * those joins are drawn as routes). Join factories with routes — train,
  * truck, tractor or drone, each with its round trip time — and plan the network: which
- * recipe runs where, what crosses each route and what that takes, what each
+ * recipe runs where, what crosses each path and what that takes, what each
  * factory draws, and what the leftovers could still make (network.py).
  * Clicking a factory's name opens it.
  *
@@ -18,14 +18,13 @@
 import { itemName, RECIPES, fetchFactoryOutputs, setStored, loadMap, mapNode, PURITY, MAX_SHARDS, MAPD } from './state.js';
 import { BB_TABS } from './nav.js';
 import { onChain, chainHTML } from './ui.js';
-import { bundle, bandStripes, bandScale, sankeyLayout, itemColor as colorOf } from './geometry.js';
+import { bandStripes, bandScale, itemColor as colorOf } from './geometry.js';
 import { uploadSave, changesHTML, wireChanges } from './unlocks.js';
 
 let DATA = null;          // { factories, fluids, transport }
 let LAYOUT = { positions: {}, routes: [] };
 let FLUIDS = new Set();
 let NET = null;           // last network plan
-let FLOW_SRC = 'declared';
 const STORE = '@storage';
 let onOpenFactory = () => {};
 let saveTimer = null;
@@ -43,20 +42,42 @@ const LOAD_UNIT = { train: 'freight cars', truck: 'trucks', tractor: 'tractors',
 // the port's own readout is exact
 const ceil = v => Math.ceil(v - 1e-6);
 
-// What a route's flows keep busy, as the network plan counts it: per kind of
-// car, the heavier way's loads (one per round trip) — for the declared flows
+// A path: stops one vehicle runs in order — out and back along a line
+// (A→B→C→B→A), or round a loop (A→B→C→D→A); any stop loads for any other
+// (network.py's legs and _hops, the same here)
+const stopsOf = rt => rt.stops || [rt.a, rt.b];
+const looped = rt => !!rt.loop && stopsOf(rt).length > 2;
+function legsOf(rt) {
+  const st = stopsOf(rt), fwd = st.slice(1).map((b, i) => [st[i], b]);
+  return looped(rt) ? [...fwd, [st[st.length - 1], st[0]]] : [...fwd, ...[...fwd].reverse().map(([a, b]) => [b, a])];
+}
+function hopsOf(rt, src, dst) {
+  const st = stopsOf(rt), i = st.indexOf(src), j = st.indexOf(dst);
+  if (i < 0 || j < 0 || i === j) return [];
+  if (looped(rt)) { const n = st.length; return Array.from({ length: (j - i + n) % n }, (_, k) => (i + k) % n); }
+  const n = st.length - 1;
+  return j > i ? Array.from({ length: j - i }, (_, k) => i + k) : Array.from({ length: i - j }, (_, k) => 2 * n - i + k);
+}
+const pathName = rt => {
+  const ns = stopsOf(rt).map(k => factory(k)?.name || k);
+  return looped(rt) ? [...ns, ns[0]].join(' → ') : ns.join(' ⇄ ');
+};
+// the first path with both on it (what the factories declare goes on it)
+const pathOn = (a, b) => LAYOUT.routes.findIndex(r => stopsOf(r).includes(a) && stopsOf(r).includes(b));
+
+// What a path's flows keep busy, as the network plan counts it: per kind of
+// car, the heaviest leg's loads (one per round trip) — for the declared flows
 function declaredLoad(rt, flows) {
-  const v = DATA?.vehicles?.[rt.mode] || DATA?.vehicles?.train || { stacks: 32 }, each = {};
+  const v = DATA?.vehicles?.[rt.mode] || DATA?.vehicles?.train || { stacks: 32 };
+  const L = legsOf(rt), per = L.map(() => ({ solid: 0, fluid: 0 }));
   flows.forEach(f => {
     const fluid = FLUIDS.has(f.item);
     if (fluid && !v.fluid) return;
     const c = fluid ? rt.trip_min / v.fluid : rt.trip_min / (v.stacks * (DATA?.stacks?.[f.item] || 100));
-    const k = `${fluid ? 'fluid' : 'solid'}|${f.from}`;
-    each[k] = (each[k] || 0) + f.rate * c;
+    hopsOf(rt, f.from, f.to).forEach(h => { per[h][fluid ? 'fluid' : 'solid'] += f.rate * c; });
   });
-  const cars = { solid: 0, fluid: 0 };
-  Object.entries(each).forEach(([k, x]) => { const kind = k.split('|')[0]; cars[kind] = Math.max(cars[kind], x); });
-  return { ...rt, cars, load: cars.solid + cars.fluid };
+  const cars = { solid: Math.max(0, ...per.map(x => x.solid)), fluid: Math.max(0, ...per.map(x => x.fluid)) };
+  return { ...rt, cars, load: cars.solid + cars.fluid, legs: L.map(([a, b], h) => ({ from: a, to: b, load: per[h].solid + per[h].fluid })) };
 }
 
 // Too much for one route: over this many cars (one train), vehicles or drones
@@ -81,19 +102,26 @@ function heavy(rt, flows) {
   }
   return { short: `⚠ ${v.short}`, long: `Heavy: ${n} ${LOAD_UNIT[rt.mode]} busy${worst ? ` — mostly ${itemName(worst.item)} (${fmt(worst.rate)}/min)` : ''}.${tip}${NET ? '' : ' Plan network finds the lightest split.'}` };
 }
+// How far a vehicle goes one way: between the two ends, or half a path's whole run
 function distance(rt) {
-  const a = factory(rt.a)?.at, b = factory(rt.b)?.at;
-  return a && b ? Math.hypot(a[0] - b[0], a[1] - b[1]) : null;
+  let d = 0;
+  for (const [a, b] of legsOf(rt)) {
+    const p = factory(a)?.at, q = factory(b)?.at;
+    if (!p || !q) return null;
+    d += Math.hypot(p[0] - q[0], p[1] - q[1]);
+  }
+  return d / 2;
 }
+const km = d => (d < 1000 ? `${Math.round(d / 10) * 10} m` : `${(d / 1000).toFixed(1)} km`);
 function vehicles(rt) {
   const cars = rt.cars || { solid: rt.load || 0, fluid: 0 }, d = distance(rt);
-  const away = d == null ? '' : `${d < 1000 ? `${Math.round(d / 10) * 10} m` : `${(d / 1000).toFixed(1)} km`} apart`;
+  const away = d == null ? '' : stopsOf(rt).length > 2 ? `A ${km(2 * d)} run round` : `${km(d)} apart`;
   if (rt.mode === 'train') {
     const f = ceil(cars.solid), l = ceil(cars.fluid), n = f + l;
     if (!n) return { short: '—', long: 'Nothing to carry.' };
     return { short: `1 train · ${n} car${n > 1 ? 's' : ''}`,
       long: `${[f && `${f} freight car${f > 1 ? 's' : ''}`, l && `${l} fluid car${l > 1 ? 's' : ''}`].filter(Boolean).join(' + ')} (${fmt(cars.solid + cars.fluid)} busy):
-        one train of ${n}, or more trains of fewer cars; at each end a ${[f && `freight platform per freight car`, l && `fluid platform per fluid car`].filter(Boolean).join(' and a ')}.${away ? ` ${away}.` : ''}` };
+        one train of ${n}, or more trains of fewer cars; at each stop a ${[f && `freight platform per freight car`, l && `fluid platform per fluid car`].filter(Boolean).join(' and a ')}.${away ? ` ${away}.` : ''}` };
   }
   const n = ceil(cars.solid), unit = LOAD_UNIT[rt.mode];
   if (!n) return { short: '—', long: 'Nothing to carry.' };
@@ -105,7 +133,7 @@ function vehicles(rt) {
         ? ' Batteries: open both factories\' nodes on the map so the distance is known.'
         : ` About ${fmt(perTrip)} batteries a trip, ${fmt(perMin)}/min (${away}; an estimate — the port shows the exact figure).`}` };
   }
-  return { short: `${n} ${n > 1 ? unit : one}`, long: `${n} ${n > 1 ? unit : one} (${fmt(cars.solid)} busy), a ${one} station at each end.${away ? ` ${away}.` : ''}` };
+  return { short: `${n} ${n > 1 ? unit : one}`, long: `${n} ${n > 1 ? unit : one} (${fmt(cars.solid)} busy), a ${one} station at each stop.${away ? ` ${away}.` : ''}` };
 }
 const HOLDS = { train: '32 stacks a freight car, 1,600 m³ a fluid car', truck: '48 stacks', tractor: '25 stacks', drone: '9 stacks; fluids packaged' };
 
@@ -117,11 +145,6 @@ export function initBlackboard({ onOpenFactory: open }) {
   $('bb-plan').addEventListener('click', planNetwork);
   $('bb-join').addEventListener('click', joinAll);
   $('bb-trades').addEventListener('click', compareTrades);
-  document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
-    FLOW_SRC = b.dataset.src;
-    document.querySelectorAll('#bb-flow-src button').forEach(x => x.classList.toggle('on', x === b));
-    renderFlows();
-  }));
   $('bb-items-q').addEventListener('input', renderItems);
   window.addEventListener('resize', () => { if (isOpen()) drawRoutes(); });
 }
@@ -134,12 +157,14 @@ export function openBlackboard() {
     DATA = d;
     FLUIDS = new Set(d.fluids || []);
     LAYOUT = { positions: {}, routes: [], geysers: [], ...(d.layout || {}) };
-    LAYOUT.routes = (LAYOUT.routes || []).filter(r => factory(r.a) && factory(r.b));
+    // a factory gone leaves its paths; a path left with one stop goes
+    LAYOUT.routes = (LAYOUT.routes || []).map(r => ({ ...r, stops: stopsOf(r).filter(k => factory(k)) }))
+      .filter(r => r.stops.length > 1).map(r => ({ ...r, loop: looped(r) }));
     // A factory's "From factories" imports join it to where they come from
     let added = false;
     d.factories.forEach(f => (f.sources || []).forEach(src => {
-      if (factory(src.factory) && !routeBetween(src.factory, f.key)) {
-        LAYOUT.routes.push({ a: src.factory, b: f.key, mode: 'train', trip_min: 4 });
+      if (factory(src.factory) && pathOn(src.factory, f.key) < 0) {
+        LAYOUT.routes.push({ stops: [src.factory, f.key], loop: false, mode: 'train', trip_min: 4 });
         added = true;
       }
     }));
@@ -165,7 +190,6 @@ function showTab(tab) {
   if (tab === 'factories') drawRoutes();
   if (tab === 'power') renderPower();
   if (tab === 'map') renderMapTab();
-  if (tab === 'flows') renderFlows();
   if (tab === 'items') renderItems();
 }
 
@@ -186,7 +210,6 @@ function save() {
 // ══════════════════════════════════════════════════════════
 
 const factory = key => DATA?.factories.find(f => f.key === key);
-const routeBetween = (a, b) => LAYOUT.routes.some(r => (r.a === a && r.b === b) || (r.a === b && r.b === a));
 
 function renderFactories() {
   const board = $('bb-board');
@@ -230,7 +253,7 @@ function renderFactories() {
       <div class="bb-head-row">
         <span class="bb-name" title="Open in the solver">${f.name}</span>
         ${f.solved ? '' : '<span class="bb-tag" title="No current plan — showing the scenario\'s own numbers. Solve it for exact rates.">not solved</span>'}
-        <span class="bb-route-h" title="Drag onto another factory to add a route">⇄</span>
+        <span class="bb-route-h" title="Drag onto another factory for a path between them, or onto a path's box to add a stop">⇄</span>
       </div>
       ${rows('In', f.imports)}${rows('Out', f.exports, '', true)}${rows('Surplus', f.surplus, 'bb-dim', true)}
       ${!Object.keys({ ...f.imports, ...f.exports, ...f.surplus }).length ? '<div class="bb-sec">Self-contained</div>' : ''}`;
@@ -288,10 +311,14 @@ function startRoute(e, from) {
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
     tmp.remove();
-    const to = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.bb-card')?.dataset.key;
-    if (to && to !== from && !LAYOUT.routes.some(r => (r.a === from && r.b === to) || (r.a === to && r.b === from))) {
-      LAYOUT.routes.push({ a: from, b: to, mode: 'train', trip_min: 4 });
-      save();
+    const hit = document.elementFromPoint(ev.clientX, ev.clientY);
+    const to = hit?.closest('.bb-card')?.dataset.key, onPath = hit?.closest('.bb-link-label')?.dataset.path;
+    if (onPath != null) {                       // onto a path: one more stop on it
+      const rt = LAYOUT.routes[+onPath];
+      if (!stopsOf(rt).includes(from)) { rt.stops = [...stopsOf(rt), from]; NET = null; save(); }
+    } else if (to && to !== from && pathOn(from, to) < 0) {
+      LAYOUT.routes.push({ stops: [from, to], loop: false, mode: 'train', trip_min: 4 });
+      NET = null; save();
     }
     drawRoutes();
   };
@@ -299,20 +326,37 @@ function startRoute(e, from) {
   window.addEventListener('mouseup', up);
 }
 
-// What a route carries: the network plan's items when it has one, else what
-// the factories at its ends import from each other ("From factories")
+// What a path carries: the network plan's items when it has one, else what
+// its stops import from each other ("From factories") — on the first path
+// that has both
 function routeFlows(rt, i) {
   const plan = NET?.routes?.[i];
   if (plan) return plan.items.map(x => ({ from: x.from, to: x.to, item: x.item, rate: x.rate }));
-  const out = [];
-  [[rt.a, rt.b], [rt.b, rt.a]].forEach(([src, dst]) => (factory(dst)?.sources || [])
-    .forEach(f => { if (f.factory === src && f.rate > 0) out.push({ from: src, to: dst, item: f.item, rate: +f.rate }); }));
+  const out = [], st = stopsOf(rt);
+  st.forEach(dst => (factory(dst)?.sources || []).forEach(f => {
+    if (f.factory !== dst && st.includes(f.factory) && f.rate > 0 && pathOn(f.factory, dst) === i)
+      out.push({ from: f.factory, to: dst, item: f.item, rate: +f.rate });
+  }));
   return out;
 }
 
 const SVG = 'http://www.w3.org/2000/svg';
 const nameOf = k => (k === STORE ? 'Storage' : factory(k)?.name || k);
 const flowTitle = f => `${nameOf(f.from)} → ${nameOf(f.to)}: ${itemName(f.item)} ${fmt(f.rate)}/min`;
+
+// A path's stretches, stop to stop (and the last back to the first, round a
+// loop), each with what rides it, either way
+function stretchesOf(rt, flows) {
+  const st = stopsOf(rt), n = st.length - 1;
+  const segs = st.slice(1).map((b, k) => ({ a: st[k], b, legs: looped(rt) ? [k] : [k, 2 * n - 1 - k] }));
+  if (looped(rt)) segs.push({ a: st[n], b: st[0], legs: [n] });
+  segs.forEach(sg => {
+    sg.items = flows.filter(f => hopsOf(rt, f.from, f.to).some(h => sg.legs.includes(h)))
+      .sort((x, y) => y.rate - x.rate || x.item.localeCompare(y.item));
+    sg.rate = sg.items.reduce((t, f) => t + f.rate, 0);
+  });
+  return segs;
+}
 
 function drawRoutes() {
   if (!DATA || !isOpen()) return;
@@ -322,62 +366,87 @@ function drawRoutes() {
   svg.innerHTML = '';
   // a label's box losing focus as it goes can redraw first: take only what's still there
   board.querySelectorAll('.bb-link-label').forEach(x => { if (x.isConnected) x.remove(); });
-  // One band per route, its items side by side; one scale for every band
+  // A band per stretch between two stops, made of what rides it either way; one scale for every band
   const flows = LAYOUT.routes.map((rt, i) => routeFlows(rt, i));
-  const scale = bandScale(flows.map(fs => ({ total: fs.reduce((s, f) => s + f.rate, 0) })), 28);
+  const stretches = LAYOUT.routes.map((rt, i) => stretchesOf(rt, flows[i]));
+  const scale = bandScale(stretches.flat().map(sg => ({ total: sg.rate })), 28), placed = [];
   LAYOUT.routes.forEach((rt, i) => {
-    const a = centre(rt.a), b = centre(rt.b);
-    if (!a || !b) return;
-    const items = bundle(flows[i])[0]?.items || [];
-    if (items.length) {
-      const g = document.createElementNS(SVG, 'g');
-      g.setAttribute('class', 'bb-band');
-      const band = bandStripes(a, b, items, scale);
-      band.stripes.forEach(st => {
+    const pts = stopsOf(rt).map(centre);
+    if (pts.some(p => !p)) return;
+    let half = 0;
+    stretches[i].forEach((sg, k) => {
+      const a = centre(sg.a), b = centre(sg.b);
+      if (sg.items.length) {
+        const g = document.createElementNS(SVG, 'g');
+        g.setAttribute('class', 'bb-band');
+        const band = bandStripes(a, b, sg.items, scale);
+        if (!k) half = band.width / 2;
+        band.stripes.forEach(st => {
+          const line = document.createElementNS(SVG, 'line');
+          line.setAttribute('x1', st.x1); line.setAttribute('y1', st.y1);
+          line.setAttribute('x2', st.x2); line.setAttribute('y2', st.y2);
+          line.setAttribute('stroke', colorOf(st.flow.item, FLUIDS.has(st.flow.item)));
+          line.setAttribute('stroke-width', st.w);
+          line.setAttribute('class', 'bb-stripe');
+          line.innerHTML = `<title>${flowTitle(st.flow)}</title>`;
+          g.appendChild(line);
+        });
+        svg.appendChild(g);
+      } else {   // a stretch with nothing on it yet
         const line = document.createElementNS(SVG, 'line');
-        line.setAttribute('x1', st.x1); line.setAttribute('y1', st.y1);
-        line.setAttribute('x2', st.x2); line.setAttribute('y2', st.y2);
-        line.setAttribute('stroke', colorOf(st.flow.item, FLUIDS.has(st.flow.item)));
-        line.setAttribute('stroke-width', st.w);
-        line.setAttribute('class', 'bb-stripe');
-        line.innerHTML = `<title>${flowTitle(st.flow)}</title>`;
-        g.appendChild(line);
-      });
-      svg.appendChild(g);
-    } else {   // a route with nothing on it yet
-      const line = document.createElementNS(SVG, 'line');
-      line.setAttribute('x1', a[0]); line.setAttribute('y1', a[1]);
-      line.setAttribute('x2', b[0]); line.setAttribute('y2', b[1]);
-      line.setAttribute('class', 'bb-link');
-      svg.appendChild(line);
-    }
-    const total = items.reduce((s, f) => s + f.rate, 0);
+        line.setAttribute('x1', a[0]); line.setAttribute('y1', a[1]);
+        line.setAttribute('x2', b[0]); line.setAttribute('y2', b[1]);
+        line.setAttribute('class', 'bb-link');
+        svg.appendChild(line);
+      }
+    });
+    const items = flows[i], total = items.reduce((t, f) => t + f.rate, 0), st = stopsOf(rt);
     const lab = document.createElement('div');
     lab.className = 'bb-link-label';
-    // just below the band's middle, so the band itself stays in view
-    const half = items.length ? bandStripes(a, b, items, scale).width / 2 : 0;
-    lab.style.left = (a[0] + b[0]) / 2 + 'px';
-    lab.style.top = (a[1] + b[1]) / 2 + half + 6 + 'px';
-    const plan = NET?.routes?.[i] || (flows[i].length ? declaredLoad(rt, flows[i]) : null);
-    const hv = plan && heavy(plan, flows[i]);
+    lab.dataset.path = i;
+    // two stops: just below the band's middle, so the band stays in view; more: in the middle of them
+    const at = st.length === 2 ? [(pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2 + half + 6]
+      : [pts.reduce((t, p) => t + p[0], 0) / pts.length, pts.reduce((t, p) => t + p[1], 0) / pts.length];
+    lab.style.left = at[0] + 'px';
+    lab.style.top = at[1] + 'px';
+    const plan = NET?.routes?.[i] || (items.length ? declaredLoad(rt, items) : null);
+    const hv = plan && heavy(plan, items);
     lab.innerHTML = `
+      ${st.length > 2 ? `<div class="bb-stops">${st.map((k, j) => `<span class="bb-stop" data-stop="${j}" title="Take ${nameOf(k)} off this path">${nameOf(k)}</span>`).join(looped(rt) ? ' → ' : ' ⇄ ')}${looped(rt) ? ' →' : ''}</div>` : ''}
       <select class="bb-mode">${Object.entries(MODES).map(([m, t]) =>
         `<option value="${m}" ${m === rt.mode ? 'selected' : ''}>${t}</option>`).join('')}</select>
       <input class="bb-trip" type="number" min="0.1" step="0.5" value="${rt.trip_min}"
-        title="One ${MODES[rt.mode].toLowerCase()}'s round trip, minutes — it holds ${HOLDS[rt.mode]}"/> min trip
-      <span class="bb-x" title="Remove this route">✕</span>
+        title="One ${MODES[rt.mode].toLowerCase()}'s ${st.length > 2 ? 'whole run — every stop and back' : 'round trip'}, minutes — it holds ${HOLDS[rt.mode]}"/> min ${st.length > 2 ? 'run' : 'trip'}
+      ${st.length > 2 ? `<button class="bsm bb-loop ${looped(rt) ? 'act' : ''}" title="${looped(rt) ? 'A loop: round every stop and back to the first. Click: out and back along the line instead' : 'Out and back along the line. Click: a loop, from the last stop on to the first'}">⟲</button>` : ''}
+      <span class="bb-x" title="Remove this path">✕</span>
       ${items.length ? `<div class="bb-route-sum" title="${items.map(flowTitle).join('\n')}">${items.length} item${items.length > 1 ? 's' : ''} · ${fmt(total)}/min</div>` : ''}
       ${plan ? `<div class="bb-route-load ${hv ? 'heavy' : ''}" title="${(hv ? hv.long + '\n\n' : '') + vehicles(plan).long.replace(/\s+/g, ' ').replace(/"/g, '&quot;')}">${hv ? hv.short : vehicles(plan).short}</div>` : ''}`;
-    lab.querySelector('.bb-mode').addEventListener('change', e => { rt.mode = e.target.value; NET = null; save(); drawRoutes(); });
+    const changed = () => { NET = null; save(); drawRoutes(); renderNet(); };
+    lab.querySelector('.bb-mode').addEventListener('change', e => { rt.mode = e.target.value; changed(); });
     lab.querySelector('.bb-trip')?.addEventListener('change', e => {
       const v = Math.max(0.1, parseFloat(e.target.value) || 4);
       if (v === rt.trip_min) return;
-      rt.trip_min = v; NET = null; save(); drawRoutes();
+      rt.trip_min = v; changed();
     });
-    lab.querySelector('.bb-x').addEventListener('click', () => {
-      LAYOUT.routes.splice(i, 1); NET = null; save(); drawRoutes(); renderNet();
-    });
+    lab.querySelector('.bb-loop')?.addEventListener('click', () => { rt.loop = !looped(rt); changed(); });
+    lab.querySelectorAll('.bb-stop').forEach(x => x.addEventListener('click', () => {
+      rt.stops = st.filter((_, j) => j !== +x.dataset.stop);
+      rt.loop = looped(rt);
+      changed();
+    }));
+    lab.querySelector('.bb-x').addEventListener('click', () => { LAYOUT.routes.splice(i, 1); changed(); });
     board.appendChild(lab);
+    // clear of the boxes already down: moved below any it would cover
+    for (let moved = true, n = 0; moved && n < 20; n++) {
+      moved = false;
+      for (const q of placed) {
+        const x1 = lab.offsetLeft - lab.offsetWidth / 2, y1 = lab.offsetTop;
+        if (x1 < q.x + q.w && q.x < x1 + lab.offsetWidth && y1 < q.y + q.h && q.y < y1 + lab.offsetHeight) {
+          lab.style.top = q.y + q.h + 4 + 'px'; moved = true;
+        }
+      }
+    }
+    placed.push({ x: lab.offsetLeft - lab.offsetWidth / 2, y: lab.offsetTop, w: lab.offsetWidth, h: lab.offsetHeight });
   });
 }
 
@@ -387,21 +456,21 @@ function drawRoutes() {
 function joinAll() {
   const fs = DATA?.factories || [];
   const d = (a, b) => (a.at && b.at ? Math.hypot(a.at[0] - b.at[0], a.at[1] - b.at[1]) : null);
-  const has = (a, b) => LAYOUT.routes.some(r => (r.a === a && r.b === b) || (r.a === b && r.b === a));
+  const has = (a, b) => pathOn(a, b) >= 0;
   let added = 0;
   fs.forEach(a => {
     const others = fs.filter(b => b.key !== a.key).sort((x, y) => (d(a, x) ?? 1e9) - (d(a, y) ?? 1e9));
     (fs.length <= 4 ? others : others.slice(0, 2)).forEach(b => {
       if (has(a.key, b.key)) return;
       const m = d(a, b);
-      LAYOUT.routes.push({ a: a.key, b: b.key, mode: 'train', trip_min: m == null ? 4 : Math.max(1, Math.round((1 + 2 * m / 2000) * 2) / 2) });
+      LAYOUT.routes.push({ stops: [a.key, b.key], loop: false, mode: 'train', trip_min: m == null ? 4 : Math.max(1, Math.round((1 + 2 * m / 2000) * 2) / 2) });
       added++;
     });
   });
   NET = null; save(); drawRoutes(); renderNet();
   const panel = $('bb-net');
   panel.style.display = '';
-  panel.innerHTML = `<p class="bb-hint">${added ? `${added} route${added > 1 ? 's' : ''} added, by train — set each one's vehicle and round trip on its line.
+  panel.innerHTML = `<p class="bb-hint">${added ? `${added} path${added > 1 ? 's' : ''} added, by train — set each one's vehicle and round trip on its box; drag a factory's ⇄ onto a box for one more stop.
     Then Plan network (the same outputs for the least ore and transport) or ⚖ Compare trades (what each trade would add).` : 'Every factory is already joined to its nearest.'}</p>`;
 }
 
@@ -442,15 +511,18 @@ function renderNet() {
   NET.routes.filter(rt => rt.items.length).forEach(rt => {
     const vh = vehicles(rt), hv = heavy(rt, rt.items);
     if (hv) h += `<p class="bb-warn">${hv.long}</p>`;
-    h += `<div class="bb-net-s">${name(rt.a)} ⇄ ${name(rt.b)} · ${MODES[rt.mode]}, ${rt.trip_min} min round trip
-      — <b>${vh.short}</b></div><div class="bb-hint">${vh.long}${rt.ways && Object.values(rt.ways).every(v => v > 1e-6)
-        ? ` Loaded both ways (${name(rt.a)} → ${fmt(rt.ways[rt.a])}, ${name(rt.b)} → ${fmt(rt.ways[rt.b])}): the lighter way rides along.` : ''}</div>`;
+    // the legs it runs loaded: the heaviest decides the vehicles, the rest ride along
+    const busy = (rt.legs || []).filter(l => l.load > 1e-6);
+    const top = busy.reduce((m, l) => (l.load > (m?.load ?? -1) ? l : m), null);
+    h += `<div class="bb-net-s">${pathName(rt)} · ${MODES[rt.mode]}, ${rt.trip_min} min ${stopsOf(rt).length > 2 ? 'run' : 'round trip'}
+      — <b>${vh.short}</b></div><div class="bb-hint">${vh.long}${busy.length > 1
+        ? ` Loaded on ${busy.length} legs (${busy.map(l => `${name(l.from)} → ${name(l.to)} ${fmt(l.load)}`).join(', ')}): ${name(top.from)} → ${name(top.to)} decides; the rest ride along.` : ''}</div>`;
     h += rt.items.length ? '<table class="bb-tab"><tr><th></th><th>/min</th><th>stacks/min</th><th>' + LOAD_UNIT[rt.mode] + '</th></tr>' +
       rt.items.map(i => `<tr><td>${name(i.from)} → ${name(i.to)}: ${itemName(i.item)}</td><td>${fmt(i.rate)}</td>
         <td>${i.stacks == null ? '—' : fmt(i.stacks)}</td><td>${fmt(i.load)}</td></tr>`).join('') + '</table>'
       : '';
   });
-  if (idle.length) h += `<p class="bb-hint">Nothing to carry: ${idle.map(rt => `${name(rt.a)} ⇄ ${name(rt.b)}`).join(' · ')}</p>`;
+  if (idle.length) h += `<p class="bb-hint">Nothing to carry: ${idle.map(pathName).join(' · ')}</p>`;
   NET.factories.forEach(f => {
     const r = f.recipes, list = (o, fmtv) => Object.entries(o).map(([k, v]) => `${recipeName(k)} ${fmtv(v)}`).join(', ');
     const lines = [];
@@ -472,71 +544,6 @@ function renderNet() {
   panel.innerHTML = h;
   $('bb-net-close').addEventListener('click', () => { panel.style.display = 'none'; });
   $('bb-apply').addEventListener('click', applyNet);
-}
-
-// ══════════════════════════════════════════════════════════
-// FLOWS — a Sankey of what moves between factories
-// ══════════════════════════════════════════════════════════
-
-const itemColor = it => colorOf(it, FLUIDS.has(it));
-
-// [{from, to, item, rate}]: each factory's From factories and To storage —
-// or what the network plan sends over each route
-function flowLinks() {
-  const out = [];
-  if (FLOW_SRC === 'plan') {
-    (NET?.routes || []).forEach(rt => rt.items.forEach(i => out.push({ from: i.from, to: i.to, item: i.item, rate: i.rate })));
-    DATA.factories.forEach(f => Object.entries(f.storage || {}).forEach(([it, r]) => r > 0 && out.push({ from: f.key, to: STORE, item: it, rate: r })));
-    return out;
-  }
-  DATA.factories.forEach(f => {
-    (f.sources || []).forEach(src => { if (src.rate > 0 && factory(src.factory)) out.push({ from: src.factory, to: f.key, item: src.item, rate: +src.rate }); });
-    Object.entries(f.storage || {}).forEach(([it, r]) => r > 0 && out.push({ from: f.key, to: STORE, item: it, rate: r }));
-  });
-  return out;
-}
-
-function renderFlows() {
-  const el = $('bb-sankey');
-  if (!DATA) return;
-  if (FLOW_SRC === 'plan' && !NET?.ok) {
-    el.innerHTML = '<p class="bb-hint">Plan the network first (Between factories → Plan network).</p>';
-    return;
-  }
-  const links = flowLinks();
-  if (!links.length) {
-    el.innerHTML = '<p class="bb-hint">Nothing moves yet — add "From factories" imports or "To storage" in a factory.</p>';
-    return;
-  }
-  const W = Math.max(el.clientWidth - 28, 640);
-  const H = Math.max(Math.min(el.clientHeight - 28, 700), 360);
-  const L = sankeyLayout(links, { W, H, store: STORE });
-  let g = '';
-  // One band per pair of factories: its items' stripes side by side, an
-  // outline round the lot, and one label for the band
-  L.bundles.forEach(b => {
-    const a = L.nodes[b.from], c = L.nodes[b.to];
-    const x1 = a.x + L.nodeW, x2 = c.x, mx = (x1 + x2) / 2;
-    const path = (ya, yb, w) => `M${x1},${ya} C${mx},${ya} ${mx},${yb} ${x2},${yb} L${x2},${yb + w} C${mx},${yb + w} ${mx},${ya + w} ${x1},${ya + w} Z`;
-    b.stripes.forEach(st => {
-      g += `<path class="sk-link" fill="${itemColor(st.flow.item)}" d="${path(st.y1, st.y2, st.w)}"><title>${flowTitle(st.flow)}</title></path>`;
-    });
-    g += `<path class="sk-band" d="${path(b.y1, b.y2, b.w)}"/>`;
-    if (b.w >= 12) {   // one label, in the middle of the band
-      const label = b.items.length === 1 ? `${itemName(b.items[0].item)} ${fmt(b.total)}/min` : `${b.items.length} items · ${fmt(b.total)}/min`;
-      g += `<text class="sk-lab" text-anchor="middle" x="${mx}" y="${(b.y1 + b.y2 + b.w) / 2 + 3.5}">${label}</text>`;
-    }
-  });
-  Object.entries(L.nodes).forEach(([n, p]) => {
-    const store = n === STORE;
-    g += `<rect class="sk-node ${store ? 'store' : ''}" x="${p.x}" y="${p.y}" width="${L.nodeW}" height="${p.h}" rx="3"/>
-      <text class="sk-name" data-key="${store ? '' : n}" x="${p.x + L.nodeW + 6}" y="${p.y + 12}">${nameOf(n)}</text>
-      <text x="${p.x + L.nodeW + 6}" y="${p.y + 26}">${fmt(p.size)}/min</text>`;
-  });
-  el.innerHTML = `<svg width="${W}" height="${H + 30}">${g}</svg>`;
-  el.querySelectorAll('.sk-name[data-key]').forEach(t => {
-    if (t.dataset.key) t.addEventListener('click', () => onOpenFactory(t.dataset.key));
-  });
 }
 
 // ══════════════════════════════════════════════════════════
@@ -679,23 +686,22 @@ function renderMapTab() {
   }));
 }
 
-// The network for the map: factories where their nodes are, and each route —
-// what the network plan sends over it (and the vehicles), else what the
-// factories' imports declare
+// The network for the map: factories where their nodes are, and each path —
+// its stretches, what rides each (the network plan's, else what the
+// factories' imports declare) and the vehicles it keeps busy
+const ICON = { train: '🚆', truck: '🚚', tractor: '🚜', drone: '🛸' };
 function mapNetwork() {
   if (!DATA) return null;
   const hubs = DATA.factories.filter(f => f.at).map(f => ({ key: f.key, name: f.name, x: f.at[0], y: f.at[1] }));
   if (!hubs.length) return null;
-  const declared = (a, b) => DATA.factories.reduce((s, f) => s + (f.sources || [])
-    .filter(src => (f.key === a && src.factory === b) || (f.key === b && src.factory === a)).reduce((t, src) => t + (+src.rate || 0), 0), 0);
-  const routes = LAYOUT.routes.map((rt, i) => {
-    const plan = NET?.ok ? NET.routes[i] : null, rate = plan ? plan.throughput : declared(rt.a, rt.b);
-    const v = plan ? vehicles(plan) : null;
-    return { a: rt.a, b: rt.b, mode: rt.mode, rate,
-      label: `${{ train: '🚆', truck: '🚚', tractor: '🚜', drone: '🛸' }[rt.mode]} ${v ? v.short : `${fmt(rate)}/min`}`,
-      title: `${factory(rt.a)?.name} ⇄ ${factory(rt.b)?.name} · ${MODES[rt.mode]}, ${rt.trip_min} min round trip · ${fmt(rate)}/min${v ? `\n${v.long.replace(/\s+/g, ' ')}` : ''}` };
+  const paths = LAYOUT.routes.map((rt, i) => {
+    const fl = routeFlows(rt, i), plan = NET?.ok ? NET.routes[i] : fl.length ? declaredLoad(rt, fl) : null;
+    return { mode: rt.mode, icon: ICON[rt.mode], name: pathName(rt), what: MODES[rt.mode],
+      run: `${rt.trip_min} min ${stopsOf(rt).length > 2 ? (looped(rt) ? 'loop' : 'run') : 'round trip'}`,
+      vehicles: plan ? vehicles(plan).short : '',
+      segs: stretchesOf(rt, fl).map(sg => ({ a: sg.a, b: sg.b, an: nameOf(sg.a), bn: nameOf(sg.b), rate: sg.rate, lines: sg.items.map(flowTitle) })) };
   });
-  return { hubs, routes };
+  return { hubs, paths };
 }
 
 // Write the plan into the factories: what each takes from the others becomes
@@ -744,7 +750,7 @@ function applyFlows(flows, alts = {}) {
 // what it frees with the goals held, and the vehicles it keeps busy. All of
 // them together is the network plan. Free nodes nearby can count as more to mine.
 let TRADES = null;
-const NO_ROUTES = `<p class="bb-hint">No routes yet: the planner only moves things between factories you've joined.
+const NO_ROUTES = `<p class="bb-hint">No paths yet: the planner only moves things between factories you've joined.
   Click <b>＋ Join them all</b> (each to its nearest, by train), or drag a factory's ⇄ onto another.</p>`;
 function compareTrades() {
   const panel = $('bb-net');
@@ -915,6 +921,114 @@ function waitForPicture(tries = 0) {
 // One map in a container
 // ══════════════════════════════════════════════════════════
 
+// ── The ground, for the network's paths ─────────────────────────────────────
+// Read from the map picture's whole-map tile, a cell per 1/GN of it: the game's
+// map is shaded by height (lighter is higher), water is blue, off the map black.
+// A truck keeps to gentle ground round hills and water; a train runs straight,
+// turning only for a cliff or the map's edge (bridges are fine); a drone flies.
+const GN = 256;
+let GROUND = null;
+function ground() {
+  const img = MAPD.img;
+  if (!img?.ext || !img.tiles) return Promise.resolve(null);
+  const key = `${img.source}|${img.tiles_v}|${img.dx}|${img.dy}|${img.scale}`;
+  if (GROUND?.key === key) return GROUND.p;
+  const p = new Promise(res => {
+    const im = new Image();
+    im.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = c.height = GN;
+      const cx = c.getContext('2d', { willReadFrequently: true });
+      cx.drawImage(im, 0, 0, GN, GN);
+      const d = cx.getImageData(0, 0, GN, GN).data, h = new Float32Array(GN * GN), kind = new Uint8Array(GN * GN);
+      for (let i = 0; i < GN * GN; i++) {
+        const r = d[4 * i], g = d[4 * i + 1], b = d[4 * i + 2];
+        h[i] = (r + g + b) / 765;
+        kind[i] = r + g + b < 90 ? 2 : b > r + 20 ? 1 : 0;      // 0 land, 1 water, 2 off the map
+      }
+      // where the picture sits on the map (m): yours nudged, the game's on the map's edges
+      const bw = (MAPD.bounds.x[1] - MAPD.bounds.x[0]) * img.scale, bh = (MAPD.bounds.y[1] - MAPD.bounds.y[0]) * img.scale;
+      const x0 = (MAPD.bounds.x[0] + MAPD.bounds.x[1]) / 2 + img.dx - bw / 2, y0 = (MAPD.bounds.y[0] + MAPD.bounds.y[1]) / 2 + img.dy - bh / 2;
+      res({ h, kind, x0, y0, cw: bw / GN, ch: bh / GN, memo: new Map() });
+    };
+    im.onerror = () => res(null);
+    im.src = `/api/map-tile?z=0&x=0&y=0&v=${img.tiles_v || 0}`;
+  });
+  GROUND = { key, p };
+  return p;
+}
+const CLIFF = 0.07;     // a step in shade this big from one cell to the next is a cliff
+// The way from a to b ({x, y} in m) by this vehicle: points in m, or null (go straight)
+function trace(G, mode, a, b) {
+  if (!G || mode === 'drone') return null;
+  const k = `${mode}|${a.x},${a.y}|${b.x},${b.y}`;
+  if (G.memo.has(k)) return G.memo.get(k);
+  const cell = p => [Math.min(GN - 1, Math.max(0, Math.floor((p.x - G.x0) / G.cw))), Math.min(GN - 1, Math.max(0, Math.floor((p.y - G.y0) / G.ch)))];
+  const [sx0, sy0] = cell(a), [tx, ty] = cell(b), S = sy0 * GN + sx0, T = ty * GN + tx;
+  const train = mode === 'train';
+  const step = (i, j, dist) => {
+    if (G.kind[j] === 2 && j !== T && j !== S) return Infinity;
+    const dh = Math.abs(G.h[j] - G.h[i]);
+    if (train) return dist * (1 + (dh > CLIFF ? 300 * dh : 0) + (G.kind[j] === 1 ? 1 : 0));
+    return dist * (1 + 60 * dh + (G.kind[j] === 1 ? 30 : 0));
+  };
+  // A* on the grid, eight ways
+  const cost = new Float32Array(GN * GN).fill(Infinity), from = new Int32Array(GN * GN).fill(-1);
+  const heap = [[0, S]];
+  const push = (f, i) => { heap.push([f, i]); let c = heap.length - 1; while (c) { const q = (c - 1) >> 1; if (heap[q][0] <= heap[c][0]) break; [heap[q], heap[c]] = [heap[c], heap[q]]; c = q; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let c = 0; for (;;) { const l = 2 * c + 1, r = l + 1; let m = c; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === c) break; [heap[m], heap[c]] = [heap[c], heap[m]]; c = m; } } return top; };
+  const hx = i => Math.hypot(i % GN - tx, ((i / GN) | 0) - ty);
+  cost[S] = 0;
+  let found = false, guard = 0;
+  while (heap.length && guard++ < 400000) {
+    const [, i] = pop();
+    if (i === T) { found = true; break; }
+    const x = i % GN, y = (i / GN) | 0;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      if (!dx && !dy) continue;
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= GN || ny >= GN) continue;
+      const j = ny * GN + nx, c = cost[i] + step(i, j, dx && dy ? Math.SQRT2 : 1);
+      if (c < cost[j]) { cost[j] = c; from[j] = i; push(c + hx(j), j); }
+    }
+  }
+  let out = null;
+  if (found) {
+    const cells = [];
+    for (let i = T; i !== -1; i = from[i]) cells.push(i);
+    cells.reverse();
+    // pulled tight: from each point, straight on to the farthest one the way
+    // there stays as easy (a train: no cliff, off the map nowhere)
+    const ok = (i, j) => {
+      const x1 = i % GN, y1 = (i / GN) | 0, x2 = j % GN, y2 = (j / GN) | 0, n = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+      let prev = i, c = 0;
+      for (let t = 1; t <= n; t++) {
+        const q = Math.round(y1 + (y2 - y1) * t / n) * GN + Math.round(x1 + (x2 - x1) * t / n);
+        if (G.kind[q] === 2 && q !== T) return false;
+        if (train && Math.abs(G.h[q] - G.h[prev]) > CLIFF) return false;
+        c += step(prev, q, Math.hypot((q % GN) - (prev % GN), ((q / GN) | 0) - ((prev / GN) | 0)));
+        prev = q;
+      }
+      return train || c <= (cost[j] - cost[i]) * 1.08 + 1;
+    };
+    const keep = [cells[0]];
+    for (let k2 = 0; k2 < cells.length - 1;) {
+      let far = k2 + 1;
+      for (let m = cells.length - 1; m > far; m--) if (ok(cells[k2], cells[m])) { far = m; break; }
+      keep.push(cells[far]);
+      k2 = far;
+    }
+    let pts = keep.map(i => ({ x: G.x0 + (i % GN + 0.5) * G.cw, y: G.y0 + (((i / GN) | 0) + 0.5) * G.ch }));
+    pts[0] = { x: a.x, y: a.y }; pts[pts.length - 1] = { x: b.x, y: b.y };
+    if (!train) for (let r = 0; r < 2 && pts.length > 2; r++)     // a road's bends rounded off
+      pts = [pts[0], ...pts.slice(0, -1).flatMap((p, i) => { const q = pts[i + 1];
+        return [{ x: 0.75 * p.x + 0.25 * q.x, y: 0.75 * p.y + 0.25 * q.y }, { x: 0.25 * p.x + 0.75 * q.x, y: 0.25 * p.y + 0.75 * q.y }]; }), pts[pts.length - 1]];
+    out = pts.length > 2 ? pts : null;
+  }
+  G.memo.set(k, out);
+  return out;
+}
+
 function makeMap(el, M) {
   // M: { filter:Set, picked?:Set, taken?, owner?, ownerColor?, pins?, onClick(id), onBox(ids, remove), onPin?(x,y) }
   el._mapOff?.abort();                    // a map remade in the same place drops the old one's listeners
@@ -1044,19 +1158,29 @@ function makeMap(el, M) {
     // the network: factories where they are, joined by their routes — styled by
     // what runs them, as thick as what they carry
     if (M.network) {
-      const { hubs, routes } = M.network, at = Object.fromEntries(hubs.map(h => [h.key, h]));
-      const most = Math.max(1, ...routes.map(r => r.rate || 0));
-      routes.forEach(r => {
-        const a = at[r.a], b = at[r.b];
-        if (!a || !b) return;
-        const x1 = sx(a.x), y1 = sy(a.y), x2 = sx(b.x), y2 = sy(b.y), wpx = 2 + 7 * Math.sqrt((r.rate || 0) / most);
-        // drones fly: a bow; the rest go straight
-        const mx = (x1 + x2) / 2 - (r.mode === 'drone' ? (y2 - y1) * 0.18 : 0), my = (y1 + y2) / 2 + (r.mode === 'drone' ? (x2 - x1) * 0.18 : 0);
-        const d = `M${x1} ${y1}Q${mx} ${my} ${x2} ${y2}`;
-        g += `<path class="mp-rt ${r.mode}" d="${d}" style="stroke-width:${wpx.toFixed(1)}px"><title>${r.title || ''}</title></path>`;
-        if (r.mode === 'train') g += `<path class="mp-rt-ties" d="${d}" style="stroke-width:${(wpx + 6).toFixed(1)}px"/>`;
-        const lx = (x1 + 2 * mx + x2) / 4, ly = (y1 + 2 * my + y2) / 4;
-        if (r.label) labels += `<g class="mp-rt-lbl"><rect x="${lx - r.label.length * 3.1 - 6}" y="${ly - 9}" width="${r.label.length * 6.2 + 12}" height="17" rx="8"/><text x="${lx}" y="${ly + 3.5}" text-anchor="middle">${r.label}</text></g>`;
+      const { hubs, paths } = M.network, at = Object.fromEntries(hubs.map(h => [h.key, h]));
+      const most = Math.max(1, ...paths.flatMap(p => p.segs.map(sg => sg.rate)));
+      paths.forEach((p, pi) => {
+        let mid = null, longest = -1;
+        p.segs.forEach((sg, k) => {
+          const a = at[sg.a], b = at[sg.b];
+          if (!a || !b) return;
+          const wpx = 2 + 6 * Math.sqrt(sg.rate / most);
+          let pts;
+          if (p.mode === 'drone') {      // flown: an arc, bowed to the right of the way
+            const dx = b.x - a.x, dy = b.y - a.y, c = { x: (a.x + b.x) / 2 - dy * 0.22, y: (a.y + b.y) / 2 + dx * 0.22 };
+            pts = Array.from({ length: 17 }, (_, t) => { const u = t / 16;
+              return { x: (1 - u) ** 2 * a.x + 2 * u * (1 - u) * c.x + u * u * b.x, y: (1 - u) ** 2 * a.y + 2 * u * (1 - u) * c.y + u * u * b.y }; });
+          } else pts = M.ways?.get(`${p.mode}|${a.x},${a.y}|${b.x},${b.y}`) || [a, b];
+          const d = 'M' + pts.map(q => `${sx(q.x).toFixed(1)} ${sy(q.y).toFixed(1)}`).join('L');
+          if (p.mode === 'train') g += `<path class="mp-rt-ties" d="${d}" style="stroke-width:${(wpx + 6).toFixed(1)}px"/>`;
+          g += `<path class="mp-rt ${p.mode}${sg.rate ? '' : ' idle'}" d="${d}" style="stroke-width:${wpx.toFixed(1)}px"/>
+            <path class="mp-rt-hit" data-rt="${pi}:${k}" d="${d}"/>`;
+          const len = pts.reduce((t, q, i) => t + (i ? Math.hypot(q.x - pts[i - 1].x, q.y - pts[i - 1].y) : 0), 0);
+          if (len > longest) { longest = len; mid = pts[Math.floor(pts.length / 2)]; if (pts.length === 2) mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+        });
+        // one sign per path, on its longest stretch: hover any stretch for what rides it
+        if (mid) labels += `<g class="mp-rt-sign" data-rt="${pi}:-1"><circle cx="${sx(mid.x)}" cy="${sy(mid.y)}" r="10"/><text x="${sx(mid.x)}" y="${sy(mid.y) + 4}" text-anchor="middle">${p.icon}</text></g>`;
       });
       // small from afar, so the nodes round them stay in sight; full size up close
       const rel = M.view.scale / (M.fitScale || M.view.scale), r = rel >= 4.5 ? 8 : rel >= 2 ? 6 : 4;
@@ -1218,9 +1342,16 @@ function makeMap(el, M) {
   }, on);
   el.addEventListener('mousemove', e => {
     const hit = e.target.closest('[data-id]'), pin = e.target.closest('[data-pin]'), tag = e.target.closest('[data-spare]');
-    if (!hit && !pin && !tag) { tip.style.display = 'none'; return; }
+    const way = e.target.closest('[data-rt]');
+    if (!hit && !pin && !tag && !way) { tip.style.display = 'none'; return; }
     const r = el.getBoundingClientRect();
-    if (tag) {
+    if (way) {           // a path: what rides this stretch — who loads it, for whom
+      const [pi, k] = way.dataset.rt.split(':').map(Number), p = M.network.paths[pi];
+      const segs = k < 0 ? p.segs : [p.segs[k]];
+      tip.innerHTML = `<b>${p.icon} ${p.what} · ${p.name}</b><br><span>${p.run}${p.vehicles ? ` · ${p.vehicles}` : ''}</span>`
+        + segs.map(sg => `<div class="mp-tip-s">${segs.length > 1 || p.segs.length > 1 ? `<b>${sg.an} — ${sg.bn}</b><br>` : ''}${sg.lines.length
+          ? sg.lines.join('<br>') : '<span>Nothing on it yet</span>'}</div>`).join('');
+    } else if (tag) {
       const sp = M.spare[+tag.dataset.spare];
       tip.innerHTML = `<b>${sp.name}</b> leaves ${fmtM(sp.left)}/min of ${resName(sp.item)} unused${sp.stale ? '<br><span class="n-warn">its plan is out of date</span>' : ''}
         ${M.onSpare ? `<br><span>${sp.bring > 0 ? 'Click to leave it there' : 'Click to bring it here — as an import'}</span>` : ''}`;
@@ -1565,13 +1696,13 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
     const color = {};
     factories.forEach((f, i) => { color[f.key] = FACTORY_COLORS[i % FACTORY_COLORS.length]; });
     const name = k => factories.find(f => f.key === k)?.name || k;
-    el.innerHTML = `<div class="mp-filters"></div><div class="mp-tools"></div>
+    el.innerHTML = `<div class="mp-tools"></div>
       <div class="mp-main"><div class="mp-view"></div><div class="mp-side mp-legend"></div></div>`;
     const M = { filter: new Set(Object.keys(COLORS)), owner: owners, ownerColor: k => color[k] || '#fff', ownerName: name,
                 pins: pins.map(p => ({ ...p, color: color[p.factory], label: name(p.factory), mine: true })),
                 grid: new Set(grid), geoMode: false,
                 spare: spare.map(sp => ({ ...sp, ids: sp.ids.filter(id => MAPD.by[id]?.r === sp.item) })),
-                network: network && { hubs: network.hubs.map(h => ({ ...h, color: color[h.key] || '#fff' })), routes: network.routes },
+                network: network && { hubs: network.hubs.map(h => ({ ...h, color: color[h.key] || '#fff' })), paths: network.paths },
                 onHub: onOpen };
     const setGrid = ids => { M.grid = new Set(ids); onGrid([...M.grid].sort()); redraw(); };
     // In geothermal mode a click on a geyser puts a generator on it (or takes it off)
@@ -1585,18 +1716,26 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
     const legend = () => {
       const lg = el.querySelector('.mp-legend');
       if (!lg) return;                      // redrawn meanwhile (a newer render is under way)
-      const count = {}, free = {}, inSave = {};
+      const count = {}, free = {}, inSave = {}, saveIds = [];
       MAPD.all.forEach(n => {
-        if (!M.shows(n)) return;
-        if (owners[n.id]) count[owners[n.id]] = (count[owners[n.id]] || 0) + 1;
-        else if (MAPD.save.has(n.id)) inSave[n.r] = (inSave[n.r] || 0) + 1;
-        else if (n.p === 'pure' && !M.grid.has(n.id)) free[n.r] = (free[n.r] || 0) + 1;
+        if (owners[n.id]) { if (M.shows(n)) count[owners[n.id]] = (count[owners[n.id]] || 0) + 1; }
+        else if (MAPD.save.has(n.id)) { inSave[n.r] = (inSave[n.r] || 0) + 1; saveIds.push(n.id); }
+        else if (!M.grid.has(n.id)) { const f = free[n.r] = free[n.r] || { pure: 0, normal: 0, impure: 0 }; f[n.p]++; }
       });
+      const nSpare = new Set(M.spare.filter(sp => sp.left > 0.05).flatMap(sp => sp.ids)).size;
+      const on = r => !M.only && M.filter.has(r), allOn = !M.only && Object.keys(COLORS).every(r => M.filter.has(r));
       const mw = [...M.grid].reduce((a, id) => a + (GEO_MW[MAPD.by[id]?.p] || 0), 0);
       // geysers your save already has generators on, not yet on the grid
       const saved = MAPD.all.filter(n => n.r === 'Geyser' && MAPD.save.has(n.id) && !M.grid.has(n.id) && !owners[n.id]).map(n => n.id);
       lg.innerHTML = `
-        <div class="n-sent-t">Power grid</div>
+        <div class="n-sent-t">Resources <span class="n-hint">free nodes: pure · normal · impure</span>
+          <button class="bsm mp-all ${allOn ? 'act' : ''}" data-r="*" title="Every resource">All</button></div>
+        ${Object.keys(COLORS).map(r => { const f = free[r] || { pure: 0, normal: 0, impure: 0 };
+          return `<button class="mp-lg mp-res ${on(r) ? 'on' : ''}" data-r="${r}" title="Show only ${resName(r)} — Shift or Ctrl: add it to what's shown">
+            <i style="background:${COLORS[r]};border:none"></i>${resName(r)}<b>P ${f.pure} · N ${f.normal} · I ${f.impure}</b></button>`; }).join('')}
+        <button class="mp-lg mp-res ${M.only === 'spare' ? 'on' : ''}" data-only="spare" ${nSpare ? '' : 'disabled'}
+          title="Every node a factory has that its plan leaves some of unused"><i class="ring sp"></i>Leftover<b>${nSpare}</b></button>
+        <div class="n-sent-t" style="margin-top:10px">Power grid</div>
         ${M.grid.size ? `<div class="mp-lg"><i class="geo"></i>Geothermal × ${M.grid.size}<b>${fmtM(mw)} MW</b></div>
           <p class="n-hint">On average — a geyser swings between ½× and 1½×: ${fmtM(mw / 2)}–${fmtM(mw * 1.5)} MW.</p>`
           : '<p class="n-hint">No geothermal generators yet — ⚡ Geothermal, then click geysers.</p>'}
@@ -1610,15 +1749,52 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
           <span class="bb-name" data-key="${f.key}" style="font-weight:400">${f.name}</span><b>${count[f.key]}</b></div>`).join('')
           || '<p class="n-hint">No factory has nodes picked yet.</p>'}
         <div class="n-sent-t" style="margin-top:10px">In your save, not in a factory</div>
-        ${Object.keys(inSave).length ? Object.entries(inSave).map(([r, c]) => `<div class="mp-lg"><i class="sv"></i>${resName(r)}<b>${c}</b></div>`).join('')
-          : `<p class="n-hint">${MAPD.saveInfo ? 'None' : 'Load a save to see what you already mine.'}</p>`}
-        <div class="n-sent-t" style="margin-top:10px">Pure nodes still free</div>
-        ${Object.entries(free).map(([r, c]) => `<div class="mp-lg"><i style="background:${COLORS[r]};border:none"></i>${resName(r)}<b>${c}</b></div>`).join('')}`;
+        ${saveIds.length ? `<button class="mp-lg mp-res ${M.only === 'save' ? 'on' : ''}" data-only="save" title="Show just these: every node your save mines that no factory here has"><i class="ring sv"></i>On the map<b>${saveIds.length}</b></button>
+          ${Object.entries(inSave).map(([r, c]) => `<div class="mp-lg sub"><i class="sv"></i>${resName(r)}<b>${c}</b></div>`).join('')}
+          <button class="bsm" id="mp-save-forget" title="Unmark these ${saveIds.length} — the nodes your save mines that no factory here has (Load save again to bring them back)">✕ Forget these ${saveIds.length}</button>`
+          : `<p class="n-hint">${MAPD.saveInfo ? 'None' : 'Load a save to see what you already mine.'}</p>`}`;
       el.querySelectorAll('.mp-legend .bb-name').forEach(t => t.addEventListener('click', () => onOpen(t.dataset.key)));
+      // the resources: click one for just it, Shift or Ctrl to add it; All; or a view of its own
+      lg.querySelectorAll('[data-r], [data-only]').forEach(b => b.addEventListener('click', ev => {
+        const r = b.dataset.r, only = b.dataset.only;
+        if (only) M.only = M.only === only ? null : only;
+        else {
+          M.only = null;
+          if (r === '*') M.filter = new Set(Object.keys(COLORS));
+          else if (ev.shiftKey || ev.ctrlKey || ev.metaKey) M.filter.has(r) ? M.filter.delete(r) : M.filter.add(r);
+          else M.filter = new Set([r]);
+        }
+        if (M.geoMode && !(M.filter.size === 1 && M.filter.has('Geyser'))) { M.geoMode = false; geoBtn.classList.remove('act'); }
+        redraw();
+        if (only && M.only) M.map.fitTo(MAPD.all.filter(n => M.shows(n)).map(n => [n.x, n.y]), 400);
+      }));
+      lg.querySelector('#mp-save-forget')?.addEventListener('click', () => {
+        if (!confirm(`Unmark the ${saveIds.length} nodes your save mines that no factory here has? Load the save again to bring them back.`)) return;
+        fetch('/api/save-nodes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: saveIds }) })
+          .then(r => r.json()).then(d => {
+            MAPD.save = new Set(d.nodes || []);
+            if (M.only === 'save') M.only = null;
+            redraw();
+          });
+      });
       el.querySelector('#mp-geo-save')?.addEventListener('click', () => setGrid([...M.grid, ...saved]));
     };
     function redraw() { M.map.draw(); legend(); }
-    chips(el.querySelector('.mp-filters'), M, redraw);
+    // the paths' ways over the ground, worked out a stretch at a time, then drawn
+    if (M.network) ground().then(G => {
+      if (!G) return;
+      const todo = M.network.paths.flatMap(p => p.mode === 'drone' ? [] : p.segs.map(sg => [p.mode, sg]));
+      const at = Object.fromEntries(M.network.hubs.map(h => [h.key, h]));
+      M.ways = new Map();
+      const next = () => {
+        const job = todo.shift();
+        if (!job) { if (el.isConnected) M.map.draw(); return; }
+        const [mode, sg] = job, a = at[sg.a], b = at[sg.b];
+        if (a && b) { const w = trace(G, mode, a, b); if (w) M.ways.set(`${mode}|${a.x},${a.y}|${b.x},${b.y}`, w); }
+        setTimeout(next, 0);
+      };
+      next();
+    });
     // the grid's geothermal: a mode, so ordinary clicks never place one by accident
     const geoBtn = document.createElement('button');
     Object.assign(geoBtn, { className: 'bsm', id: 'mp-geo', title: 'Click geysers to put geothermal generators on the power grid (G)', textContent: '⚡ Geothermal' });
@@ -1634,7 +1810,6 @@ export function mountMapView(el, { owners, factories, pins, grid = [], spare = [
       M.geoMode = !M.geoMode;
       geoBtn.classList.toggle('act', M.geoMode);
       if (M.geoMode) { M.filter = new Set(['Geyser']); M.only = null; }
-      el.querySelector('.mp-filters')._chips?.();
       redraw();
     });
     requestAnimationFrame(() => { M.map.refit(); legend(); });

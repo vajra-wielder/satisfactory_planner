@@ -270,19 +270,24 @@ Unlike most web-based planners, this project uses a real optimization solver to 
 - Between factories: every saved scenario is a black box showing only what it
   imports and exports (from its last plan), where its imports come from and
   how much of each output others take. "From factories" imports are drawn as
-  routes on their own — one band per route, a stripe per item in it, each as
-  wide as its rate. Factories not yet placed sit in a grid laid out like the
-  map. Join factories with routes (＋ Join them all joins each to its nearest
-  by train, round trips guessed from the map distance) — train,
-  truck, tractor or drone, each with its round trip time (belts and pipes stay
-  inside factories) — and plan the network: which recipe runs where, what
-  crosses each route (items, stacks, and the freight cars, trucks, tractors or
-  drones it keeps busy: a freight car holds 32 stacks or 1,600 m³ in a fluid
-  car, a truck 48, a tractor 25, a drone 9; fluids by road or air go packaged —
-  one round trip carries a load each way, so a route keeps busy what its
-  heavier way needs, and what comes back rides along): a train of so many
-  freight and fluid cars with a platform per car at each end, so many trucks
-  or tractors with a station at each end, or drones — a port pair each, and
+  paths on their own — a band per stretch, a stripe per item riding it, each
+  as wide as its rate. Factories not yet placed sit in a grid laid out like the
+  map. Join factories with paths (＋ Join them all joins each to its nearest
+  by train, round trips guessed from the map distance) — train, truck,
+  tractor or drone, each with its round trip time (belts and pipes stay
+  inside factories). A path is the stops one vehicle runs: drag a factory's ⇄
+  onto another for a path of two, onto a path's box for one more stop; with
+  three or more it runs out and back along the line (A→B→C→B→A), or ⟲ round a
+  loop (A→B→C→D→A); click a stop to take it off. Any stop loads for any other
+  — on a loop, C loads the train for A by way of D. Then plan the network:
+  which recipe runs where, what crosses each path (items, stacks, and the
+  freight cars, trucks, tractors or drones it keeps busy: a freight car holds
+  32 stacks or 1,600 m³ in a fluid car, a truck 48, a tractor 25, a drone 9;
+  fluids by road or air go packaged — what a load rides counts on every leg
+  it rides, and a path keeps busy what its heaviest leg needs; the rest ride
+  along): a train of so many freight and fluid cars with a platform per car
+  at each stop, so many trucks or tractors with a station at each stop, or
+  drones — a port pair each, and
   about how many batteries a minute (24,000 MJ a trip plus 12 MJ a metre
   between the factories, an estimate; the port's own readout is exact),
   what each factory draws, what the whole network mines against the
@@ -291,7 +296,7 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
 - ⚖ Compare trades: "bring Quickwire in for the computers, or send the Plastic
-  over?" — every item one factory on a route could send the other that its
+  over?" — every item one factory on a path could send another on it that its
   plan makes or uses today, and every factory's own goals (made to be shipped
   on: a goal counts all a factory makes of it, kept or sent), each tried on its own on top of what they already
   send: how much more of each goal it gives (every goal kept at least where it
@@ -303,23 +308,26 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   factories' imports and re-solves them. "+ free nodes within N km" counts the
   free nodes that close to each factory as more it could mine — and says which
   it would, per factory
-- Heavy routes: past one train (8 cars), 6 trucks or tractors, or 4 drones,
-  a route's load turns amber — the vehicles counted for the imports you set
+- Heavy paths: past one train (8 cars), 6 trucks or tractors, or 4 drones,
+  a path's load turns amber — the vehicles counted for the imports you set
   too, before any network plan — saying what most of it is and, when the
   factory it goes to turns it into something lighter, to do that step at the
   sending end instead (about how much less to carry)
-- Flows: a Sankey of everything moving between factories and into storage —
-  as set in each factory, or as the network plan would send it; one band per
-  pair of factories, its items as stripes inside it.
 - Power: what each factory's machines and extractors draw and its generators
   make, the power grid's geothermal, the grid's balance — on average and with
   every geyser at its low (½×) and its high (1½×) — and which factories their
   cap holds back.
 - Map: the network on the game map — each factory where its nodes are, each
-  route between them (trains with ties, trucks and tractors dashed, drones
-  bowed) as thick as what it carries, labelled with the vehicles the network
-  plan needs; click a factory to open it. Whose nodes are whose, what your save already mines, the pure nodes
-  still free. ⚡ Geothermal: click geysers to put a geothermal generator on
+  path as thick as what it carries, the way its vehicle would go: a truck or
+  tractor keeps to gentle ground round hills and water, a train runs straight,
+  turning only for a cliff or the map's edge, a drone flies an arc (read from
+  the map picture: lighter is higher, blue is water). Hover a stretch, or a
+  path's sign, for what rides it — who loads what for whom — and the vehicles
+  it needs; click a factory to open it. One list of resources down the side
+  is the filter (click one, Shift or Ctrl to add, All), each with its free
+  nodes by purity (P · N · I); whose nodes are whose; what your save mines
+  that no factory has — ✕ Forget these unmarks them (Load save brings them
+  back; its machines and storage stay). ⚡ Geothermal: click geysers to put a geothermal generator on
   them for the power grid (100 / 200 / 400 MW by purity), or add the ones your
   save has. Geysers belong to the grid, not to a factory.
 - Items: with nothing typed, everything stored or moved between factories;

@@ -278,12 +278,23 @@ SUITES.blackboard = async ({ B, api, chromium, stop, log }) => {
       assert.match(t, /5 to frames, 10 stored/);
       assert.match(await page.locator('.bb-card[data-key="frames"]').innerText(), /from iron/);
     });
-    check('flows: one band per pair, its stripes inside, one label each', async () => {
-      await page.click('#bb-tabs button[data-tab="flows"]'); await sleep(300);
-      assert.equal(await page.locator('#bb-sankey .sk-band').count(), 2);        // iron→frames, iron→storage
-      assert.equal(await page.locator('#bb-sankey .sk-link').count(), 4);        // 3 + the stored rods
-      const labels = await page.$$eval('#bb-sankey .sk-lab', ls => ls.map(l => l.textContent));
-      assert.ok(labels.some(l => /3 items · 95\/min/.test(l)), labels.join(' | '));
+    check('no Flows tab: what moves is on the board, what\'s stored in Items', async () => {
+      assert.equal(await page.locator('#bb-tabs button[data-tab="flows"]').count(), 0);
+    });
+    check('a path: a factory dragged onto a path\'s box is one more stop; ⟲ makes it a loop; a stop clicked comes off', async () => {
+      const h = await page.locator('.bb-card[data-key="wire"] .bb-route-h').boundingBox();
+      const l = await page.locator('.bb-link-label').first().boundingBox();
+      await page.mouse.move(h.x + 4, h.y + 4); await page.mouse.down();
+      await page.mouse.move(l.x + 10, l.y + l.height - 6, { steps: 8 }); await page.mouse.up(); await sleep(700);
+      assert.match(await page.locator('.bb-stops').innerText(), /iron ⇄ frames ⇄ wire/);
+      await page.click('.bb-loop'); await sleep(700);
+      assert.match(await page.locator('.bb-stops').innerText(), /iron → frames → wire →/);
+      let r = (await api('/api/blackboard')).layout.routes[0];
+      assert.deepEqual(r.stops, ['iron', 'frames', 'wire']); assert.equal(r.loop, true);
+      await page.locator('.bb-stop', { hasText: 'wire' }).click(); await sleep(700);
+      r = (await api('/api/blackboard')).layout.routes[0];
+      assert.deepEqual(r.stops, ['iron', 'frames']); assert.equal(r.loop, false);
+      assert.equal(await page.locator('.bb-stops').count(), 0);
     });
     check('items: with nothing typed, what is stored or moved', async () => {
       await page.click('#bb-tabs button[data-tab="items"]'); await sleep(200);
@@ -411,8 +422,8 @@ SUITES.nav = async ({ B, api, chromium, stop, log }) => {
       await page.keyboard.press('Alt+ArrowRight'); await sleep(300);
       assert.equal(await bbTab(), 'map');
       await page.keyboard.press('Alt+ArrowLeft'); await page.keyboard.press('Alt+ArrowLeft'); await sleep(300);
-      assert.equal(await bbTab(), 'flows');
-      assert.match(await page.locator('#nav-ring').innerText(), /Planner[\s\S]*Flows[\s\S]*Items/);
+      assert.equal(await bbTab(), 'factories');
+      assert.match(await page.locator('#nav-ring').innerText(), /Planner[\s\S]*Power[\s\S]*Items/);
       await page.keyboard.press('Alt+1'); await sleep(300);
       assert.equal(await bbOpen(), false);
       await page.keyboard.press('Alt+ArrowLeft'); await sleep(300);              // round the ring
@@ -423,9 +434,9 @@ SUITES.nav = async ({ B, api, chromium, stop, log }) => {
       const b = await page.locator('#bb-tabs').boundingBox();
       await page.mouse.move(b.x + 20, b.y + b.height / 2);
       await page.mouse.wheel(0, 120); await sleep(300);
-      assert.equal(await bbTab(), 'power');
+      assert.equal(await bbTab(), 'map');
       await page.mouse.wheel(0, -120); await sleep(300);
-      assert.equal(await bbTab(), 'flows');
+      assert.equal(await bbTab(), 'power');
     });
     await step('Esc closes the Blackboard', async () => {
       await page.mouse.move(5, 500);
@@ -655,8 +666,8 @@ SUITES.spare = async ({ B, api, chromium, stop, log }) => {
       await page.click('#mp-cancel'); await sleep(200);
     });
     await step('the Blackboard\'s map shows what\'s unused', async () => {
-      await page.keyboard.press('Alt+5'); await page.waitForSelector('.mp-view [data-id]'); await sleep(400);
-      await page.click('.mp-filters [data-only="spare"]'); await sleep(300);
+      await page.keyboard.press('Alt+4'); await page.waitForSelector('.mp-view [data-id]'); await sleep(400);
+      await page.click('.mp-legend [data-only="spare"]'); await sleep(300);
       assert.match(await page.locator('.mp-view .mp-spare').textContent(), /unused/);
       assert.match(await page.locator('.mp-legend').innerText(), /Unused at factories[\s\S]*Iron intermediate/);
     });
@@ -1294,7 +1305,15 @@ SUITES.build = async ({ B, api, chromium, stop, log }) => {
       await page.click('#bb-tabs [data-tab="map"]'); await page.waitForSelector('#bb-map .mp-hub');
       assert.equal(await page.locator('#bb-map .mp-hub').count(), 2);
       assert.equal(await page.locator('#bb-map .mp-rt.drone').count(), 1);
-      assert.match(await page.locator('#bb-map .mp-rt-lbl').textContent(), /60\/min/);
+      // hovering a stretch says who loads what for whom
+      await page.locator('#bb-map .mp-rt-sign').hover(); await sleep(150);
+      assert.match(await page.locator('#bb-map .mp-tip').innerText(), /Drone · Plates ⇄ Wires[\s\S]*Plates → Wires: Iron Plate 60\/min/);
+      // one list of resources, as the filter: free nodes by purity
+      assert.match(await page.locator('#bb-map .mp-legend').innerText(), /Iron Ore\s*P \d+ · N \d+ · I \d+/);
+      assert.equal(await page.locator('#bb-map .mp-filters').count(), 0, 'no chips row on top');
+      await page.click('#bb-map .mp-res[data-r="Coal"]'); await sleep(200);
+      assert.ok(await page.locator('#bb-map [data-id]').count() < 100, 'only coal shown');
+      await page.click('#bb-map .mp-all'); await sleep(200);
       await page.keyboard.press('Escape');
     });
 

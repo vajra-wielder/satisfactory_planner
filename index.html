@@ -382,6 +382,18 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .mp-lg i { width: 10px; height: 10px; border-radius: 50%; border: 2.5px solid; flex: none; }
 .mp-lg i.sv { border: 1.6px dashed #facc15; }
 .mp-lg b { margin-left: auto; font-family: var(--mono); font-weight: 500; }
+.mp-lg.sub { padding-left: 14px; font-size: 10.5px; }
+.mp-res { width: 100%; background: none; border: 1px solid transparent; border-radius: 5px; padding: 2px 5px; font: inherit; color: var(--t3); cursor: pointer; text-align: left; }
+.mp-res:hover:not(:disabled) { border-color: var(--b2); }
+.mp-res.on { color: var(--t); background: var(--p3); border-color: var(--b2); }
+.mp-res:disabled { opacity: .45; cursor: default; }
+.mp-res b { font-size: 10px; }
+.mp-res i.ring { background: none !important; border-radius: 50%; }
+.mp-res i.ring.sp { border: 2px solid #4ade80; }
+.mp-legend .n-sent-t { display: flex; align-items: center; gap: 6px; }
+.mp-legend .n-sent-t .n-hint { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.mp-all { margin-left: auto; padding: 0 6px; font-size: 10px; }
+#mp-save-forget { margin-top: 5px; }
 #bb-map { display: flex; flex-direction: column; }
 .mp-map { flex: 1; position: relative; background: #0a0c10; cursor: grab; overflow: hidden; }
 .mp-map svg { display: block; position: absolute; left: 0; top: 0; }
@@ -412,13 +424,18 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .mp-n.hl circle { stroke: var(--acc); stroke-width: 3; }
 .mp-n.taken { cursor: not-allowed; opacity: .45; }
 .mp-x { stroke: var(--err); stroke-width: 1.6; }
-.mp-rt { fill: none; stroke: #e6a23c; stroke-linecap: round; opacity: .85; pointer-events: stroke; }
+.mp-rt { fill: none; stroke: #e6a23c; stroke-linecap: round; stroke-linejoin: round; opacity: .9; pointer-events: none; }
+.mp-rt.idle { opacity: .4; }
+.mp-rt-hit { fill: none; stroke: transparent; stroke-width: 14px; pointer-events: stroke; cursor: help; }
+.mp-rt-hit:hover + .mp-rt, .mp-rt-hit:hover { stroke: rgba(255,255,255,.12); }
+.mp-rt-sign { cursor: help; }
+.mp-rt-sign circle { fill: rgba(12,14,19,.9); stroke: #3a4258; }
+.mp-rt-sign text { font-size: 11px; }
+.mp-tip-s { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--b); }
 .mp-rt.truck { stroke: #5aa0e8; stroke-dasharray: 10 6; }
 .mp-rt.tractor { stroke: #7bc96f; stroke-dasharray: 3 5; }
 .mp-rt.drone { stroke: #c977c9; stroke-dasharray: 14 5 2 5; }
 .mp-rt-ties { fill: none; stroke: #e6a23c; stroke-dasharray: 1.5 7; opacity: .5; pointer-events: none; }
-.mp-rt-lbl rect { fill: rgba(12,14,19,.88); stroke: #3a4258; }
-.mp-rt-lbl text { font: 600 10px var(--mono); fill: var(--t); }
 .mp-hub { cursor: pointer; }
 .mp-hub rect { stroke: #0c0e13; }
 .mp-hub-n { font: 600 12px var(--font); fill: #fff; paint-order: stroke; stroke: #0c0e13; stroke-width: 3.5px; }
@@ -831,6 +848,10 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
   background: var(--p2, #151922); border: 1px solid var(--b2); border-radius: 6px; padding: 3px 7px;
   white-space: nowrap; text-align: center; line-height: 1.4; z-index: 2; opacity: .92; }
 .bb-x { cursor: pointer; color: var(--t3); margin-left: 4px; }
+.bb-stops { margin-bottom: 3px; color: var(--t); font-weight: 600; max-width: 240px; white-space: normal; }
+.bb-stop { cursor: pointer; }
+.bb-stop:hover { color: var(--err); text-decoration: line-through; }
+.bb-loop { padding: 0 5px; margin-left: 2px; }
 .bb-x:hover { color: var(--err); }
 .bb-card { position: absolute; width: 250px; background: var(--p2, #151922); border: 1px solid var(--b2);
   border-radius: 8px; font-size: 11px; color: var(--t2); box-shadow: 0 4px 16px rgba(0,0,0,.35); }
@@ -870,15 +891,6 @@ input[type=number]::-webkit-inner-spin-button { display: none; }
 .bb-tab td { padding: 1px 0; }
 .bb-tab td + td, .bb-tab th + th { text-align: right; font-family: var(--mono); padding-left: 6px; }
 .bb-ok { color: var(--ok); }
-#bb-sankey { flex: 1; overflow: auto; padding: 14px; }
-#bb-sankey svg text { font-size: 11px; fill: var(--t2); }
-#bb-sankey .sk-node { fill: var(--p3); stroke: var(--b2); }
-#bb-sankey .sk-node.store { fill: #1d3a2c; stroke: var(--ok); }
-#bb-sankey .sk-name { fill: var(--t); font-weight: 600; cursor: pointer; }
-#bb-sankey .sk-link { fill-opacity: .55; }
-#bb-sankey .sk-band { fill: none; stroke: var(--t3); stroke-width: 1; stroke-opacity: .6; pointer-events: none; }
-#bb-sankey .sk-link:hover { fill-opacity: .8; }
-#bb-sankey .sk-lab { font-size: 10px; fill: var(--t); pointer-events: none; paint-order: stroke; stroke: #0c0e13; stroke-width: 3px; }
 #bb-power { overflow: auto; padding: 14px; font-size: 12px; color: var(--t2); }
 #bb-items-out { overflow: auto; padding: 14px; font-size: 12px; color: var(--t2); flex: 1; }
 .fd-item { margin-bottom: 16px; }
@@ -1201,7 +1213,6 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
       <h3>Blackboard</h3>
       <div class="seg" id="bb-tabs">
         <button type="button" data-tab="factories" class="on">Between factories</button>
-        <button type="button" data-tab="flows">Flows</button>
         <button type="button" data-tab="power">Power</button>
         <button type="button" data-tab="map">Map</button>
         <button type="button" data-tab="items">Items</button>
@@ -1214,22 +1225,12 @@ kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px sol
         <button id="bb-plan" class="bsm" style="border-color:var(--acc);color:var(--acc)" title="Same outputs, least ore and transport">Plan network</button>
         <button id="bb-trades" class="bsm" style="border-color:var(--acc);color:var(--acc)" title="Each thing one factory could send another, on its own: what it adds to the goals, what it frees, what it takes to move">⚖ Compare trades</button>
         <label class="bb-near" title="Free nodes this close to a factory's own count as more it could mine (0: none)">+ free nodes within <input id="bb-near-km" type="number" min="0" step="0.5" value="0"/> km</label>
-        <span>Drag a factory's ⇄ onto another to add a route — train, truck, tractor or drone, and its round trip · click a factory's name to open it</span>
+        <span>Drag a factory's ⇄ onto another for a path, or onto a path's box for one more stop (⟲ makes it a loop) · click a factory's name to open it</span>
       </div>
       <div style="position:relative;flex:1;display:flex;min-height:0">
         <div id="bb-board"><svg id="bb-links"></svg></div>
         <div id="bb-net" style="display:none"></div>
       </div>
-    </div>
-    <div id="bb-flows" class="bb-pane" style="display:none">
-      <div class="bb-bar">
-        <div class="seg" id="bb-flow-src">
-          <button type="button" data-src="declared" class="on">As set in each factory</button>
-          <button type="button" data-src="plan">Network plan</button>
-        </div>
-        <span>What each factory takes from another and sends to storage · width is items per minute</span>
-      </div>
-      <div id="bb-sankey"></div>
     </div>
     <div id="bb-power" class="bb-pane" style="display:none"></div>
     <div id="bb-map" class="bb-pane" style="display:none"></div>

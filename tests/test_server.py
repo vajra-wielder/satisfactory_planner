@@ -458,6 +458,41 @@ class Cards(_Temp):
         self.assertAlmostEqual(network._unit_cost("Water", {"mode": "train", "trip_min": 4}), 4 / 1600)
         self.assertIsNone(network._unit_cost("Water", {"mode": "tractor", "trip_min": 4}))
 
+    def test_paths(self):
+        # a line runs out and back; a loop goes round; any stop loads for any other
+        line, loop = {"stops": ["a", "b", "c"]}, {"stops": ["a", "b", "c", "d"], "loop": True}
+        self.assertEqual(network.legs(line), [("a", "b"), ("b", "c"), ("c", "b"), ("b", "a")])
+        self.assertEqual(network.legs(loop), [("a", "b"), ("b", "c"), ("c", "d"), ("d", "a")])
+        self.assertEqual(network._hops(line, "a", "c"), [0, 1])
+        self.assertEqual(network._hops(line, "c", "a"), [2, 3])
+        self.assertEqual(network._hops(line, "b", "a"), [3])
+        self.assertEqual(network._hops(loop, "c", "b"), [2, 3, 0])     # C loads for B: round by D and A
+        self.assertEqual(network._hops(loop, "d", "a"), [3])
+        # cleaned: a plain {a, b} is a path of two; repeats and unknown stops go; a loop needs three
+        self.assertEqual(server._paths([{"a": "x", "b": "y"}, {"stops": ["x", "y", "x", "zz"], "loop": True, "mode": "drone"},
+                                        {"stops": ["x"]}, "junk"], have={"x", "y"}),
+                         [{"stops": ["x", "y"], "loop": False, "mode": "train", "trip_min": 4.0},
+                          {"stops": ["x", "y"], "loop": False, "mode": "drone", "trip_min": 4.0}])
+
+    def test_network_on_a_loop(self):
+        # a loop of three: what one stop sends another rides every leg between
+        # them, and the vehicles busy are the heaviest leg's
+        _solved(self, "mine", resource_nodes=[{"resource": "Iron_Ore", "extractor": "fixed", "rate": 600}],
+                must_produce={"Iron_Plate": 100})
+        sites = server._network_sites(["iron", "wires", "mine"])
+        rt = {"stops": ["iron", "wires", "mine"], "loop": True, "mode": "train", "trip_min": 3}
+        out = network.plan_network(sites, [rt], server.ALL_RECIPES)
+        self.assertTrue(out["ok"], out)
+        p = out["routes"][0]
+        self.assertEqual(len(p["legs"]), 3)
+        per = [0.0, 0.0, 0.0]
+        for i in p["items"]:
+            for h in network._hops(rt, i["from"], i["to"]):
+                per[h] += i["load"]
+        for l, v in zip(p["legs"], per):
+            self.assertAlmostEqual(l["load"], v, places=3)
+        self.assertAlmostEqual(p["load"], max(per), places=3)
+
     def test_network(self):
         sites = server._network_sites(["iron", "wires"])
         out = network.plan_network(sites, [{"a": "iron", "b": "wires", "mode": "train", "trip_min": 1}],
@@ -466,7 +501,8 @@ class Cards(_Temp):
         rt = out["routes"][0]
         self.assertIn("Iron_Plate", {i["item"] for i in rt["items"] if i["from"] == "iron"})
         # vehicles busy: the heavier way (what comes back rides along)
-        self.assertAlmostEqual(rt["load"], max(rt["ways"].values()), places=3)
+        self.assertAlmostEqual(rt["load"], max(l["load"] for l in rt["legs"]), places=3)
+        self.assertEqual([(l["from"], l["to"]) for l in rt["legs"]], [("iron", "wires"), ("wires", "iron")])
         self.assertAlmostEqual(rt["cars"]["solid"] + rt["cars"]["fluid"], rt["load"], places=3)
         # a factory's own goals are never shipped to it
         goals = {"iron": {"Iron_Plate", "Iron_Rod"}, "wires": {"Reinforced_Iron_Plate"}}
@@ -632,6 +668,17 @@ class API(_Temp):
         code, _ = self.call("GET", "/frontend/../server.py")
         self.assertEqual(code, 404)
         self.assertEqual(sorted(p.name for p in self.dir.glob("*.yaml")), [])
+
+    def test_forgetting_save_nodes(self):
+        # unmark nodes the save mines (no factory has them); its machines and storage stay
+        server.SAVE_NODES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        server.SAVE_NODES_PATH.write_text(json.dumps({"file": "x.sav", "nodes": ["n1", "n2", "n3"],
+                                                      "machines": [["Smelter", None, 0, 0]], "stock": {"Iron_Plate": 5}}))
+        code, out = self.call("DELETE", "/api/save-nodes", {"ids": ["n1", "n3"]})
+        self.assertEqual((code, out["nodes"], out["forgot"]), (200, ["n2"], 2))
+        sv = json.loads(server.SAVE_NODES_PATH.read_text())
+        self.assertEqual((sv["nodes"], sv["stock"], len(sv["machines"])), (["n2"], {"Iron_Plate": 5}, 1))
+        self.assertEqual(self.call("DELETE", "/api/save-nodes", {})[1]["nodes"], [])      # no ids: every one
 
     def test_bad_bodies_are_400(self):
         for path in ("/api/scenarios/a", "/api/solve", "/api/progress", "/api/blackboard", "/api/network"):

@@ -1,12 +1,14 @@
 """
-network.py — plan several factories together, joined by routes.
+network.py — plan several factories together, joined by paths.
 
 Each factory keeps its own node supply, its own enabled recipes and machines,
 and the goal outputs its current plan makes. Routes join factories by train,
 truck, tractor or drone, each with its round trip time. One continuous model of the whole
 network (fractional machines — a planning view; each factory is then solved
 on its own for its exact build) decides which recipe runs where and what
-crosses each route, in three stages, each locked before the next:
+crosses each path, in stages, each locked before the next. A path is a line of
+stops one vehicle runs (A→B→C and back), or a loop (A→B→C→D→A): any stop can
+load for any other, and what it keeps busy is its heaviest leg.
 
   1. least resources — every factory's draw over its own supply, averaged,
      so a scarce resource costs more than an abundant one (held within
@@ -70,6 +72,32 @@ def _unit_cost(item: str, route: dict) -> Optional[float]:
     return trip / (v.get("stacks", 32) * STACK.get(item, 100))
 
 
+def stops(rt: dict) -> List[str]:
+    """A path's stops in order: [a, b] for a plain route."""
+    return list(rt.get("stops") or [rt.get("a"), rt.get("b")])
+
+
+def legs(rt: dict) -> List[tuple]:
+    """The legs a path's vehicles run, each one way: round a loop (A→B→C→A),
+    or out and back along a line (A→B→C→B→A). Two stops: there and back."""
+    st = stops(rt)
+    fwd = list(zip(st, st[1:]))
+    if rt.get("loop") and len(st) > 2:
+        return fwd + [(st[-1], st[0])]
+    return fwd + [(b, a) for a, b in reversed(fwd)]
+
+
+def _hops(rt: dict, src: str, dst: str) -> List[int]:
+    """Which legs (indices into legs(rt)) a load from src to dst rides."""
+    st, L = stops(rt), legs(rt)
+    i, j = st.index(src), st.index(dst)
+    if rt.get("loop") and len(st) > 2:
+        n = len(st)
+        return [(i + k) % n for k in range((j - i) % n)]
+    n = len(st) - 1                       # legs[0:n] go forward, legs[n:] come back
+    return list(range(i, j)) if j > i else [n + (n - 1 - k) for k in range(i - 1, j - 1, -1)]
+
+
 class _Net:
     """One LP of the network. held: per factory, outputs it must still make."""
 
@@ -85,10 +113,12 @@ class _Net:
         makeable = {it for k in keys for r in allowed[k].values() for it in r.outputs}
         self.q = q = {(k, rk): s.NumVar(0, inf, "") for k in keys for rk in allowed[k]}
 
-        # Route arcs both ways, for items the source can have and the target can use
+        # Arcs from every stop of a path to every other, for items the source
+        # can have and the target can use
         self.arcs = arcs = []          # (route index, src, dst, item, var, unit cost)
         for ri, rt in enumerate(routes):
-            for src, dst in ((rt["a"], rt["b"]), (rt["b"], rt["a"])):
+            st = stops(rt)
+            for src, dst in ((x, y) for x in st for y in st if x != y):
                 if src not in by or dst not in by:
                     continue
                 have = {it for r in allowed[src].values() for it in r.outputs} | \
@@ -254,9 +284,10 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
     # what goes back the other way rides along. A sliver on every arc keeps
     # nothing moving that needn't.
     inf = m.s.infinity()
-    ways: Dict[tuple, Dict[object, float]] = {}
-    for (ri, a, _b, it, v, c) in m.arcs:
-        ways.setdefault((ri, "fluid" if it in FLUIDS else "solid", a), {})[v] = c
+    ways: Dict[tuple, Dict[object, float]] = {}        # (path, kind, leg) → its loads
+    for (ri, a, b, it, v, c) in m.arcs:
+        for h in _hops(routes[ri], a, b):
+            ways.setdefault((ri, "fluid" if it in FLUIDS else "solid", h), {})[v] = c
     busy: Dict[tuple, object] = {}
     for (ri, kind, _a), terms in ways.items():
         L = busy.get((ri, kind)) or m.s.NumVar(0, inf, "")
@@ -327,12 +358,14 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
                 items.append({"item": it, "from": a, "to": b, "rate": round(x, 3),
                               "stacks": None if it in FLUIDS else round(x / STACK.get(it, 100), 3),
                               "load": round(x * c, 4)})
-                each[(kind, a)] = each.get((kind, a), 0.0) + x * c
-        # vehicles busy: the heavier way, per kind of car
-        cars = {kind: round(max([v for (k2, _a), v in each.items() if k2 == kind] or [0.0]), 4) for kind in ("solid", "fluid")}
+                for h in _hops(rt, a, b):
+                    each[(kind, h)] = each.get((kind, h), 0.0) + x * c
+        # vehicles busy: the heaviest leg, per kind of car
+        cars = {kind: round(max([v for (k2, _h), v in each.items() if k2 == kind] or [0.0]), 4) for kind in ("solid", "fluid")}
         load = cars["solid"] + cars["fluid"]
         out["routes"].append({**rt, "items": items, "load": round(load, 4), "cars": cars,
-                              "ways": {a: round(sum(v for (k2, a2), v in each.items() if a2 == a), 4) for a in (rt["a"], rt["b"])},
+                              "legs": [{"from": a, "to": b, "load": round(sum(v for (_k, h2), v in each.items() if h2 == h), 4)}
+                                       for h, (a, b) in enumerate(legs(rt))],
                               "throughput": round(sum(i["rate"] for i in items), 3),
                               "stacks": round(sum(i["stacks"] or 0 for i in items), 3)})
     out["throughput"] = round(sum(r["throughput"] for r in out["routes"]), 3)
@@ -464,7 +497,7 @@ def drawn(result: dict) -> Dict[str, float]:
 def _summary(g: dict, h: dict) -> dict:
     flows = [{"from": i["from"], "to": i["to"], "item": i["item"], "rate": i["rate"]}
              for rt in (g.get("routes") or []) for i in rt["items"]]
-    cars = [{"a": rt["a"], "b": rt["b"], "mode": rt["mode"], "trip_min": rt["trip_min"],
+    cars = [{"stops": stops(rt), "loop": bool(rt.get("loop")), "mode": rt["mode"], "trip_min": rt["trip_min"],
              "cars": rt["cars"], "load": rt["load"]} for rt in (g.get("routes") or []) if rt["items"]]
     return {"ok": bool(g.get("ok") and h.get("ok")), "grow": g.get("grow"), "flows": flows, "routes": cars,
             "goals": {f["key"]: f.get("goal") for f in g.get("factories", []) if f.get("goal")},

@@ -15,7 +15,7 @@ import { ALL_ITEMS, itemName, fetchScenarios } from './state.js';
 
 // ── The Blackboard, loaded the first time it opens (blackboard.js) ──
 // Its tabs, in order — the systems you move between
-export const BB_TABS = [['factories', 'Between factories'], ['flows', 'Flows'], ['power', 'Power'], ['map', 'Map'], ['items', 'Items']];
+export const BB_TABS = [['factories', 'Between factories'], ['power', 'Power'], ['map', 'Map'], ['items', 'Items']];
 let BB = null, BB_OPTS = null;
 const blackboard = () => BB || (BB = import('./blackboard.js').then(m => { m.initBlackboard(BB_OPTS); return m; }));
 export function initBlackboard(opts) { BB_OPTS = opts; }
