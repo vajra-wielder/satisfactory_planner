@@ -286,10 +286,6 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   what each factory draws, and how much more each goal the leftovers could make.
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
-  ⇧ Grow all goals plans them together instead of holding today's outputs:
-  the largest share every goal can rise by at once (none traded for another),
-  then the most of each on top, then least resources and transport as above —
-  each factory's goal from now to then. Apply writes it in like any plan.
 - ⚖ Compare trades: "bring Quickwire in for the computers, or send the Plastic
   over?" — every item one factory on a route could send the other that its
   plan makes or uses today, and every factory's own goals (made to be shipped

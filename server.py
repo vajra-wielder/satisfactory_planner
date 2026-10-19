@@ -2055,7 +2055,7 @@ class Handler(BaseHTTPRequestHandler):
             keys = sorted({k for r in routes for k in (r["a"], r["b"])})
             try:
                 sites = _network_sites(keys)
-                out = network.plan_network(sites, routes, ALL_RECIPES, grow=bool(b.get("grow")))
+                out = network.plan_network(sites, routes, ALL_RECIPES)
                 out["unsolved"] = [s["name"] for s in sites if not s["solved"]]
                 self._json(200, out)
             except Exception as e:

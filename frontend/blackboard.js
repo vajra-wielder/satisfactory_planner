@@ -114,8 +114,7 @@ export function initBlackboard({ onOpenFactory: open }) {
   $('btn-close-bb').addEventListener('click', closeBlackboard);
   document.querySelectorAll('#bb-tabs button').forEach(b =>
     b.addEventListener('click', () => showTab(b.dataset.tab)));
-  $('bb-plan').addEventListener('click', () => planNetwork(false));
-  $('bb-grow').addEventListener('click', () => planNetwork(true));
+  $('bb-plan').addEventListener('click', planNetwork);
   $('bb-trades').addEventListener('click', compareTrades);
   document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
     FLOW_SRC = b.dataset.src;
@@ -375,7 +374,7 @@ function drawRoutes() {
   });
 }
 
-function planNetwork(grow) {
+function planNetwork() {
   const panel = $('bb-net');
   if (!LAYOUT.routes.length) {
     panel.style.display = '';
@@ -386,7 +385,7 @@ function planNetwork(grow) {
   panel.innerHTML = '<p class="bb-hint">Planning…</p>';
   fetch('/api/network', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ routes: LAYOUT.routes, grow }),
+    body: JSON.stringify({ routes: LAYOUT.routes }),
   }).then(r => r.json()).then(out => { NET = out; drawRoutes(); renderNet(); })
     .catch(e => { panel.innerHTML = `<p class="bb-warn">Planning failed: ${e.message}</p>`; });
 }
@@ -399,7 +398,6 @@ function renderNet() {
   let h = `<div class="bb-net-t">Network plan <span class="bb-x" id="bb-net-close" title="Close">✕</span></div>
     <p class="bb-hint">Fractional machines — a planning view. Solve each factory on its own for its exact build.</p>`;
   if (NET.unsolved?.length) h += `<p class="bb-warn">Not solved, so held at their declared outputs: ${NET.unsolved.join(', ')}.</p>`;
-  if (NET.grow != null) h += `<div class="bb-kpi">Every goal <b>× ${fmt(NET.grow)}</b>${NET.grow < 1.0005 ? ' — no room to grow them all together' : ''}</div>`;
   h += `<div class="bb-kpi"><b>${fmt(NET.throughput)}/min</b> moving between factories · <b>${fmt(NET.stacks)}</b> stacks/min</div>
     <button class="bsm act" id="bb-apply" style="margin-top:6px" title="Write this plan into the factories, then re-solve them in order">Apply to the factories…</button>
     <div id="bb-chain"></div>`;
@@ -425,9 +423,7 @@ function renderNet() {
       return `${itemName(it)} ${fmt(x.used)} of ${fmt(x.supply)}${Math.abs(d) > 0.01 ? ` <span class="${d < 0 ? 'bb-ok' : 'bb-warn'}">(${d < 0 ? '' : '+'}${fmt(d)})</span>` : ''}`;
     });
     const hr = NET.headroom?.[f.key];
-    const gl = NET.grow != null && f.goal ? Object.entries(f.goal).map(([it, g]) =>
-      `${itemName(it)} ${fmt(g.now)} → <b>${fmt(g.then)}</b>/min`).join(' · ') : '';
-    h += `<div class="bb-net-s">${f.name}</div>${gl ? `<div class="bb-net-b">${gl}</div>` : ''}
+    h += `<div class="bb-net-s">${f.name}</div>
       <div class="bb-net-b">${lines.join('<br>') || 'Same recipes as its own plan.'}</div>
       ${res.length ? `<div class="bb-net-b">Draws: ${res.join(' · ')}</div>` : ''}
       ${hr ? `<div class="bb-net-b">With the network's leftovers: up to <b>${fmt(hr.most)}</b>

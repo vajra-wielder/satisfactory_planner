@@ -1322,7 +1322,7 @@ SUITES.build = async ({ B, api, chromium, stop, log }) => {
 
 // ── improve ──────────────────────────────────────────────
 // Solving by itself, a machine cap, a save's machines on the build sheet,
-// alternates ranked across factories, heavy routes, growing every goal and a
+// alternates ranked across factories, heavy routes, the network plan and a
 // stacked floor plan — in a real browser on a throwaway planner.
 SUITES.improve = async ({ B, api, chromium, stop, log }) => {
 
@@ -1426,7 +1426,7 @@ SUITES.improve = async ({ B, api, chromium, stop, log }) => {
       assert.equal(await page.locator('#alts-all .na-row').count(), Math.min(6, d.alts.length));
     });
 
-    await step('heavy routes are flagged; grow all goals raises each together', async () => {
+    await step('heavy routes are flagged; the network plan answers for them', async () => {
       const cu = all.filter(n => n.r === 'Copper_Ore' && !n.w).slice(-2).map(n => n.id);
       await api('/api/scenarios/wires', { name: 'Wires', resource_nodes: [{ resource: 'Copper_Ore', extractor: 'Miner', nodes: cu }],
         from_factories: [{ item: 'Iron_Plate', factory: 'plates', rate: 60 }], objective: { Wire: 1 } });
@@ -1436,9 +1436,9 @@ SUITES.improve = async ({ B, api, chromium, stop, log }) => {
       await page.waitForSelector('.bb-route-load');
       assert.match(await page.locator('.bb-route-load').innerText(), /⚠ \d+ drones/);
       assert.match(await page.locator('.bb-route-load').getAttribute('title'), /Heavy: \d+ drones busy — mostly Iron Plate/);
-      await page.click('#bb-grow');
-      await page.waitForFunction(() => /Every goal/.test(document.getElementById('bb-net')?.innerText || ''), null, { timeout: 30000 });
-      assert.match(await page.locator('#bb-net').innerText(), /Every goal × [\d.]+/);
+      assert.equal(await page.locator('#bb-grow').count(), 0);         // one way to grow: Compare trades
+      await page.click('#bb-plan');
+      await page.waitForFunction(() => /Network plan/.test(document.getElementById('bb-net')?.innerText || ''), null, { timeout: 30000 });
       await page.keyboard.press('Escape');
     });
 
