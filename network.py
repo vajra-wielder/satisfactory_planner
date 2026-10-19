@@ -43,6 +43,7 @@ META = dict(_RAW.get("machine_meta") or {})
 TRANSPORT = dict(_RAW.get("transport") or {})
 
 _SHOW = 0.01      # flows and recipes below this (per min / machines) are numeric dust
+_SHOW_FLOW = 0.05 # a shipment below this per min is not worth a car
 _RES_SLACK = 0.002   # stage 1 is held within 0.2% of its best
 
 
@@ -132,7 +133,8 @@ class _Net:
                     elif i2 == it and a == k:
                         expr[v] = expr.get(v, 0.0) - 1.0
                 self.net[(k, it)] = expr
-                ct = s.Constraint(held.get(it, 0.0), inf)
+                h = held.get(it, 0.0)        # a plan's rates are rounded: held a hair under
+                ct = s.Constraint(h - 1e-5 * abs(h), inf)
                 for v, c in expr.items():
                     ct.SetCoefficient(v, c)
                 supply = float(sc.available_resources.get(it, 0.0) or 0.0)
@@ -193,8 +195,9 @@ def _grow(m: "_Net", sites: List[dict], floor=None) -> Optional[float]:
     its own. Returns t, or None when nothing has a goal to grow.
     floor: {(factory, item): /min} — instead of t, each goal item at least that
     (comparing an option: no goal below what it is anyway)."""
-    items = [(x["key"], it, _made_now(x)[it]) for x in sites for it in x["scenario"].objective
-             if _made_now(x).get(it, 0.0) > 1e-9]
+    # (a goal it makes none of yet — a new factory waiting on its imports — grows
+    # from nothing, each per minute counted as one)
+    items = [(x["key"], it, _made_now(x).get(it, 0.0)) for x in sites for it in x["scenario"].objective]
     if not items:
         return None
     if floor is not None:
@@ -217,7 +220,7 @@ def _grow(m: "_Net", sites: List[dict], floor=None) -> Optional[float]:
     share: Dict[object, float] = {}
     for k, it, now in items:
         for v, c in m.made.get((k, it), {}).items():
-            share[v] = share.get(v, 0.0) + c / now
+            share[v] = share.get(v, 0.0) + c / max(now, 1.0)
     if m.run(share, maximize=True):
         m.lock({v: -c for v, c in share.items()}, -m.value(share))
     return best
@@ -319,7 +322,7 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
         items, each = [], {}
         for (r2, a, b, it, v, c) in m.arcs:
             x = v.solution_value()
-            if r2 == ri and x > _SHOW:
+            if r2 == ri and x > _SHOW_FLOW:
                 kind = "fluid" if it in FLUIDS else "solid"
                 items.append({"item": it, "from": a, "to": b, "rate": round(x, 3),
                               "stacks": None if it in FLUIDS else round(x / STACK.get(it, 100), 3),
@@ -335,17 +338,21 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
     out["throughput"] = round(sum(r["throughput"] for r in out["routes"]), 3)
     out["stacks"] = round(sum(r["stacks"] for r in out["routes"]), 3)
 
-    # Headroom: each goal factory's most, with every other factory held
+    # Headroom: each goal factory's most, with every other factory still making
+    # its goals (shipped on or kept — what it ships is the network's to place)
     out["headroom"] = {}
+    goal_keys = {y["key"] for y in sites if y["scenario"].objective}
     for x in (sites if headroom else []):
         sc = x["scenario"]
         if not sc.objective:
             continue
-        h = _Net(sites, routes, recipes, free_goal=x["key"])
-        goal: Dict[object, float] = {}
-        for it, w in sc.objective.items():
-            for v, c in h.net.get((x["key"], it), {}).items():
-                goal[v] = goal.get(v, 0.0) + w * c
+        h = _Net(sites, routes, recipes, free_goal=goal_keys)
+        for y in sites:
+            if y["key"] != x["key"] and y["key"] in goal_keys:
+                for it, r in _made_now(y).items():
+                    if it in y["scenario"].objective and (y["key"], it) in h.made:
+                        h.ct_ge(h.made[(y["key"], it)], r * (1 - 1e-6))
+        goal = h.goal_of(x["key"])
         if goal and h.run(goal, maximize=True):
             now = _now_goal(x)
             most = h.value(goal)
@@ -517,15 +524,22 @@ def compare_trades(sites: List[dict], routes: List[dict], recipes: Dict[str, Rec
             if d:
                 f[k] = d
         sm["freed"] = f
-        gain, pct = {}, []
+        gain, pct, new = {}, [], {}
         for k, gs in sm["goals"].items():
             for it, g in gs.items():
                 b = now["goals"].get(k, {}).get(it, {}).get("then", g["now"])
-                p = (g["then"] - b) / b if b > 1e-9 else 0.0
+                if b > 1e-6:
+                    p = (g["then"] - b) / b
+                elif g["then"] > 1e-3:          # made at all only with this trade: counted as +100%
+                    p = 1.0
+                    new.setdefault(k, {})[it] = round(g["then"], 3)
+                else:
+                    p = 0.0
                 pct.append(p)
                 if abs(p) > 1e-4:
                     gain.setdefault(k, {})[it] = round(100 * p, 2)
         sm["gain"] = gain                      # {factory: {goal item: % against now}}
+        sm["new"] = new                        # {factory: {goal item: /min}} made only with it
         sm["score"] = round(100 * sum(pct) / len(pct), 3) if pct else 0.0   # the mean, %
         # what it frees: the network's resource score (each resource as a share of
         # its supply, averaged), goals held, against now — % less

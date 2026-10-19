@@ -115,6 +115,7 @@ export function initBlackboard({ onOpenFactory: open }) {
   document.querySelectorAll('#bb-tabs button').forEach(b =>
     b.addEventListener('click', () => showTab(b.dataset.tab)));
   $('bb-plan').addEventListener('click', planNetwork);
+  $('bb-join').addEventListener('click', joinAll);
   $('bb-trades').addEventListener('click', compareTrades);
   document.querySelectorAll('#bb-flow-src button').forEach(b => b.addEventListener('click', () => {
     FLOW_SRC = b.dataset.src;
@@ -195,8 +196,14 @@ function renderFactories() {
       '<div class="bb-card" style="left:20px;top:20px;padding:10px">No saved factories yet — save a scenario first.</div>');
     return;
   }
-  DATA.factories.forEach((f, i) => {
-    const pos = LAYOUT.positions[f.key] || { x: 30 + (i % 4) * 400, y: 30 + Math.floor(i / 4) * 360 };   // room for the bands
+  // not placed yet: a grid laid out like the map — rows north to south, west to east in each
+  const cols = Math.ceil(Math.sqrt(DATA.factories.length)), slot = {};
+  const byY = [...DATA.factories].sort((a, b) => (a.at?.[1] ?? 0) - (b.at?.[1] ?? 0));
+  for (let r = 0; r * cols < byY.length; r++)
+    byY.slice(r * cols, (r + 1) * cols).sort((a, b) => (a.at?.[0] ?? 0) - (b.at?.[0] ?? 0)).forEach((f, c) => { slot[f.key] = [c, r]; });
+  DATA.factories.forEach(f => {
+    const [c, r] = slot[f.key];
+    const pos = LAYOUT.positions[f.key] || { x: 30 + c * 420, y: 30 + r * 340 };   // room for the bands
     const card = document.createElement('div');
     card.className = 'bb-card';
     card.dataset.key = f.key;
@@ -374,11 +381,35 @@ function drawRoutes() {
   });
 }
 
+// Routes for every factory to its nearest (all of them, when there are four or
+// fewer): by train, the round trip guessed from the distance — a train covers
+// about 2 km a minute, and a minute at the stations
+function joinAll() {
+  const fs = DATA?.factories || [];
+  const d = (a, b) => (a.at && b.at ? Math.hypot(a.at[0] - b.at[0], a.at[1] - b.at[1]) : null);
+  const has = (a, b) => LAYOUT.routes.some(r => (r.a === a && r.b === b) || (r.a === b && r.b === a));
+  let added = 0;
+  fs.forEach(a => {
+    const others = fs.filter(b => b.key !== a.key).sort((x, y) => (d(a, x) ?? 1e9) - (d(a, y) ?? 1e9));
+    (fs.length <= 4 ? others : others.slice(0, 2)).forEach(b => {
+      if (has(a.key, b.key)) return;
+      const m = d(a, b);
+      LAYOUT.routes.push({ a: a.key, b: b.key, mode: 'train', trip_min: m == null ? 4 : Math.max(1, Math.round((1 + 2 * m / 2000) * 2) / 2) });
+      added++;
+    });
+  });
+  NET = null; save(); drawRoutes(); renderNet();
+  const panel = $('bb-net');
+  panel.style.display = '';
+  panel.innerHTML = `<p class="bb-hint">${added ? `${added} route${added > 1 ? 's' : ''} added, by train — set each one's vehicle and round trip on its line.
+    Then Plan network (the same outputs for the least ore and transport) or ⚖ Compare trades (what each trade would add).` : 'Every factory is already joined to its nearest.'}</p>`;
+}
+
 function planNetwork() {
   const panel = $('bb-net');
   if (!LAYOUT.routes.length) {
     panel.style.display = '';
-    panel.innerHTML = '<p class="bb-hint">Add a route first: drag a factory\'s ⇄ onto another.</p>';
+    panel.innerHTML = NO_ROUTES;
     return;
   }
   panel.style.display = '';
@@ -398,10 +429,17 @@ function renderNet() {
   let h = `<div class="bb-net-t">Network plan <span class="bb-x" id="bb-net-close" title="Close">✕</span></div>
     <p class="bb-hint">Fractional machines — a planning view. Solve each factory on its own for its exact build.</p>`;
   if (NET.unsolved?.length) h += `<p class="bb-warn">Not solved, so held at their declared outputs: ${NET.unsolved.join(', ')}.</p>`;
+  // what the whole network mines, against each factory's own plan
+  const tot = {};
+  NET.factories.forEach(f => Object.entries(f.resources).forEach(([it, x]) => { tot[it] = (tot[it] || 0) + x.used - x.before; }));
+  const dres = Object.entries(tot).filter(([, d]) => Math.abs(d) > 0.5).sort((a, b) => a[1] - b[1])
+    .map(([it, d]) => `<span class="${d < 0 ? 'bb-ok' : 'bb-warn'}">${itemName(it)} ${d < 0 ? '' : '+'}${fmt(Math.round(d))}</span>`).join(' · ');
   h += `<div class="bb-kpi"><b>${fmt(NET.throughput)}/min</b> moving between factories · <b>${fmt(NET.stacks)}</b> stacks/min</div>
+    <div class="bb-hint">${dres ? `Mined, against the factories' own plans: ${dres} /min` : 'Mines what the factories\' own plans do.'}</div>
     <button class="bsm act" id="bb-apply" style="margin-top:6px" title="Write this plan into the factories, then re-solve them in order">Apply to the factories…</button>
     <div id="bb-chain"></div>`;
-  NET.routes.forEach(rt => {
+  const idle = NET.routes.filter(rt => !rt.items.length);
+  NET.routes.filter(rt => rt.items.length).forEach(rt => {
     const vh = vehicles(rt), hv = heavy(rt, rt.items);
     if (hv) h += `<p class="bb-warn">${hv.long}</p>`;
     h += `<div class="bb-net-s">${name(rt.a)} ⇄ ${name(rt.b)} · ${MODES[rt.mode]}, ${rt.trip_min} min round trip
@@ -410,8 +448,9 @@ function renderNet() {
     h += rt.items.length ? '<table class="bb-tab"><tr><th></th><th>/min</th><th>stacks/min</th><th>' + LOAD_UNIT[rt.mode] + '</th></tr>' +
       rt.items.map(i => `<tr><td>${name(i.from)} → ${name(i.to)}: ${itemName(i.item)}</td><td>${fmt(i.rate)}</td>
         <td>${i.stacks == null ? '—' : fmt(i.stacks)}</td><td>${fmt(i.load)}</td></tr>`).join('') + '</table>'
-      : '<p class="bb-hint">Nothing needs to cross.</p>';
+      : '';
   });
+  if (idle.length) h += `<p class="bb-hint">Nothing to carry: ${idle.map(rt => `${name(rt.a)} ⇄ ${name(rt.b)}`).join(' · ')}</p>`;
   NET.factories.forEach(f => {
     const r = f.recipes, list = (o, fmtv) => Object.entries(o).map(([k, v]) => `${recipeName(k)} ${fmtv(v)}`).join(', ');
     const lines = [];
@@ -705,10 +744,12 @@ function applyFlows(flows, alts = {}) {
 // what it frees with the goals held, and the vehicles it keeps busy. All of
 // them together is the network plan. Free nodes nearby can count as more to mine.
 let TRADES = null;
+const NO_ROUTES = `<p class="bb-hint">No routes yet: the planner only moves things between factories you've joined.
+  Click <b>＋ Join them all</b> (each to its nearest, by train), or drag a factory's ⇄ onto another.</p>`;
 function compareTrades() {
   const panel = $('bb-net');
   panel.style.display = '';
-  if (!LAYOUT.routes.length) { panel.innerHTML = '<p class="bb-hint">Add a route first: drag a factory\'s ⇄ onto another.</p>'; return; }
+  if (!LAYOUT.routes.length) { panel.innerHTML = NO_ROUTES; return; }
   panel.innerHTML = '<p class="bb-hint">Trying each trade on its own…</p>';
   fetch('/api/trades', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ routes: LAYOUT.routes, nearby_km: +$('bb-near-km').value || 0 }) })
@@ -721,7 +762,8 @@ function renderTrades() {
   const nm = k => d.names?.[k] || k;
   const pc = v => `${v > 0 ? '+' : ''}${Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1)}%`;
   const gains = t => Object.entries(t.gain || {}).flatMap(([k, gs]) => Object.entries(gs).map(([it, p]) =>
-    `<span class="tr-g">${pc(p)}</span> ${itemName(it)} <span class="n-hint">at ${nm(k)}</span>`)).join(' · ');
+    t.new?.[k]?.[it] != null ? `<span class="tr-g">${fmt(t.new[k][it])}/min</span> ${itemName(it)} <span class="n-hint">at ${nm(k)}, from none</span>`
+      : `<span class="tr-g">${pc(p)}</span> ${itemName(it)} <span class="n-hint">at ${nm(k)}</span>`)).join(' · ');
   const freed = t => Object.entries(t.freed || {}).flatMap(([k, fr]) => Object.entries(fr).map(([it, v]) =>
     `${fmt(v)}/min ${itemName(it)} <span class="n-hint">at ${nm(k)}</span>`)).join(' · ');
   const moves = t => (t.routes || []).map(r => vehicles({ ...r, cars: r.cars }).short).join(' · ');
@@ -745,10 +787,17 @@ function renderTrades() {
       <div class="n-hint">${(t.flows || []).filter(f => f.item === t.item).map(f => `${fmt(f.rate)}/min`).join(', ')}${moves(t) ? ` · ${moves(t)}` : ''}</div>
     </div>`;
   const all = d.all, nowNear = near(d.now);
+  // today's trades at the rates the network would run them — against the saved plans
+  const vsSaved = Object.entries(d.now.goals || {}).flatMap(([k, gs]) => Object.entries(gs)
+    .filter(([, g]) => g.then - g.now > Math.max(0.01, 0.01 * g.now))
+    .map(([it, g]) => `<span class="tr-g">${g.now > 1e-6 ? pc(100 * (g.then - g.now) / g.now) : `${fmt(g.then)}/min`}</span> ${itemName(it)} <span class="n-hint">at ${nm(k)}, ${fmt(g.now)} → ${fmt(g.then)}/min</span>`)).join(' · ');
+  const declared = (d.now.flows || []).filter(f => f.rate > 0.05);
   panel.innerHTML = `<div class="bb-net-t">Compare trades <span class="bb-x" id="bb-net-close" title="Close">✕</span></div>
-    <p class="bb-hint">Each on its own, on top of what the factories send each other now — no goal goes down for it.
+    <p class="bb-hint">Each trade below on its own, on top of today's trades at the right rates — no goal goes down for it.
       ${d.tried} tried${d.unsolved?.length ? `; not solved, so held at their declared outputs: ${d.unsolved.join(', ')}` : ''}.</p>
     ${nowNear ? `<div class="bb-hint" style="margin-top:4px">From free nodes nearby, as things are — mined in every option below:</div>${nowNear}` : ''}
+    ${vsSaved ? `<div class="tr-row"><div class="tr-h"><span>Your trades now, at the right rates</span><button class="bsm act" id="tr-now" title="Write these rates into the factories' imports, then re-solve">Apply</button></div>
+      <div>${vsSaved}</div><div class="n-hint">${shipments(declared)}</div></div>` : ''}
     <div class="tr-row"><div class="tr-h"><span>All of them together</span><button class="bsm act" id="tr-all" title="The network plan: write it in, then re-solve">Apply</button></div>
       ${all.score > 0.05 ? `<div>${gains(all)}</div>` : ''}${all.frees > 0.25 ? `<div><span class="tr-f">frees ${all.frees.toFixed(1)}%</span>${freed(all) ? `: ${freed(all)}` : ''}</div>` : ''}
       <div class="n-hint">${shipments(all.flows) || 'nothing more to send'}</div></div>
@@ -758,6 +807,7 @@ function renderTrades() {
     <div id="bb-chain"></div>`;
   $('bb-net-close').addEventListener('click', () => { panel.style.display = 'none'; });
   $('tr-all').addEventListener('click', () => applyFlows(all.flows || []));
+  $('tr-now')?.addEventListener('click', () => applyFlows(declared));
   panel.querySelectorAll('[data-tr]').forEach(b => b.addEventListener('click', () => applyFlows(d.trades[+b.dataset.tr].flows || [])));
 }
 

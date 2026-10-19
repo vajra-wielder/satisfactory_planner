@@ -271,7 +271,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   imports and exports (from its last plan), where its imports come from and
   how much of each output others take. "From factories" imports are drawn as
   routes on their own — one band per route, a stripe per item in it, each as
-  wide as its rate. Join factories with routes — train,
+  wide as its rate. Factories not yet placed sit in a grid laid out like the
+  map. Join factories with routes (＋ Join them all joins each to its nearest
+  by train, round trips guessed from the map distance) — train,
   truck, tractor or drone, each with its round trip time (belts and pipes stay
   inside factories) — and plan the network: which recipe runs where, what
   crosses each route (items, stacks, and the freight cars, trucks, tractors or
@@ -283,7 +285,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   or tractors with a station at each end, or drones — a port pair each, and
   about how many batteries a minute (24,000 MJ a trip plus 12 MJ a metre
   between the factories, an estimate; the port's own readout is exact),
-  what each factory draws, and how much more each goal the leftovers could make.
+  what each factory draws, what the whole network mines against the
+  factories' own plans, and how much more each goal the leftovers could make
+  (every other factory still making its goals, shipped on or kept).
   Least resources first, then least transport, then least change from each
   factory's own plan, then least space. Click a factory to open it.
 - ⚖ Compare trades: "bring Quickwire in for the computers, or send the Plastic
@@ -292,7 +296,9 @@ Unlike most web-based planners, this project uses a real optimization solver to 
   on: a goal counts all a factory makes of it, kept or sent), each tried on its own on top of what they already
   send: how much more of each goal it gives (every goal kept at least where it
   is anyway — none is bought by cutting another), what it frees with the goals
-  held where they are, and the trains, trucks or drones it takes. Ranked best
+  held where they are, and the trains, trucks or drones it takes. First, your
+  trades now at the right rates: what the imports you already set would give
+  at the rates the network would run them. Ranked best
   first; All of them together is the network plan; Apply writes one into the
   factories' imports and re-solves them. "+ free nodes within N km" counts the
   free nodes that close to each factory as more it could mine — and says which
