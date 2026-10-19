@@ -492,6 +492,13 @@ class Cards(_Temp):
         for l, v in zip(p["legs"], per):
             self.assertAlmostEqual(l["load"], v, places=3)
         self.assertAlmostEqual(p["load"], max(per), places=3)
+        # with a direct path too, nothing is split off round the loop to fill its spare room
+        direct = {"stops": ["iron", "wires"], "mode": "truck", "trip_min": 3}
+        out = network.plan_network(sites, [rt, direct], server.ALL_RECIPES)
+        on = [{(i["from"], i["to"], i["item"]) for i in r["items"]} for r in out["routes"]]
+        self.assertFalse(on[0] & on[1], on)
+        for i in out["routes"][0]["items"]:                 # the loop carries only what has no shorter way
+            self.assertFalse({i["from"], i["to"]} == {"iron", "wires"}, i)
 
     def test_network(self):
         sites = server._network_sites(["iron", "wires"])

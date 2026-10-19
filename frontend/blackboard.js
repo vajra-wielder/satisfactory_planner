@@ -699,7 +699,10 @@ function mapNetwork() {
     return { mode: rt.mode, icon: ICON[rt.mode], name: pathName(rt), what: MODES[rt.mode],
       run: `${rt.trip_min} min ${stopsOf(rt).length > 2 ? (looped(rt) ? 'loop' : 'run') : 'round trip'}`,
       vehicles: plan ? vehicles(plan).short : '',
-      segs: stretchesOf(rt, fl).map(sg => ({ a: sg.a, b: sg.b, an: nameOf(sg.a), bn: nameOf(sg.b), rate: sg.rate, lines: sg.items.map(flowTitle) })) };
+      // each load on a stretch, and the stops it passes on the way (it rides on through them)
+      segs: stretchesOf(rt, fl).map(sg => ({ a: sg.a, b: sg.b, an: nameOf(sg.a), bn: nameOf(sg.b), rate: sg.rate,
+        lines: sg.items.map(f => { const via = hopsOf(rt, f.from, f.to).slice(0, -1).map(h => nameOf(legsOf(rt)[h][1]));
+          return flowTitle(f) + (via.length ? ` <span>· via ${via.join(', ')}</span>` : ''); }) })) };
   });
   return { hubs, paths };
 }
@@ -1348,9 +1351,11 @@ function makeMap(el, M) {
     if (way) {           // a path: what rides this stretch — who loads it, for whom
       const [pi, k] = way.dataset.rt.split(':').map(Number), p = M.network.paths[pi];
       const segs = k < 0 ? p.segs : [p.segs[k]];
-      tip.innerHTML = `<b>${p.icon} ${p.what} · ${p.name}</b><br><span>${p.run}${p.vehicles ? ` · ${p.vehicles}` : ''}</span>`
-        + segs.map(sg => `<div class="mp-tip-s">${segs.length > 1 || p.segs.length > 1 ? `<b>${sg.an} — ${sg.bn}</b><br>` : ''}${sg.lines.length
-          ? sg.lines.join('<br>') : '<span>Nothing on it yet</span>'}</div>`).join('');
+      // this stretch's loads only (the sign: every stretch's); the path it's on underneath
+      tip.innerHTML = segs.map((sg, j) => `<div${j ? ' class="mp-tip-s"' : ''}><b>${p.icon} ${sg.an} — ${sg.bn}</b><br>${sg.lines.length
+          ? sg.lines.join('<br>') : '<span>Nothing on this stretch</span>'}</div>`).join('')
+        + (p.segs.length > 1 ? `<div class="mp-tip-s"><span>On the ${p.what.toLowerCase()} ${p.name} · ${p.run}${p.vehicles ? ` · ${p.vehicles}` : ''}</span></div>`
+          : `<span>${p.what} · ${p.run}${p.vehicles ? ` · ${p.vehicles}` : ''}</span>`);
     } else if (tag) {
       const sp = M.spare[+tag.dataset.spare];
       tip.innerHTML = `<b>${sp.name}</b> leaves ${fmtM(sp.left)}/min of ${resName(sp.item)} unused${sp.stale ? '<br><span class="n-warn">its plan is out of date</span>' : ''}

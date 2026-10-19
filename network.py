@@ -13,9 +13,10 @@ load for any other, and what it keeps busy is its heaviest leg.
   1. least resources — every factory's draw over its own supply, averaged,
      so a scarce resource costs more than an abundant one (held within
      _RES_SLACK, so fractional machines alone don't force a rebuild)
-  2. least transport — each route's load in what moving it takes: freight
-     cars, trucks, tractors or drones for its round trip (stack sizes decide
-     how much fits; fluids go by fluid car, or packaged)
+  2. least transport — each path's heaviest leg in what moving it takes:
+     freight cars, trucks, tractors or drones for its round trip (stack sizes
+     decide how much fits; fluids go by fluid car, or packaged) — and a little
+     for every leg a load rides, so it goes the short way, on one path
   3. least change — each solved factory as close to its own plan as it can
      stay, so only what improves 1 or 2 moves (equal options don't churn)
   4. least machine space
@@ -47,6 +48,7 @@ TRANSPORT = dict(_RAW.get("transport") or {})
 _SHOW = 0.01      # flows and recipes below this (per min / machines) are numeric dust
 _SHOW_FLOW = 0.05 # a shipment below this per min is not worth a car
 _RES_SLACK = 0.002   # stage 1 is held within 0.2% of its best
+_RIDE = 0.3          # stage 2: what a load costs a leg it rides, on top of the vehicles busy
 
 
 def _allowed(sc: Scenario, recipes: Dict[str, Recipe], own: Dict[str, float]) -> Dict[str, Recipe]:
@@ -296,9 +298,12 @@ def plan_network(sites: List[dict], routes: List[dict], recipes: Dict[str, Recip
         ct.SetCoefficient(L, 1.0)
         for v, c in terms.items():
             ct.SetCoefficient(v, -c)
+    # A load also costs for every leg it rides: room to spare on a busy leg
+    # isn't free for something with a way of its own — it goes the short way,
+    # on one path, not split off round a loop to fill a gap
     move_obj = {L: 1.0 for L in busy.values()}
-    for (_, _, _, _, v, c) in m.arcs:
-        move_obj[v] = move_obj.get(v, 0.0) + 1e-3 * c
+    for (ri, a, b, _it, v, c) in m.arcs:
+        move_obj[v] = move_obj.get(v, 0.0) + _RIDE * c * len(_hops(routes[ri], a, b))
     if not m.run(move_obj):
         return {"ok": False, "error": "The network plan didn't settle (numerics) — try again with fewer routes."}
     m.lock(move_obj, m.value(move_obj))

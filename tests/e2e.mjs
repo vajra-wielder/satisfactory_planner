@@ -1307,7 +1307,7 @@ SUITES.build = async ({ B, api, chromium, stop, log }) => {
       assert.equal(await page.locator('#bb-map .mp-rt.drone').count(), 1);
       // hovering a stretch says who loads what for whom
       await page.locator('#bb-map .mp-rt-sign').hover(); await sleep(150);
-      assert.match(await page.locator('#bb-map .mp-tip').innerText(), /Drone · Plates ⇄ Wires[\s\S]*Plates → Wires: Iron Plate 60\/min/);
+      assert.match(await page.locator('#bb-map .mp-tip').innerText(), /Plates — Wires[\s\S]*Plates → Wires: Iron Plate 60\/min[\s\S]*Drone/);
       // one list of resources, as the filter: free nodes by purity
       assert.match(await page.locator('#bb-map .mp-legend').innerText(), /Iron Ore\s*P \d+ · N \d+ · I \d+/);
       assert.equal(await page.locator('#bb-map .mp-filters').count(), 0, 'no chips row on top');
